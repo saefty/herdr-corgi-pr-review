@@ -78,12 +78,13 @@ export const anchorRow = (rows, c) => rows.findIndex((r) => r.number === c.end &
 
 // All pending comments as one prompt. event (comment | approve | request_changes) and summary: the Finish-your-review choice.
 const VERDICT = { comment: "", approve: " (approved)", request_changes: " (changes requested)" };
-export function buildReview({ pr, base, comments, lang, event = "comment", summary = "" }) {
-  const points = comments.map((c, i) => [`${i + 1}. \`${c.file}\`${c.start === undefined ? "" : " " + lineLabel(c)}`,
+// replies: the file the agent answers each point in, by its id (threads.js repliesContract); null: no contract.
+export function buildReview({ pr, base, comments, lang, event = "comment", summary = "", replies = null, contract = null }) {
+  const points = comments.map((c, i) => [`${i + 1}. ${c.id ? `[${c.id}] ` : ""}\`${c.file}\`${c.start === undefined ? "" : " " + lineLabel(c)}`,
     c.hunk ? "```diff\n" + c.hunk + "\n```" : null, c.text.trim()].filter(Boolean).join("\n"));
   return [`${headOf(pr, base)}: code review${VERDICT[event] ?? ""} with ${comments.length} ${comments.length === 1 ? "point" : "points"}. ` +
     "Work through the points one by one: answer questions, make the requested changes. At the end, say briefly per point what you did.",
-    summary.trim() ? `Overall: ${summary.trim()}` : null, ...points].filter(Boolean).join("\n\n") + answerIn(lang);
+    summary.trim() ? `Overall: ${summary.trim()}` : null, ...points, replies && contract ? contract(replies, comments[0]?.id) : null].filter(Boolean).join("\n\n") + answerIn(lang);
 }
 
 // ---- GitHub reviews (review.js "Finish your review", route GitHub)

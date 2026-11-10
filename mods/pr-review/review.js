@@ -11,7 +11,7 @@
 // submit popover: one GitHub review (gh api) or, for a PR with an agent session, the prompt to that session.
 import { div } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, TextView, v_virtual_list, VirtualListScrollHandle, Textarea, TextareaState, Input, InputState } from "gpui-base";
-import { exec, run, spaces, theme, settings, readTextFile, writeTextFile, shared, setShared, appHome, nextCommand, watchFolder, openOverlay, closeOverlay, props, home } from "herdr";
+import { exec, run, spaces, focused, theme, settings, readTextFile, writeTextFile, shared, setShared, appHome, nextCommand, watchFolder, openOverlay, closeOverlay, props, home } from "herdr";
 import { parseReports, findingStatus, fixPrompt, hash, touchReview, expireReviews, resumeFields, itemKeys, expandTabs, tokenAt } from "./pr.js";
 import * as C from "./context.js";
 import { hasTool, copyText, openUrl, loadSetup, readConfig } from "./setup-view.js";
@@ -22,6 +22,7 @@ import { ghTarget, lowValue, markReviewed, sinceBase, verifyCandidates, applyVer
 import { diffLines, inDiff, ghReview, lineThreads, suggestionBlock, buildReview, layoutPlan, specElements, diagramsState } from "./pr.js";
 import { archView, archModel, archLegend, visualsCard, statCard, segBar, foldCard, chip, legend, specTag, sourceLegend, SEVERITY_COLOR } from "./stack.js";
 import { hasSources } from "./arch.js";
+import * as TH from "./threads.js";
 import { leftWidth, rowClick, CHIP_W, keyRoute, pictureOf, scopeOf, scopeFiles, hunksFor, mapAnswer, threadAdd, threadOf, history, highlightOf } from "./explore.js";
 
 const LEVEL = { high: "ansi1", medium: "ansi3", low: "ansi4", skim: "muted" };
@@ -52,6 +53,8 @@ const valuesOn = () => shared("review.values") !== false; // inline example valu
 const clock = (ms) => `${Math.floor(ms / 60000)}:${String(Math.floor(ms / 1000) % 60).padStart(2, "0")}`;
 const CAP = { haiku: 1, sonnet: 3, opus: 10 }; // review.py BUDGET
 const findDir = () => `${appHome()}/pr-data/findings`;
+const threadsFile = () => `${appHome()}/pr-data/threads.json`; // sent and posted comments as threads (threads.js bounds it)
+const repliesDir = () => `${appHome()}/pr-data/replies`; // the agent's answers, <pr hash>.jsonl
 const deepFile = () => `${appHome()}/pr-data/deep.json`; // Ask threads per PR and drill-downs per node (explore.js bounds both)
 const ctxDoc = () => shared(C.CONTEXTS_KEY);
 const prCtx = (pr) => C.prContext(ctxDoc(), pr, home());
@@ -61,6 +64,7 @@ const REVIEWERS = ALL_REVIEWERS;
 const reviewersNow = () => Object.entries(ALL_REVIEWERS).filter(([k]) => k !== "codex" || hasTool("codex"));
 const FSTATUS = { open: ["Open", "muted"], progress: ["In progress", "ansi3"], fixed: ["Fixed ✓", "ansi2"], dismissed: ["Dismissed", "dim"], recheck: ["Recheck (code changed)", "ansi3"] };
 const SEV = { high: "ansi1", medium: "ansi3", low: "ansi4" };
+const THREAD_COLOR = { fixed: "ansi2", answered: "accent", wontfix: "muted", question: "ansi3", sent: "ansi4", posted: "ansi4" };
 const PROBE = "0".repeat(40);
 const CTX_MS = 10 * 60000; // related PRs, CI checks, mergeability (related.py): asked again after this while the review is open
 const OPEN_ST = ["open", "progress", "recheck"];
@@ -197,7 +201,18 @@ export const ReviewMode = {
     this.composing = false; this.finishOpen = false; this.event = "comment"; this.route = null; this.posted = null; this.gh = [];
     this.draft = TextareaState.new({ placeholder: "Leave a comment (⌘↩ adds it, Esc cancels)" });
     this.summary = TextareaState.new({ placeholder: "Leave a comment" });
-    for (const [st, k] of [[this.draft, "draft"], [this.summary, "summary"]]) {
+    // Threads: sent/posted comments with their replies; the GitHub preview's ticks and inline edit; the agent preview.
+    this.threadDoc = {}; this.replies = {}; this.openThreads = new Set(); this.off = new Set(); this.summaryOn = true; this.editItem = null; this.replyTo = null; this.sendP = null;
+    this.itemEdit = TextareaState.new({ placeholder: "Comment text" });
+    this.sendText = TextareaState.new({ placeholder: "What the agent gets" });
+    this.replyIn = InputState.new({ placeholder: "Reply in this thread… (Enter: preview)" });
+    this.replyIn.on("submit", (_e, cx) => this.followup(cx));
+    cx.spawn(async (cx) => {
+      await exec("mkdir", ["-p", repliesDir()]).catch(() => null);
+      for (;;) { await watchFolder(repliesDir()).catch(() => null); await this.loadThreads(cx); }
+    });
+    cx.timer.every(180000, (cx) => { if (this.prSel) { this.loadGhComments(cx); this.loadThreads(cx); } }); // GitHub replies: every 3 min while open
+    for (const [st, k] of [[this.draft, "draft"], [this.summary, "summary"], [this.itemEdit, "item"], [this.sendText, "send"]]) {
       st.on("focus", (_e, cx) => { this.typing = k; cx.notify(); });
       st.on("blur", (_e, cx) => { if (this.typing === k) this.typing = false; cx.notify(); });
     }
@@ -239,6 +254,11 @@ export const ReviewMode = {
       const m = /^(.*):(\d+)(?:-(\d+))?$/.exec(arg);
       if (m) { this.tab = "files"; this.collapsed.delete(m[1]); this.fsel = { path: m[1], a: `+${m[2]}`, b: `+${m[3] ?? m[2]}` }; this.openComposer(cx, null, true); }
     }
+    // Scripts and tests: the composer's text, then its "Post now / Send to agent…" button; the preview's "Send to agent".
+    else if (name === "draft") { this.draft.set_value(arg); }
+    else if (name === "single") this.singleComment(cx);
+    else if (name === "send") this.sendConfirmed(cx);
+    else if (name === "route") this.route = arg; // github | agent: where Submit and single comments go
     else if (name === "open") {
       cx.spawn(async () => {
         const prs = JSON.parse(await readTextFile(`${appHome()}/pr-data/prs.json`).catch(() => null) ?? "{}").prs ?? [];
@@ -265,6 +285,7 @@ export const ReviewMode = {
     for (const h of this.hunks) this.fileHunks.set(h.path, [...(this.fileHunks.get(h.path) ?? []), h]);
     this.diffLines = diffLines(this.hunks);
     this.loadGhComments(cx);
+    await this.loadThreads(cx);
     const p = JSON.parse(await readTextFile(progressFile()).catch(() => null) ?? "{}")[url] ?? {};
     this.prog = { visited: new Set(p.visited ?? []), checked: p.checked ?? {}, handled: p.handled ?? {}, seen: new Set(p.seen ?? []) };
     this.collapsed = new Set(this.prog.seen);
@@ -430,8 +451,9 @@ export const ReviewMode = {
 
   progressNow() {
     const steps = this.ai?.steps ?? [];
+    const th = TH.threadCounts(this.threads(), this.replies, this.gh);
     return { steps: steps.length, stepsChecked: steps.filter((s) => this.done(s)).length, files: this.patch?.length ?? 0, filesViewed: this.prog.seen.size,
-      comments: this.comments.length, findingsOpen: this.find.list.filter((f) => ["open", "progress", "recheck"].includes(this.fstatus(f))).length };
+      comments: this.comments.length, threads: th.threads, replies: th.replies, fixedThreads: th.fixed, findingsOpen: this.find.list.filter((f) => ["open", "progress", "recheck"].includes(this.fstatus(f))).length };
   },
 
   // This PR in pr-data/open-reviews.json (and shared "review.open"), 1.5 s after the last change: opened, worked on,
@@ -717,7 +739,11 @@ export const ReviewMode = {
   // the chatbar mod present (shared "chatbar.api"), its bubble takes the draft instead (PROVIDERS.md, chatbar.request).
   // ponytail: goes through the clipboard (hc send always presses Enter), so the clipboard holds the prompt after.
   discuss(f, cx) {
-    const text = this.findingText(f), origin = this.prSel;
+    const text = this.findingText(f);
+    this.previewSend(cx, { what: "Discuss", own: `${f.title}: ${f.detail}`, prompt: text, go: (edited, cx) => this.discussNow(f, edited, cx) });
+  },
+  discussNow(f, text, cx) {
+    const origin = this.prSel;
     // A PR picked from a list or handed over by Go to has no space: the agent is the one in a space at the PR's checkout.
     const space = origin?.space ?? spaces().find((s) => origin?.cwd && s.folder === origin.cwd)?.id ?? null;
     const agent = origin?.session ? this.sessionAgent(origin) : this.target(space);
@@ -745,8 +771,8 @@ export const ReviewMode = {
   fix(list, cx) {
     if (!list.length) return;
     const report = `${findDir()}/${hash(this.prSel.url)}.jsonl`;
-    this.deliver(fixPrompt(list, this.pr, report, this.lang()), cx, list.length === 1 ? "Fix" : `Fix (${list.length})`, (cx) => { for (const f of list) this.setFinding(f, "progress", cx, { fixHead: this.headNow() }); });
-
+    this.previewSend(cx, { what: list.length === 1 ? "Fix" : `Fix (${list.length})`, own: list.map((f) => `${f.title} (${f.file}:${f.line})`).join("\n"), prompt: fixPrompt(list, this.pr, report, this.lang()),
+      onSent: (cx) => { for (const f of list) this.setFinding(f, "progress", cx, { fixHead: this.headNow() }); } });
   },
 
   // ---- definitions (defs.js: language servers through lsp_bridge.py, on the PR head checkout)
@@ -900,7 +926,8 @@ export const ReviewMode = {
   pushRows(items, at, rows, path, hunkOf) {
     const sugs = this.openSugs(path), cms = this.comments.filter((c) => c.file === path), used = new Set();
     const finds = this.find.list.filter((f) => f.file === path && ["open", "progress", "recheck"].includes(this.fstatus(f)));
-    const gh = this.gh.filter((g) => g.path === path), f = this.fsel, range = this.composing && f?.path === path && rangeOf(rows, f.a, f.b);
+    const own = this.ghOwn(), gh = this.gh.filter((g) => g.path === path && !own(g)), f = this.fsel, range = this.composing && f?.path === path && rangeOf(rows, f.a, f.b);
+    const ths = this.threads().filter((x) => x.file === path);
     const thread = { gh, editId: this.composing ? this.editing?.id ?? null : null, composeKey: range && at.compose === undefined ? lineKey(rows[range[1]]) : null };
     rows.forEach((r, ri) => {
       if (r.kind === "gap") { items.push({ t: "gap", path, r }); return; }
@@ -916,6 +943,7 @@ export const ReviewMode = {
         if (it.t === "composeact" && at.compose !== items.length - 1) continue;
         items.push(it);
       }
+      for (const th of ths) if (atLine(r, th.end, th.old)) { items.push({ t: "thread", th }); if (!this.threadOfView(th).collapsed) items.push({ t: "tact", th }); }
       if (r.kind !== "-") for (const f of finds) if (f.line === r.number) items.push({ t: "find", f }, { t: "fact", f });
     });
     return cms.filter((c) => !used.has(c));
@@ -988,6 +1016,11 @@ export const ReviewMode = {
       if (d.open) this.openComposer(cx);
     } else if (it.t === "sug") { this.sug = this.sug === it.s.key ? null : it.s.key; this.visit(it.s.hunk, cx); }
     else if (it.t === "comment") this.openComposer(cx, it.c);
+    else if (it.t === "thread") { if (this.openThreads.has(it.th.id)) this.openThreads.delete(it.th.id); else this.openThreads.add(it.th.id); }
+    else if (it.t === "tact") {
+      const b = x - GUTTER - 12, k = Math.floor(b / (BTN + BTN_GAP)), btn = b >= 0 && b % (BTN + BTN_GAP) < BTN ? this.threadButtons(it.th)[k] : null;
+      if (btn) btn.act(cx);
+    }
     else if (it.t === "composeact") { const b = this.composeButtons().find((b) => x >= b.x && x < b.x + b.w); if (b) this[b.act](cx); }
     else if (it.t === "def") {
       const b = x - GUTTER - 12, which = b >= 0 && b < BTN + 40 ? 0 : b >= BTN + 40 + BTN_GAP && b < 2 * (BTN + 40) + BTN_GAP ? 1 : b >= 2 * (BTN + 40 + BTN_GAP) ? 2 : -1;
@@ -1113,6 +1146,82 @@ export const ReviewMode = {
     if (i >= 0) this.fsel = { path: h.path, a: lineKey(h.rows[i]), b: lineKey(h.rows[i]) };
   },
 
+  // ---- threads: comments that went out stay under their lines with the agent's or GitHub's replies
+
+  threadKey() { return this.prSel?.url ?? null; },
+  repliesFile() { return `${repliesDir()}/${hash(this.threadKey() ?? "")}.jsonl`; },
+  threads() { return TH.threadsOf(this.threadDoc, this.threadKey()); },
+  async loadThreads(cx) {
+    const key = this.threadKey();
+    if (!key) return;
+    const [doc, rep] = await Promise.all([readTextFile(threadsFile()).catch(() => null), readTextFile(this.repliesFile()).catch(() => null)]);
+    if (this.threadKey() !== key) return;
+    this.threadDoc = doc ? JSON.parse(doc) : {}; this.replies = TH.parseReplies(rep);
+    cx.notify();
+  },
+  // threads.json changed by fn, here and in the file (compare-and-swap, like the findings' status).
+  updateThreads(cx, fn) {
+    this.threadDoc = fn(this.threadDoc);
+    cx.spawn(async (cx) => {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const before = await readTextFile(threadsFile()).catch(() => null);
+        try { await writeTextFile(threadsFile(), JSON.stringify(fn(before ? JSON.parse(before) : {})), before); this.registerReview(cx); return; } catch { /* written meanwhile: again */ }
+      }
+      this.note = "Could not save the sent comments"; cx.notify();
+    });
+  },
+  // GitHub comments this review shows itself (a posted thread and the replies to it) stay out of the plain list.
+  ghOwn() {
+    const ids = new Set(this.threads().map((t) => t.ghId).filter(Boolean));
+    return (g) => ids.has(g.id) || ids.has(g.in_reply_to_id);
+  },
+  threadOfView(th) { return TH.threadView(th, this.replies[th.id] ?? [], TH.ghRepliesTo(this.gh, th.ghId), this.openThreads.has(th.id)); },
+
+  // The agent a send goes to (as deliver picks it) and how that reads.
+  sendAgent() {
+    const origin = this.prSel, space = origin?.space ?? focused()?.space ?? null;
+    const agent = origin?.session ? this.sessionAgent(origin) : space ? this.target(space) : null;
+    return { agent, label: TH.agentLabel(agent, origin?.session ? "the PR's session, resumed in a new tab (claude --resume)" : "a new Claude tab in this repo") };
+  },
+  // Nothing is typed into an agent's session without this preview: who gets it, the reviewer's own words apart, the
+  // exact text (editable). go(text, cx): what "Send to agent" does with the confirmed text (default: deliver it).
+  previewSend(cx, { what, own, prompt, onSent, go }) {
+    const { agent, label } = this.sendAgent();
+    this.sendP = { ...TH.preview({ what, agent: label, own, prompt }), onSent, go, address: agent?.address ?? null };
+    this.sendText.set_value(prompt); this.finishOpen = false;
+    cx.notify();
+  },
+  sendConfirmed(cx) {
+    const p = this.sendP;
+    if (!p || this.sending) return;
+    const out = TH.confirm(p, this.sendText.value());
+    this.sendP = null;
+    if (p.go) p.go(out.text, cx);
+    else this.deliver(out.text, cx, out.what, (cx) => p.onSent?.(cx));
+    cx.notify();
+  },
+
+  // "Reply" in a thread: one follow-up to the same agent with the thread as context (through the preview).
+  followup(cx) {
+    const th = this.threads().find((t) => t.id === this.replyTo), text = this.replyIn.value().trim();
+    if (!th || !text) return;
+    const replies = this.replies[th.id] ?? [], key = this.threadKey();
+    this.previewSend(cx, { what: "Reply", own: text, prompt: TH.followupPrompt({ pr: this.pr, thread: th, replies, text, file: this.repliesFile(), lang: this.lang() }),
+      onSent: (cx) => { this.updateThreads(cx, (d) => TH.addFollowup(d, key, th.id, text, replies.length)); this.replyIn.set_value(""); this.replyTo = null; } });
+  },
+  // A thread's buttons, left to right (clicks placed by x in onItem): Reply, the agent's last commit, GitHub, fold.
+  threadButtons(th, v = this.threadOfView(th)) {
+    return [{ label: "Reply", primary: true, act: (cx) => { this.replyTo = th.id; this.replyIn.set_value(""); cx.timer.after(0, () => this.replyIn.focus()); } },
+      ...(v.fixedIn || v.entries.some((e) => e.commit) ? [{ label: `Open ${String(v.fixedIn ?? [...v.entries].reverse().find((e) => e.commit).commit).slice(0, 7)}`, act: () => this.openCommit(v.fixedIn ?? [...v.entries].reverse().find((e) => e.commit).commit) }] : []),
+      ...(th.url ? [{ label: "On GitHub ↗", act: () => openUrl(th.url) }] : []),
+      ...(v.status === "fixed" ? [{ label: "Fold", act: () => this.openThreads.delete(th.id) }] : [])];
+  },
+  // A commit an agent named: its diff on GitHub (a PR there), else a note.
+  openCommit(sha) {
+    const m = /github\.com\/([^/]+\/[^/]+)\/pull\//.exec(this.prSel?.url ?? "");
+    if (m) openUrl(`https://github.com/${m[1]}/commit/${sha}`); else this.note = `Commit ${sha}: open it with git show ${sha}`;
+  },
+
   // ---- the inline composer (a row of the diff list under the selection; edit: in place of that comment)
 
   openComposer(cx, edit = null, scroll = false) {
@@ -1137,7 +1246,7 @@ export const ReviewMode = {
   // The composer's buttons, left to right: x from the list's left edge (clicks are placed by x, see onItem).
   composeButtons() {
     const list = this.editing ? [["Suggestion", 104, "insertSuggestion"], ["Cancel", 80, "closeComposer"], ["Update comment", 140, "addDraft", true]]
-      : [["Suggestion", 104, "insertSuggestion"], ["Cancel", 80, "closeComposer"], ["Add single comment", 160, "singleComment"],
+      : [["Suggestion", 104, "insertSuggestion"], ["Cancel", 80, "closeComposer"], [this.routeNow() === "github" ? "Post now to GitHub" : "Send to agent…", 160, "singleComment"],
         [this.comments.length ? "Add review comment" : "Start a review", 160, "addDraft", true]];
     let x = GUTTER + 16; // the card's 4 px border and 12 px padding
     return list.map(([label, w, act, primary], i) => { const b = { label, w, act, primary, x: x + (i === 1 ? 24 : 0) }; x = b.x + w + BTN_GAP; return b; });
@@ -1174,13 +1283,44 @@ export const ReviewMode = {
     this.fsel = null; this.closeComposer(cx); this.persist(cx);
   },
 
-  // "Add single comment": this one comment alone, now, where reviews go (GitHub: a review with one comment; agent: its prompt).
+  // "Post now to GitHub" / "Send to agent…": this one comment alone, now. GitHub: one review comment at once; agent: the
+  // preview first. Either way it then stays under its line as a thread; on failure it stays in the composer.
   singleComment(cx) {
-    const c = this.draftComment();
+    const c = this.draftComment(), key = this.threadKey();
     if (!c) return cx.notify();
-    const done = (cx) => { this.fsel = null; this.closeComposer(cx); };
-    if (this.routeNow() === "github") this.postGh([c], "comment", "", cx, done);
-    else this.deliver(buildReview({ pr: this.pr, base: this.base, comments: [c], lang: this.lang() }), cx, "Comment", done);
+    const done = (cx, how) => { this.updateThreads(cx, (d) => TH.addThreads(d, key, [c], how)); this.fsel = null; this.closeComposer(cx); };
+    if (this.routeNow() === "github") { setShared("review.hintPostNow", true); return this.postSingleGh(c, cx, done); }
+    const { label } = this.sendAgent();
+    this.previewSend(cx, { what: "Comment", own: c.text, prompt: buildReview({ pr: this.pr, base: this.base, comments: [c], lang: this.lang(), replies: this.repliesFile(), contract: TH.repliesContract }),
+      onSent: (cx) => done(cx, { route: "agent", agent: label }) });
+  },
+
+  // One line comment on GitHub now (POST pulls/{n}/comments), as the PR's context; dry run: the payload into a file.
+  postSingleGh(c, cx, done) {
+    const pr = this.prSel, m = /github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/.exec(pr?.url ?? "");
+    if (!m || this.sending) return;
+    const payload = TH.singlePayload(c, this.head, inDiff(this.diffLines ?? new Map(), c));
+    if (!payload) { this.note = "Not posted: GitHub takes line comments only on lines of the PR diff. Use Start a review: it goes into the review body."; return cx.notify(); }
+    this.sending = true; this.note = null;
+    const env = this.ctxEnv(this.ctxId()), sh = (script, ...args) => exec(env[0] ?? "sh", [...env.slice(1), ...(env.length ? ["sh"] : []), "-c", script, ...args], { timeout: 60000 });
+    cx.spawn(async (cx) => {
+      try {
+        if (this.cfg?.dryRun) {
+          const file = `${appHome()}/pr-data/review-dry-run.json`, before = await readTextFile(file).catch(() => null);
+          await writeTextFile(file, JSON.stringify({ endpoint: `repos/${m[1]}/pulls/${m[2]}/comments`, payload }, null, 1), before);
+          this.note = `Dry run: nothing posted, the payload is in ${file.replace(home(), "~")}`;
+          return done(cx, { route: "github", dry: true });
+        }
+        const r = await sh('printf %s "$1" | gh api -X POST "$0" --input -', `repos/${m[1]}/pulls/${m[2]}/comments`, JSON.stringify(payload));
+        if (r.code !== 0) { let msg = (r.stderr || "").trim(); try { msg = JSON.parse(r.stdout).message ?? msg; } catch { /* not JSON */ } throw new Error(msg || "gh api failed"); }
+        const j = JSON.parse(r.stdout);
+        this.note = `Posted to GitHub: ${j.html_url ?? pr.url}`;
+        done(cx, { route: "github", gh: { [c.id]: { ghId: j.id, url: j.html_url } } });
+        this.loadGhComments(cx);
+      } catch (e) { this.note = `Not posted: ${String(e).replace(/^Error: /, "")}`; } // the composer keeps the draft
+      finally { this.sending = false; cx.notify(); }
+    });
+    cx.notify();
   },
 
   // ---- where reviews go: GitHub (any PR there) or the PR's agent session (a PR made in a session; branch diffs)
@@ -1195,15 +1335,28 @@ export const ReviewMode = {
   },
 
   // Submit review (the popover): every pending comment, the verdict and the summary, in one go.
+  // GitHub: exactly the ticked items (threads.js ghPlan); agent: every pending comment, through the preview. What went
+  // out stays as threads.
   submitReview(cx) {
-    const sent = this.comments, summary = this.summary.value();
-    const done = (cx) => {
-      this.comments = this.comments.filter((c) => !sent.includes(c)); this.summary.set_value(""); this.event = "comment";
+    const gh = this.routeNow() === "github", key = this.threadKey(), summary = this.summary.value();
+    const sent = gh ? this.ghPlanNow().picked : TH.withIds(this.comments);
+    const done = (cx, how) => {
+      const ids = new Set(sent.map((c) => c.id));
+      this.comments = TH.withIds(this.comments).filter((c) => !ids.has(c.id)); this.summary.set_value(""); this.event = "comment"; this.off = new Set(); this.summaryOn = true;
+      this.updateThreads(cx, (d) => TH.addThreads(d, key, sent, how));
       this.persist(cx); this.registerReview(cx, { status: "sent", sentAt: Date.now() });
     };
-    if (this.routeNow() === "github") return this.postGh(sent, this.event, summary, cx, done);
+    if (gh) return this.postGh(sent, this.event, this.summaryOn ? summary : "", cx, done);
     if (!sent.length) { this.note = "Nothing to send: add a comment first"; return cx.notify(); }
-    this.deliver(buildReview({ pr: this.pr, base: this.base, comments: sent, lang: this.lang(), event: this.event, summary }), cx, "Review", (cx) => { done(cx); this.finishOpen = false; });
+    const { label } = this.sendAgent();
+    this.previewSend(cx, { what: "Review", own: [summary.trim(), ...sent.map((c) => `${c.file} ${uiLine(c)}: ${c.text}`)].filter(Boolean).join("\n\n"),
+      prompt: buildReview({ pr: this.pr, base: this.base, comments: sent, lang: this.lang(), event: this.event, summary, replies: this.repliesFile(), contract: TH.repliesContract }),
+      onSent: (cx) => done(cx, { route: "agent", agent: label }) });
+  },
+  ghPlanNow() {
+    const repo = /github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/.exec(this.prSel?.url ?? "");
+    return TH.ghPlan({ comments: this.comments, off: this.off, summary: this.summary.value(), summaryOn: this.summaryOn, event: this.event, commit: this.head,
+      lines: this.diffLines ?? new Map(), repo: repo ? `${repo[1]}#${repo[2]}` : null });
   },
 
   // One GitHub review with these comments (pr.js ghReview), JSON on stdin, as the PR's context (its gh account).
@@ -1225,9 +1378,9 @@ export const ReviewMode = {
         if (this.cfg?.dryRun) {
           const file = `${appHome()}/pr-data/review-dry-run.json`, before = await readTextFile(file).catch(() => null);
           await writeTextFile(file, JSON.stringify({ endpoint: `repos/${m[1]}/pulls/${m[2]}/reviews`, payload }, null, 1), before);
-          this.posted = { dry: file, outside: outside.length };
+          this.posted = { dry: file, outside: outside.length, items: TH.postedItems(payload) };
           this.note = `Dry run: nothing posted, the payload is in ${file.replace(home(), "~")}`;
-          return;
+          return done(cx, { route: "github", dry: true });
         }
         const r = await sh('printf %s "$1" | gh api -X POST "$0" --input -', `repos/${m[1]}/pulls/${m[2]}/reviews`, JSON.stringify(payload));
         if (r.code !== 0) {
@@ -1236,9 +1389,14 @@ export const ReviewMode = {
           const where = payload.comments.map((c) => `${c.path}:${c.start_line ? `${c.start_line}–` : ""}${c.line}`).join(", ");
           throw new Error(`${msg || "gh api failed"}${/diff|line|position/i.test(msg) && where ? ` (line comments: ${where})` : ""}`);
         }
-        const url = JSON.parse(r.stdout).html_url ?? pr.url;
-        this.posted = { url }; this.note = `Review posted: ${url}`;
-        done(cx);
+        const review = JSON.parse(r.stdout), url = review.html_url ?? pr.url;
+        // The posted line comments' ids (by path, line and text), so their GitHub replies land in their threads.
+        const mine = review.id ? await sh('gh api "$0" --jq ".[] | {id, path, line, body, url: .html_url}"', `repos/${m[1]}/pulls/${m[2]}/reviews/${review.id}/comments`).catch(() => null) : null;
+        const got = (mine?.stdout ?? "").split("\n").filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean), map = {};
+        for (const c of TH.withIds(comments)) { const g = got.find((x) => x.path === c.file && x.line === c.end && x.body === c.text.trim()); if (g) map[c.id] = { ghId: g.id, url: g.url }; }
+        this.posted = { url, items: TH.postedItems(payload) }; this.note = `Review posted: ${url}`;
+        done(cx, { route: "github", gh: map });
+        this.loadGhComments(cx);
       } catch (e) { this.note = `Not posted: ${String(e).replace(/^Error: /, "")}`; }
       finally { this.sending = false; cx.notify(); }
     });
@@ -1250,7 +1408,7 @@ export const ReviewMode = {
     const pr = this.prSel, m = /github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/.exec(pr?.url ?? "");
     if (!m || this.cfg?.dryRun) return; // dry run: no network (the demo)
     const env = this.ctxEnv(this.ctxId()), argv = [...env, "gh", "api", "--paginate", `repos/${m[1]}/pulls/${m[2]}/comments?per_page=100`,
-      "--jq", ".[] | select(.line != null) | {id, path, line, side, user: .user.login, body, at: .created_at}"];
+      "--jq", ".[] | select(.line != null) | {id, path, line, side, user: .user.login, body, at: .created_at, in_reply_to_id, url: .html_url}"];
     cx.spawn(async (cx) => {
       const r = await exec(argv[0], argv.slice(1), { timeout: 30000 }).catch(() => null);
       if (r?.code !== 0 || this.prSel?.url !== pr.url) return;
@@ -1265,6 +1423,8 @@ export const ReviewMode = {
     if (route === "blur") { this.fh.focus(); cx.notify(); return cx.stop_propagation(); }
     if (route === "typing") {
       if (this.typing === "draft" && e.keystroke === "cmd-enter") this.addDraft(cx);
+      else if (e.key === "escape" && this.typing === "send") { this.sendP = null; this.fh.focus(); cx.notify(); }
+      else if (e.key === "escape" && this.typing === "item") { this.editItem = null; this.fh.focus(); cx.notify(); }
       else if (e.key === "escape" && this.typing === "summary") { this.finishOpen = false; this.fh.focus(); cx.notify(); }
       else if (e.key === "escape") this.closeComposer(cx);
       else return;
@@ -1280,7 +1440,7 @@ export const ReviewMode = {
     else if (k === "shift-/" || e.key === "?") this.command("keys", cx);
     else if (k === "a" || k === "x") { const s = this.focusedSug(); if (s) (k === "a" ? this.takeSug(s, cx) : this.dropSug(s, cx)); }
     else if (k === "s" || k === "f") this.tab = k === "s" ? "steps" : "files";
-    else if (k === "escape") { if (this.finishOpen) this.finishOpen = false; else if (this.composing) this.closeComposer(cx); else if (this.defFile) this.defFile = null; else if (this.defAt) this.defAt = null; else if (this.archFocus || this.blastFocus || this.askHl) this.archFocus = this.blastFocus = this.askHl = null; else leave(); }
+    else if (k === "escape") { if (this.sendP) this.sendP = null; else if (this.replyTo) this.replyTo = null; else if (this.finishOpen) this.finishOpen = false; else if (this.composing) this.closeComposer(cx); else if (this.defFile) this.defFile = null; else if (this.defAt) this.defAt = null; else if (this.archFocus || this.blastFocus || this.askHl) this.archFocus = this.blastFocus = this.askHl = null; else leave(); }
     else return;
     cx.stop_propagation(); cx.notify();
   },
@@ -1288,39 +1448,64 @@ export const ReviewMode = {
   // ---- render: Finish your review (opened from the bar's button: the "finish" command)
 
   finishPopover(t) {
-    const n = this.comments.length, routes = this.routes(), route = this.routeNow(), gh = route === "github";
-    const plan = gh ? ghReview({ comments: this.comments, event: this.event, commit: this.head, lines: this.diffLines ?? new Map() }) : null;
-    const repo = /github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/.exec(this.prSel?.url ?? "");
+    const all = TH.withIds(this.comments), n = all.length, routes = this.routes(), route = this.routeNow(), gh = route === "github";
+    const plan = gh ? this.ghPlanNow() : null, inline = new Set((plan?.picked ?? []).filter((c) => inDiff(this.diffLines ?? new Map(), c)).map((c) => c.id));
     const label = { comment: "Comment", approve: "Approve", request_changes: "Request changes" };
-    const radio = (k, what) => h_flex().id(`rv-ev-${k}`).gap(10).px(6).py(5).rounded(6).items_start().cursor_pointer().hover((s) => s.bg(t.hover))
+    const radio = (k, what) => h_flex().id(`rv-ev-${k}`).gap(10).px(6).py(4).rounded(6).items_start().cursor_pointer().hover((s) => s.bg(t.hover))
       .on_click((_e, cx) => { this.event = k; cx.notify(); })
       .child(div().w(16).flex_none().text_color(this.event === k ? t.accent : t.muted).child(this.event === k ? "◉" : "○"))
       .child(v_flex().flex_1().min_w(0).child(div().font_semibold().child(label[k])).child(div().text_size(12).text_color(t.muted).whitespace_normal().child(what)));
-    const where = gh ? plan.payload.comments.map((c) => `${c.path} ${c.start_line ? `lines ${c.start_line}–${c.line}` : `line ${c.line}`}${c.side === "LEFT" ? " (old)" : ""}`) : this.comments.map((c) => `${c.file} ${uiLine(c)}`);
-    const ready = !this.sending && (gh || n > 0); // GitHub: a summary or a verdict alone is a review too
-    return v_flex().id("rv-finish").absolute().top(8).right(12).w(460).p(14).gap(10).rounded(10).border_1().border_color(t.border).bg(t.popover).shadow_lg()
+    const tick = (id, on, click) => div().id(id).w(18).flex_none().text_size(14).cursor_pointer().text_color(on ? t.accent : t.muted).on_click((_e, cx) => { click(); cx.notify(); }).child(on ? "☑" : "☐");
+    const origin = (c) => (c.from === "ki" ? "from an AI suggestion" : c.from ? `from a ${REVIEWERS[c.from]?.[0] ?? c.from} finding` : null);
+    // Each item that can go out, ticked or not; GitHub: the summary too, and Edit in place.
+    const item = (c) => {
+      const on = !gh || !this.off.has(c.id), editing = this.editItem === c.id;
+      return h_flex().id(`rv-fi-${c.id}`).gap(8).items_start().p(6).rounded(6).bg(on ? t.surface : t.background)
+        .when(gh, (e) => e.child(tick(`rv-fit-${c.id}`, on, () => { if (on) this.off.add(c.id); else this.off.delete(c.id); })))
+        .child(v_flex().flex_1().min_w(0).gap(3)
+          .child(h_flex().gap(6).items_center().text_size(12)
+            .child(div().flex_1().min_w(0).truncate().font_semibold().text_color(on ? t.foreground : t.muted).child(`${c.file} ${uiLine(c)}`))
+            .when(gh, (e) => e.child(div().flex_none().text_color(inline.has(c.id) || !on ? t.muted : t.ansi3).child(inDiff(this.diffLines ?? new Map(), c) ? "line comment" : "goes into the body")))
+            .when(!editing, (e) => e.child(pill(`rv-fie-${c.id}`, t, "Edit", (_e, cx) => { this.editItem = c.id; this.itemEdit.set_value(c.text); cx.timer.after(0, () => this.itemEdit.focus()); cx.notify(); }))))
+          .when(Boolean(origin(c)), (e) => e.child(div().text_size(11.5).text_color(t.ansi5).child(origin(c))))
+          .child(editing
+            ? v_flex().gap(6).child(div().h(90).px(8).py(4).rounded(6).border_1().border_color(t.accent).bg(t.background).cursor_text().on_click(() => this.itemEdit.focus())
+              .child(Textarea.new(this.itemEdit).size_full().text_size(13).text_color(t.foreground)))
+              .child(h_flex().gap(6).child(pill(`rv-fis-${c.id}`, t, "Save", (_e, cx) => { const text = this.itemEdit.value().trim(); if (text) { this.comments = all.map((x) => (x.id === c.id ? { ...x, text } : x)); this.persist(cx); } this.editItem = null; cx.notify(); }, false, t.foreground))
+                .child(pill(`rv-fic-${c.id}`, t, "Cancel", (_e, cx) => { this.editItem = null; cx.notify(); })))
+            : div().text_size(12.5).line_height(1.45).whitespace_normal().text_color(on ? t.foreground : t.muted).child(c.text)));
+    };
+    const summary = this.summary.value().trim(), repo = plan ? /github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/.exec(this.prSel?.url ?? "") : null;
+    const ready = !this.sending && (gh ? plan.ready : n > 0);
+    return v_flex().id("rv-finish").absolute().top(8).right(12).w(520).max_h(760).p(14).gap(10).rounded(10).border_1().border_color(t.border).bg(t.popover).shadow_lg()
       .text_size(13).text_color(t.foreground).on_mouse_down("left", (_e, cx) => cx.stop_propagation())
       .child(h_flex().items_center().child(div().flex_1().font_semibold().text_size(14).child("Finish your review"))
         .child(pill("rv-finish-x", t, "✕", (_e, cx) => { this.finishOpen = false; this.fh.focus(); cx.notify(); })))
-      .child(div().id("rv-summary").h(96).px(10).py(6).rounded(6).border_1().border_color(this.typing === "summary" ? t.accent : t.border).bg(t.background).cursor_text()
-        .on_click(() => this.summary.focus()).child(Textarea.new(this.summary).size_full().text_size(13.5).text_color(t.foreground)))
-      .child(v_flex().gap(2)
-        .child(radio("comment", "Submit general feedback without explicit approval."))
-        .child(radio("approve", "Give your approval to merge these changes."))
-        .child(radio("request_changes", "Submit feedback that must be addressed before merging.")))
       .when(routes.length > 1, (e) => e.child(h_flex().gap(6).items_center().child(div().text_size(12).text_color(t.muted).child("Send to"))
         .child(pill("rv-route-github", t, "GitHub", (_e, cx) => { this.route = "github"; cx.notify(); }, route === "github"))
         .child(pill("rv-route-agent", t, "Agent session", (_e, cx) => { this.route = "agent"; cx.notify(); }, route === "agent"))))
-      // What the click sends, before it is sent.
-      .child(v_flex().gap(3).p(8).rounded(6).bg(t.surface).text_size(12)
-        .child(div().text_color(t.foreground).whitespace_normal().child(gh
-          ? `Posts one review to ${repo ? `${repo[1]}#${repo[2]}` : "GitHub"}: ${label[this.event]}, ${plan.payload.comments.length} line ${plan.payload.comments.length === 1 ? "comment" : "comments"}${plan.outside.length ? `, ${plan.outside.length} in the body` : ""}.`
-          : `Sends ${n} ${n === 1 ? "comment" : "comments"} (${label[this.event]}) to the PR's agent session.`))
-        .children(where.slice(0, 6).map((w) => div().truncate().text_color(t.muted).child(`· ${w}`)))
-        .when(where.length > 6, (e) => e.child(div().text_color(t.muted).child(`… and ${where.length - 6} more`)))
-        .when(gh && plan.outside.length > 0, (e) => e.children(plan.outside.slice(0, 3).map((c) => div().truncate().text_color(t.ansi3).child(`· ${c.file} ${uiLine(c) || "(no line)"}: not in the diff, goes into the body`)))))
-      .when(Boolean(this.posted?.url), (e) => e.child(h_flex().gap(8).items_center().text_size(12).text_color(t.ansi2)
-        .child(div().flex_1().min_w(0).truncate().child(`Posted: ${this.posted.url}`)).child(pill("rv-posted-open", t, "Open", () => openUrl(this.posted.url)))))
+      .child(div().text_size(12.5).text_color(t.muted).child(gh ? `Target: ${repo ? `${repo[1]}#${repo[2]}` : "GitHub"} on GitHub` : `Target: ${this.sendAgent().label}`))
+      .child(div().id("rv-summary").h(76).px(10).py(6).rounded(6).border_1().border_color(this.typing === "summary" ? t.accent : t.border).bg(t.background).cursor_text()
+        .on_click(() => this.summary.focus()).child(Textarea.new(this.summary).size_full().text_size(13.5).text_color(t.foreground)))
+      .child(v_flex().gap(1)
+        .child(radio("comment", "Submit general feedback without explicit approval."))
+        .child(radio("approve", "Give your approval to merge these changes."))
+        .child(radio("request_changes", "Submit feedback that must be addressed before merging.")))
+      // Exactly what goes out: nothing else (AI suggestions, findings, the analysis) unless it was added as a comment.
+      .child(div().text_size(11.5).font_semibold().text_color(t.muted).child(gh ? "WHAT IS POSTED (only what is ticked)" : `WHAT IS SENT · ${n} ${n === 1 ? "comment" : "comments"}`))
+      .child(div().flex_1().min_h(0).relative().max_h(330)
+        .child(v_flex().id("rv-finish-items").gap(4).max_h(330).overflow_y_scroll()
+          .when(gh, (e) => e.child(h_flex().id("rv-fi-summary").gap(8).items_start().p(6).rounded(6).bg(this.summaryOn && summary ? t.surface : t.background)
+            .child(tick("rv-fit-summary", this.summaryOn, () => { this.summaryOn = !this.summaryOn; }))
+            .child(v_flex().flex_1().min_w(0).gap(2).child(div().text_size(12).font_semibold().child("Review body (the summary above)"))
+              .child(div().text_size(12.5).whitespace_normal().text_color(summary && this.summaryOn ? t.foreground : t.muted).child(summary || "(empty)")))))
+          .children(all.map(item))
+          .when(!n, (e) => e.child(div().p(6).text_size(12.5).text_color(t.muted).child("No pending comments. AI suggestions and findings go out only after you add them as comments.")))))
+      .when(Boolean(this.posted?.url || this.posted?.dry), (e) => e.child(v_flex().gap(2).p(8).rounded(6).bg(t.surface).text_size(12)
+        .child(h_flex().gap(8).items_center().text_color(this.posted.dry ? t.muted : t.ansi2)
+          .child(div().flex_1().min_w(0).truncate().child(this.posted.dry ? "Dry run: this is what would have been posted" : `Posted: ${this.posted.url}`))
+          .when(Boolean(this.posted.url), (x) => x.child(pill("rv-posted-open", t, "Open", () => openUrl(this.posted.url)))))
+        .children((this.posted.items ?? []).map((w) => div().truncate().text_color(t.muted).child(`· ${w}`)))))
       .when(Boolean(this.note) && /^(Not posted|Not sent|Dry run|Nothing)/.test(this.note ?? ""), (e) => e.child(div().text_size(12).whitespace_normal()
         .text_color(/^Dry run/.test(this.note) ? t.muted : t.ansi1).child(this.note)))
       .child(h_flex().gap(8).items_center()
@@ -1328,7 +1513,39 @@ export const ReviewMode = {
         .child(div().flex_1())
         .child(div().id("rv-submit").px(14).h(32).flex().items_center().rounded(8).text_size(13).font_semibold().bg(ready ? GH_GREEN : t.raised)
           .text_color(ready ? "#ffffff" : t.muted).when(ready, (e) => e.cursor_pointer())
-          .on_click((_e, cx) => { if (ready) this.submitReview(cx); }).child(this.sending ? "Submitting…" : "Submit review")));
+          .on_click((_e, cx) => { if (ready) this.submitReview(cx); }).child(this.sending ? "Submitting…" : gh ? plan.label : "Send to agent…")));
+  },
+
+  // The preview before anything is typed into an agent's session: who gets it, the reviewer's words apart, the exact
+  // text (editable); only "Send to agent" sends.
+  sendPopover(t) {
+    const p = this.sendP;
+    return v_flex().id("rv-send").absolute().top(8).right(12).w(600).p(14).gap(10).rounded(10).border_1().border_color(t.border).bg(t.popover).shadow_lg()
+      .text_size(13).text_color(t.foreground).on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .child(h_flex().items_center().child(div().flex_1().font_semibold().text_size(14).child(`${p.what}: send to agent`))
+        .child(pill("rv-send-x", t, "✕", (_e, cx) => { this.sendP = null; this.fh.focus(); cx.notify(); })))
+      .child(h_flex().gap(6).items_center().text_size(12.5).child(div().text_color(t.muted).child("To")).child(div().font_semibold().child(p.agent)))
+      .when(Boolean(p.own), (e) => e.child(v_flex().gap(4).child(div().text_size(11.5).font_semibold().text_color(t.muted).child("YOUR WORDS"))
+        .child(div().max_h(110).overflow_hidden().p(8).rounded(6).border_l(3).border_color(t.accent).bg(t.surface).text_size(12.5).line_height(1.45).whitespace_normal().child(p.own))))
+      .child(div().text_size(11.5).font_semibold().text_color(t.muted).child("EXACT TEXT SENT · your words plus generated instructions, editable"))
+      .child(div().id("rv-send-text").h(240).px(10).py(6).rounded(6).border_1().border_color(this.typing === "send" ? t.accent : t.border).bg(t.background).cursor_text()
+        .on_click(() => this.sendText.focus()).child(Textarea.new(this.sendText).size_full().text_size(12.5).text_color(t.foreground)))
+      .child(h_flex().gap(8).items_center().child(div().flex_1())
+        .child(pill("rv-send-cancel", t, "Cancel", (_e, cx) => { this.sendP = null; this.fh.focus(); cx.notify(); }))
+        .child(div().id("rv-send-go").px(14).h(32).flex().items_center().rounded(8).text_size(13).font_semibold().bg(t.solid).text_color(t.solid_foreground).cursor_pointer()
+          .on_click((_e, cx) => this.sendConfirmed(cx)).child(this.sending ? "Sending…" : "Send to agent")));
+  },
+
+  // "Reply" in a thread: the follow-up's input under the diff (Enter: the preview).
+  replyBar(t) {
+    const th = this.threads().find((x) => x.id === this.replyTo);
+    if (!th) return div();
+    return h_flex().flex_none().px(14).py(8).gap(8).items_center().border_t(1).border_color(t.border).bg(t.surface)
+      .child(div().flex_none().text_size(12.5).text_color(t.muted).child(`Reply on ${th.file.split("/").pop()} ${uiLine(th)}`))
+      .child(div().id("rv-reply-in").flex_1().min_w(0).h(30).px(8).flex().items_center().rounded(6).border_1().border_color(t.accent).bg(t.background).cursor_text()
+        .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Input.new(this.replyIn).h_full().text_size(13).text_color(t.foreground)))
+      .child(pill("rv-reply-go", t, "Send to agent…", (_e, cx) => this.followup(cx), false, t.foreground))
+      .child(pill("rv-reply-x", t, "Cancel", (_e, cx) => { this.replyTo = null; cx.notify(); }));
   },
 
   // ---- render: the bar
@@ -1868,7 +2085,7 @@ export const ReviewMode = {
         .when(Boolean(this.find.status[x.id]?.verify), (e) => { const v = this.find.status[x.id].verify; return e.child(div().text_size(12).whitespace_normal()
           .text_color(t[{ fixed: "ansi2", not_fixed: "ansi1" }[v.result] ?? "ansi3"]).child(`Verified ${String(v.head).slice(0, 7)}: ${v.result.replace("_", " ")} — ${v.reason}`)); })
         .child(h_flex().flex_wrap().gap(6)
-          .child(pill(`rv-fcm-${x.id}`, t, "Comment", (_e, cx) => this.findingComment(x, cx)))
+          .child(pill(`rv-fcm-${x.id}`, t, "Add as comment", (_e, cx) => this.findingComment(x, cx)))
           .child(pill(`rv-fdi-${x.id}`, t, "Discuss in chat", (_e, cx) => this.discuss(x, cx)))
           .child(pill(`rv-ffx-${x.id}`, t, "Fix", (_e, cx) => this.fix([x], cx), false, t.foreground))
           .child(pill(`rv-fdm-${x.id}`, t, "Dismiss", (_e, cx) => this.setFinding(x, "dismissed", cx))));
@@ -1937,6 +2154,8 @@ export const ReviewMode = {
     if (it.t === "sug") return 44 + 21 * this.lines(it.s.reason);
     if (it.t === "comment") return 44 + 21 * this.lines(it.c.text);
     if (it.t === "gh") return 44 + 21 * Math.min(6, this.lines(it.g.body));
+    if (it.t === "thread") { const v = this.threadOfView(it.th); return v.collapsed ? 40 : 52 + 21 * this.lines(it.th.text) + v.entries.reduce((n, e) => n + 32 + 20 * Math.min(8, this.lines(e.text)), 0); }
+    if (it.t === "tact") return ACT;
     if (it.t === "compose") return COMPOSE;
     if (it.t === "composeact") return ACT + 4;
     if (it.t === "sugact" || it.t === "cact" || it.t === "fact") return ACT;
@@ -1995,7 +2214,7 @@ export const ReviewMode = {
       const card = (e) => e.border_l(4).border_r(1).border_color(c).bg(c + "12");
       if (it.t === "fact") {
         return div().w_full().h(ACT).pl(GUTTER).pr(16).pb(6).child(card(h_flex()).size_full().px(12).gap(BTN_GAP).items_center().border_b(1)
-          .child(button(t, "Comment", t.border, t.foreground)).child(button(t, "Discuss in chat", t.border, t.foreground))
+          .child(button(t, "Add as comment", t.border, t.foreground)).child(button(t, "Discuss in chat", t.border, t.foreground))
           .child(button(t, "Fix", c, t.foreground)).child(button(t, "Dismiss", t.border, t.muted)));
       }
       return div().w_full().h(this.sizeOf(it)).pl(GUTTER).pr(16).pt(6).child(card(v_flex()).size_full().px(12).pt(8).gap(4).border_t(1).text_size(13.5)
@@ -2018,6 +2237,35 @@ export const ReviewMode = {
           .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(`${time}${c.from === "ki" ? " · from AI suggestion" : ""}${it.loose ? ` · ${uiLine(c)}, not shown` : ""}`)))
         .child(div().flex_1().min_h(0).overflow_hidden().line_height(1.55).whitespace_normal().text_color(t.foreground).child(c.text)));
     }
+    if (it.t === "thread" || it.t === "tact") {
+      const th = it.th, v = this.threadOfView(th), c = t[THREAD_COLOR[v.status]] ?? t.border;
+      const card = (e) => e.border_l(4).border_r(1).border_color(c).bg(t.surface);
+      if (it.t === "tact") {
+        return div().w_full().h(ACT).pl(GUTTER).pr(16).pb(6).child(card(h_flex()).size_full().px(12).gap(BTN_GAP).items_center().border_b(1)
+          .children(this.threadButtons(th, v).map((b) => button(t, b.label, b.primary ? c : t.border, t.foreground))));
+      }
+      if (v.collapsed) {
+        return div().w_full().h(40).pl(GUTTER).pr(16).pt(6).child(card(h_flex()).size_full().px(12).gap(8).items_center().border_t(1).border_b(1).text_size(12.5)
+          .child(div().flex_none().font_semibold().text_color(t.ansi2).child(`✓ Fixed${v.fixedIn ? ` in ${v.fixedIn.slice(0, 7)}` : ""}`))
+          .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(plain(th.text))).child(div().flex_none().text_color(t.muted).child("▸ show thread")));
+      }
+      const agent = th.agent?.split(" · ")[0] || "Agent", time = new Date(th.sentAt).toTimeString().slice(0, 5);
+      const where = th.route === "github" ? (th.dry ? "Dry run: not posted" : `Posted to GitHub · ${time}`) : `Sent to agent · ${time}`;
+      const avatar = (name, mine) => div().w(18).h(18).flex_none().rounded_full().flex().items_center().justify_center().bg(mine ? t.raised : t.accent + "33")
+        .text_size(10.5).font_semibold().text_color(t.foreground).child(String(name)[0]?.toUpperCase() ?? "?");
+      const entry = (e) => v_flex().gap(2).pt(6).pl(10).border_l(2).border_color(t.border)
+        .child(h_flex().h(18).gap(6).items_center().text_size(12)
+          .child(avatar(e.who === "agent" ? agent : e.who, e.who === "you")).child(div().font_semibold().child(e.who === "you" ? "You" : e.who === "agent" ? agent : e.who))
+          .when(Boolean(e.status), (x) => x.child(badge(t, e.status, t[THREAD_COLOR[e.status]] ?? t.muted)))
+          .when(Boolean(e.commit), (x) => x.child(div().text_color(t.muted).child(`commit ${String(e.commit).slice(0, 7)}`))))
+        .child(div().max_h(160).overflow_hidden().line_height(1.5).whitespace_normal().text_size(13).text_color(t.foreground).child(plain(e.text)));
+      return div().w_full().h(this.sizeOf(it)).pl(GUTTER).pr(16).pt(6).child(card(v_flex()).size_full().px(12).pt(8).gap(4).border_t(1).text_size(13.5)
+        .child(h_flex().h(18).gap(8).items_center().text_size(12).child(avatar("You", true)).child(div().font_semibold().child("You"))
+          .child(badge(t, where, th.route === "github" ? t.ansi4 : t.accent)).when(v.status !== "sent" && v.status !== "posted", (x) => x.child(badge(t, v.status, c)))
+          .when(v.status === "fixed", (x) => x.child(div().text_color(t.muted).child("▾ fold"))))
+        .child(div().line_height(1.55).whitespace_normal().text_color(t.foreground).child(th.text))
+        .children(v.entries.map(entry)));
+    }
     if (it.t === "gh") {
       const g = it.g;
       return div().w_full().h(this.sizeOf(it)).pl(GUTTER).pr(16).pt(6).child(v_flex().size_full().px(12).pt(8).gap(6).border_l(4).border_r(1).border_t(1).border_b(1)
@@ -2028,7 +2276,8 @@ export const ReviewMode = {
     }
     if (it.t === "compose") {
       const c = this.editing, a = c ?? this.selAnchor(), out = Boolean(a) && this.routeNow() === "github" && !inDiff(this.diffLines ?? new Map(), { file: this.fsel?.path, ...a });
-      const now = this.routeNow() === "github" ? "Add single comment posts to GitHub now" : "Add single comment sends it to the agent now";
+      const now = this.routeNow() === "github" ? (shared("review.hintPostNow") ? "Post now: one comment to GitHub at once" : "Tip: Post now to GitHub posts this one comment at once; Start a review collects them for one review")
+        : "Send to agent…: shows what goes to the agent first";
       return div().w_full().h(COMPOSE).pl(GUTTER).pr(16).pt(6).child(v_flex().size_full().px(12).pt(8).pb(4).gap(6).border_l(4).border_r(1).border_t(1)
         .border_color(t.accent).bg(t.surface).rounded_tl(4).rounded_tr(4)
         .child(h_flex().h(18).gap(8).items_center().text_size(12)
@@ -2183,6 +2432,8 @@ export const ReviewMode = {
             .child(Scrollbar.vertical(listId).absolute().inset_0())))
           .when(Boolean(sug), (e) => e.child(div().flex_none().p(10).border_t(1).border_color(t.border).child(this.sugCard(sug, t, false))))
           .when(Boolean(this.note), (e) => e.child(div().flex_none().px(14).py(8).border_t(1).border_color(t.border).text_size(12.5).text_color(/Could not|Not sent|Not posted|Select a line/.test(this.note ?? "") ? t.ansi1 : t.muted).child(this.note)))
-          .when(this.finishOpen, (e) => e.child(this.finishPopover(t)))));
+          .when(Boolean(this.replyTo), (e) => e.child(this.replyBar(t)))
+          .when(this.finishOpen && !this.sendP, (e) => e.child(this.finishPopover(t)))
+          .when(Boolean(this.sendP), (e) => e.child(this.sendPopover(t)))));
   },
 };
