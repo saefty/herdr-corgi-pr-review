@@ -4,11 +4,18 @@
 import { div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { levels } from "./pr.js";
-import { archLayout, archFocus, stateLayout, transitionText, ARCH } from "./arch.js";
+import { archLayout, archFocus, stateLayout, transitionText, sourceStyle, hasSources, SPEC_TIP, ARCH } from "./arch.js";
 
 export const STATUS_COLOR = { new: "ansi2", added: "ansi2", changed: "accent", unchanged: "muted", removed: "ansi1" };
 export const SEVERITY_COLOR = { critical: "ansi1", high: "ansi1", medium: "ansi3", low: "ansi4", minimal: "ansi2" };
 const GLYPH = { component: "◧", data: "⛁", service: "⚙", "api·service": "⇄", api: "⇄", context: "</>", queue: "☰", job: "⏱", ui: "▣" };
+
+// A small "spec" tag: the element is only in the PR description/ticket, not found in the diff.
+export const specTag = (t, id) => div().id(id).flex_none().px(4).rounded(4).border_1().border_dashed().border_color(t.ansi5).text_size(10).text_color(t.ansi5).tooltip(SPEC_TIP).child("spec");
+
+// The sources legend: Implemented (solid) · Existing (grey) · Spec only (dashed).
+export const sourceLegend = (t) => h_flex().gap(10).text_size(11.5).text_color(t.muted).children([["Implemented", t.accent, false], ["Existing", t.muted, false], ["Spec only", t.ansi5, true]]
+  .map(([label, c, dashed]) => h_flex().gap(4).items_center().child(div().w(16).h(0).border_t(2).border_color(c).when(dashed, (e) => e.border_dashed())).child(label)));
 
 export const chip = (t, label, color, solid = false) => div().flex_none().px(6).py(1).rounded(5).border_1().border_color(color)
   .when(solid, (e) => e.bg(color + "26")).text_size(11).font_semibold().text_color(color).child(label);
@@ -56,9 +63,10 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
   const Fc = archFocus(L, opts.focus), F = Fc ?? archFocus(L, opts.hover), fade = Fc ? 0.25 : 0.55;
   const hlP = L.paths.find((p) => p.num === opts.hl), hlNodes = new Set(hlP ? [...hlP.from, hlP.to] : []);
   const dimP = (p) => Boolean(F) && !F.paths.has(p.num), dimN = (n) => Boolean(F) && !F.nodes.has(n.id);
-  const color = (p) => (opts.hl === p.num ? t.accent : p.status === "new" || p.status === "changed" ? t.accent : t.muted);
+  const color = (p) => (opts.hl === p.num ? t.accent : sourceStyle(p.source).tone === "muted" ? t.muted : p.status === "new" || p.status === "changed" ? t.accent : t.muted);
   const W = (p) => (opts.hl === p.num ? 2.5 : 1.5);
   const dim = (el, on) => (on ? el.opacity(fade) : el);
+  const tipOf = (p) => [p.label, sourceStyle(p.source).tip, p.evidence].filter(Boolean).join("\n");
   const hop = ARCH.HOP, els = [];
   // Dimmed paths first, the highlighted one last (fans share their trunk: the brightest copy ends on top).
   const order = L.paths.map((p, i) => [p, i]).sort(([a], [b]) => (opts.hl === a.num) - (opts.hl === b.num) || dimP(b) - dimP(a));
@@ -87,11 +95,12 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
   }
   const badges = L.paths.flatMap((p, i) => (p.badge ? [dim(div().id(`${id}-b${i}`).absolute().left(p.badge.x - ARCH.BADGE / 2).top(p.badge.y - ARCH.BADGE / 2).w(ARCH.BADGE).h(ARCH.BADGE)
     .flex().items_center().justify_center().rounded_full().border_1().border_color(color(p)).bg(opts.hl === p.num ? t.accent + "33" : t.background)
-    .text_size(11).text_color(t.foreground).tooltip(String(p.label || "")).child(String(p.num))
-    .when(Boolean(opts.onHl), (e) => e.on_hover((on, cx) => opts.onHl(on ? p.num : null, cx))), dimP(p))] : []));
+    .text_size(11).text_color(t.foreground).tooltip(tipOf(p)).child(String(p.num))
+    .when(Boolean(opts.onHl), (e) => e.on_hover((on, cx) => opts.onHl(on ? p.num : null, cx)))
+    .when(Boolean(p.evidence && opts.onJump), (e) => e.cursor_pointer().on_click((_e, cx) => { opts.onJump(p.evidence, cx); cx.stop_propagation(); })), dimP(p))] : []));
   const chips = L.paths.flatMap((p, i) => (p.chip ? [dim(div().id(`${id}-c${i}`).absolute().left(p.chip.x).top(p.chip.y).w(p.chip.w).h(p.chip.h).px(5)
-    .flex().items_center().rounded(5).border_1().border_color(color(p)).bg(opts.hl === p.num ? t.accent + "33" : t.background)
-    .text_size(10.5).text_color(t.foreground).tooltip(`${p.label || ""}${p.label ? "\n" : ""}Not drawn as a line (it would skip a column or go back): hover to find the target, click to focus it.`)
+    .flex().items_center().rounded(5).border_1().border_color(color(p)).when(p.dashed, (e) => e.border_dashed()).bg(opts.hl === p.num ? t.accent + "33" : t.background)
+    .text_size(10.5).text_color(t.foreground).tooltip(`${tipOf(p)}${p.label ? "\n" : ""}Not drawn as a line (it would skip a column or go back): hover to find the target, click to focus it.`)
     .child(div().min_w(0).truncate().child(p.chip.text))
     .when(Boolean(opts.onHl), (e) => e.on_hover((on, cx) => opts.onHl(on ? p.num : null, cx)))
     .when(Boolean(opts.onFocus), (e) => e.cursor_pointer().on_click((_e, cx) => { opts.onFocus(p.to, cx); cx.stop_propagation(); })), dimP(p))] : []));
@@ -100,19 +109,21 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
       .child(div().flex_1().min_w(0).truncate().font_semibold().text_color(t.foreground).child(g.label ?? ""))
       .child(div().flex_none().text_color(t.muted).child(g.kind ?? ""))));
   const nodes = L.nodes.map((n, i) => {
-    const c = t[STATUS_COLOR[n.status] ?? "muted"], live = n.status && n.status !== "unchanged", lit = hlNodes.has(n.id) || opts.focus === n.id;
-    const open = Boolean(onNode && (n.at || n.file));
+    const st = sourceStyle(n.source), c = st.tone === "muted" ? t.muted : t[STATUS_COLOR[n.status] ?? "muted"];
+    const live = st.tone !== "muted" && n.status && n.status !== "unchanged", lit = hlNodes.has(n.id) || opts.focus === n.id;
+    const open = Boolean(onNode && (n.at || n.file)), tip = [n.cut ? `${n.label ?? n.id}\n\n${n.description ?? ""}` : "", st.tip, n.evidence].filter(Boolean).join("\n\n");
     return dim(v_flex().id(`${id}-n${i}`).absolute().left(n.x).top(n.y).w(n.w).h(n.h).px(10).py(8).gap(3).rounded(8).border_1()
-      .border_color(lit ? t.accent : live ? c : t.border).when(live, (e) => e.border_l(4)).when(lit, (e) => e.border_2())
+      .border_color(lit ? t.accent : live ? c : t.border).when(live && !st.dashed, (e) => e.border_l(4)).when(lit, (e) => e.border_2()).when(st.dashed, (e) => e.border_dashed())
       .bg(lit ? t.accent + "1a" : n.status === "new" ? t.ansi2 + "14" : t.surface)
-      .when(Boolean(n.cut), (e) => e.tooltip(`${n.label ?? n.id}\n\n${n.description ?? ""}`))
+      .when(Boolean(tip), (e) => e.tooltip(tip))
       .when(Boolean(opts.onFocus), (e) => e.cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => opts.onFocus(opts.focus === n.id ? null : n.id, cx)))
       .when(!opts.onFocus && open, (e) => e.cursor_pointer().hover((s) => s.bg(t.hover)).on_click((ev, cx) => onNode(n, ev, cx)))
       .when(Boolean(opts.onHover), (e) => e.on_hover((on, cx) => opts.onHover(on ? n.id : null, cx)))
       .child(h_flex().gap(6).items_start().text_size(12.5)
         .child(div().flex_none().h(17).text_color(t.muted).child(GLYPH[n.type] ?? "◇"))
         .child(div().flex_1().min_w(0).h(n.titleLines * 17).overflow_hidden().whitespace_normal().line_height(1.35).font_semibold().child(n.title))
-        .when(n.spots > 0, (e) => e.child(div().flex_none().text_size(11).text_color(t.muted).child(`</> ${n.spots}`))))
+        .when(n.spots > 0, (e) => e.child(div().flex_none().text_size(11).text_color(t.muted).child(`</> ${n.spots}`)))
+        .when(Boolean(st.chip), (e) => e.child(specTag(t, `${id}-sp${i}`))))
       .when(n.descLines > 0, (e) => e.child(div().flex_none().h(n.descLines * 15).overflow_hidden().text_size(11).line_height(1.35).whitespace_normal().text_color(t.muted).child(n.desc)))
       .children(decorate ? decorate(n) : [])
       .child(div().flex_1())
@@ -126,8 +137,9 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
   // line leaves the card.
   const states = L.nodes.flatMap((n, i) => (n.stateTop === null || n.stateTop === undefined ? [] : [dim(v_flex().id(`${id}-s${i}`).absolute()
     .left(n.x + 10).top(n.y + n.stateTop).w(n.w - 14).children(n.states.map((s, k) => h_flex().id(`${id}-s${i}-${k}`).h(ARCH.ROW).gap(6).items_center().text_size(11)
-      .child(div().flex_none().w(14).text_color(s.status === "new" || s.status === "changed" ? t.accent : t.muted).child(STATE_GLYPH[s.type] ?? "▭"))
-      .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(s.name))
+      .child(div().flex_none().w(14).text_color(s.source !== "existing" && (s.status === "new" || s.status === "changed") ? t.accent : t.muted).child(STATE_GLYPH[s.type] ?? "▭"))
+      .child(div().flex_1().min_w(0).truncate().text_color(s.source === "spec" || s.source === "existing" ? t.muted : t.foreground).child(s.name))
+      .when(s.source === "spec", (e) => e.child(specTag(t, `${id}-s${i}-${k}-sp`)))
       .when(Boolean(s.calls), (e) => e.child(div().flex_none().text_color(t.muted).child("→"))))), dimN(n))]));
   return div().id(id).relative().flex_none().w(L.width + 4).h(L.height + 4).children([...groups, ...els, ...nodes, ...states, ...badges, ...chips]);
 }
@@ -146,6 +158,7 @@ export function archLegend(L, t, id, title, opts = {}, big = false) {
       .when(Boolean(opts.onHl), (e) => e.on_hover((on, cx) => opts.onHl(on ? p.num : null, cx)))
       .child(div().flex_none().mt(1).w(18).h(18).flex().items_center().justify_center().rounded_full().border_1()
         .border_color(opts.hl === p.num || p.status ? t.accent : t.muted).text_size(11).text_color(t.foreground).child(String(p.num)))
+      .when(p.source === "spec", (e) => e.child(div().flex_none().mt(2).child(specTag(t, `${id}-sp${p.num}`))))
       .child(div().flex_1().min_w(0).whitespace_normal().text_size(big ? 13 : 12).line_height(1.4)
         .child(`${p.from.map((f) => name.get(f)).join(", ")} → ${name.get(p.to)}${p.label ? `: ${p.label}` : ""}`))));
 }
@@ -162,9 +175,10 @@ export const visualName = (v) => `${KIND_NAME[v.kind] ?? v.kind}${v.title ? `: $
 
 // visuals: [visual]; tab / onTab(k, cx): the shown one when there are tabs.
 export function visualsCard(visuals, t, id, onJump, tab = 0, onTab = null) {
-  if (visuals.length <= 2 || !onTab) return v_flex().gap(8).children(visuals.map((v, k) => visualCard(v, t, `${id}-${k}`, onJump)));
+  const sources = visuals.some(hasSources);
+  if (visuals.length <= 2 || !onTab) return v_flex().gap(8).when(sources, (e) => e.child(sourceLegend(t))).children(visuals.map((v, k) => visualCard(v, t, `${id}-${k}`, onJump)));
   const k = Math.min(tab, visuals.length - 1);
-  return v_flex().gap(6)
+  return v_flex().gap(6).when(sources, (e) => e.child(sourceLegend(t)))
     .child(h_flex().flex_wrap().gap(4).children(visuals.map((v, j) => div().id(`${id}-t${j}`).px(8).h(22).flex().items_center().rounded(5).cursor_pointer().text_size(11.5)
       .bg(j === k ? t.selected : t.chrome).text_color(j === k ? t.foreground : t.muted).max_w(180).child(div().truncate().child(visualName(v)))
       .on_click((_e, cx) => { onTab(j, cx); cx.stop_propagation(); }))))
@@ -172,13 +186,15 @@ export function visualsCard(visuals, t, id, onJump, tab = 0, onTab = null) {
 }
 
 export function visualCard(v, t, id, onJump) {
-  const name = new Map(v.nodes.map((n) => [n.id, n.label ?? n.id])), c = (x) => (x?.changed ? t.accent : t.border);
-  const box = (n, k) => v_flex().id(`${id}-b${k}`).flex_none().max_w(180).px(8).py(4).gap(2).rounded(6).border_1().border_color(c(n)).bg(t.background)
+  const name = new Map(v.nodes.map((n) => [n.id, n.label ?? n.id])), c = (x) => (x?.changed && x?.source !== "existing" ? t.accent : t.border);
+  const box = (n, k) => v_flex().id(`${id}-b${k}`).flex_none().max_w(180).px(8).py(4).gap(2).rounded(6).border_1().border_color(c(n)).when(n.source === "spec", (e) => e.border_dashed().tooltip(SPEC_TIP)).bg(t.background)
     .when(Boolean(n.at && onJump), (e) => e.cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => { onJump(n.at, cx); cx.stop_propagation(); }))
-    .child(div().text_size(12).font_semibold().text_color(n.changed ? t.accent : t.foreground).child(n.label ?? n.id))
+    .child(h_flex().gap(4).items_center().child(div().text_size(12).font_semibold().text_color(n.source === "existing" ? t.muted : n.changed ? t.accent : t.foreground).child(n.label ?? n.id))
+      .when(n.source === "spec", (e) => e.child(specTag(t, `${id}-b${k}-sp`))))
     .when(Boolean(n.note), (e) => e.child(div().px(5).rounded(5).bg(t.accent + "1f").text_size(10.5).text_color(t.foreground).whitespace_normal().child(n.note)));
-  const edge = (e, k, prefix = "") => div().id(`${id}-x${k}`).text_size(11.5).text_color(e.changed ? t.accent : t.muted).whitespace_normal()
-    .child(`${prefix}${name.get(e.from) ?? e.from} → ${name.get(e.to) ?? e.to}${transitionText(e) ? ` · ${transitionText(e)}` : ""}`);
+  const edge = (e, k, prefix = "") => h_flex().id(`${id}-x${k}`).gap(4).items_start().text_size(11.5).text_color(e.changed && e.source !== "existing" ? t.accent : t.muted)
+    .when(e.source === "spec", (x) => x.child(specTag(t, `${id}-x${k}-sp`)))
+    .child(div().flex_1().min_w(0).whitespace_normal().child(`${prefix}${name.get(e.from) ?? e.from} → ${name.get(e.to) ?? e.to}${transitionText(e) ? ` · ${transitionText(e)}` : ""}`));
   const edges = [...(v.edges ?? []), ...(v.transitions ?? [])];
   let body;
   if (v.kind === "sequence") {
@@ -205,21 +221,21 @@ export function visualCard(v, t, id, onJump) {
 // with rounded corners, self-loops on the card's edge, Catch/Retry stubs with chips. Changed in the accent colour.
 const SM_GLYPH = { task: "▭", choice: "◇", parallel: "⫴", map: "⧉", wait: "⏱", pass: "↓", fail: "✕", succeed: "✓" };
 export function stateView(L, t, id, onJump) {
-  const col = (x) => (x.changed ? t.accent : t.muted), els = [];
-  const hline = (k, x1, x2, y, c) => div().id(k).absolute().left(Math.min(x1, x2)).top(y).w(Math.abs(x2 - x1)).h(0).border_t(1.5).border_color(c);
-  const vline = (k, x, y1, y2, c) => div().id(k).absolute().left(x).top(Math.min(y1, y2)).w(0).h(Math.abs(y2 - y1)).border_l(1.5).border_color(c);
+  const col = (x) => (x.changed && x.source !== "existing" ? t.accent : t.muted), els = [];
+  const hline = (k, x1, x2, y, c, d = false) => div().id(k).absolute().left(Math.min(x1, x2)).top(y).w(Math.abs(x2 - x1)).h(0).border_t(1.5).border_color(c).when(d, (e) => e.border_dashed());
+  const vline = (k, x, y1, y2, c, d = false) => div().id(k).absolute().left(x).top(Math.min(y1, y2)).w(0).h(Math.abs(y2 - y1)).border_l(1.5).border_color(c).when(d, (e) => e.border_dashed());
   L.edges.forEach((e, i) => {
     const c = col(e);
-    e.segments.forEach((s, k) => els.push(s.y1 === s.y2 ? hline(`${id}-e${i}-${k}`, s.x1, s.x2, s.y1, c) : vline(`${id}-e${i}-${k}`, s.x1, s.y1, s.y2, c)));
+    e.segments.forEach((s, k) => els.push(s.y1 === s.y2 ? hline(`${id}-e${i}-${k}`, s.x1, s.x2, s.y1, c, e.dashed) : vline(`${id}-e${i}-${k}`, s.x1, s.y1, s.y2, c, e.dashed)));
     els.push(div().id(`${id}-a${i}`).absolute().left(e.arrow.x - 5).top(e.arrow.y - 11).text_size(9).text_color(c).child("▼"));
     if (e.text && e.labelAt) els.push(div().id(`${id}-l${i}`).absolute().left(e.labelAt.x).top(e.labelAt.y).w(e.labelAt.w).h(13).text_size(10.5).text_color(e.changed ? t.accent : t.muted)
-      .tooltip(e.text).child(div().truncate().child(e.text)));
+      .tooltip([e.text, sourceStyle(e.source).tip, e.evidence].filter(Boolean).join("\n")).child(div().truncate().child(e.text)));
   });
   L.backs.forEach((b, i) => {
     const c = col(b), near = Math.min(b.sx, b.tx);
-    els.push(div().id(`${id}-r${i}`).absolute().left(b.laneX).top(b.ty).w(near - b.laneX).h(b.sy - b.ty).border_l(1.5).border_t(1.5).border_b(1.5).rounded_l(8).border_color(c).tooltip(b.text || "back"));
-    if (b.tx > near) els.push(hline(`${id}-rt${i}`, near, b.tx, b.ty, c));
-    if (b.sx > near) els.push(hline(`${id}-rs${i}`, near, b.sx, b.sy, c));
+    els.push(div().id(`${id}-r${i}`).absolute().left(b.laneX).top(b.ty).w(near - b.laneX).h(b.sy - b.ty).border_l(1.5).border_t(1.5).border_b(1.5).rounded_l(8).border_color(c).when(b.dashed, (e) => e.border_dashed()).tooltip(b.text || "back"));
+    if (b.tx > near) els.push(hline(`${id}-rt${i}`, near, b.tx, b.ty, c, b.dashed));
+    if (b.sx > near) els.push(hline(`${id}-rs${i}`, near, b.sx, b.sy, c, b.dashed));
     els.push(div().id(`${id}-ra${i}`).absolute().left(b.tx - 8).top(b.ty - 8).text_size(9).text_color(c).child("▶"));
     if (b.text) els.push(div().id(`${id}-rl${i}`).absolute().left(b.laneX + 4).top(b.ty + 3).max_w(near - b.laneX - 6).text_size(10.5).text_color(b.changed ? t.accent : t.muted).tooltip(b.text).child(div().truncate().child(b.text)));
   });
@@ -227,28 +243,30 @@ export function stateView(L, t, id, onJump) {
     if (n.kind === "start") return div().id(`${id}-n${i}`).absolute().left(n.x + 1).top(n.y + 1).w(12).h(12).rounded_full().bg(t.foreground);
     if (n.kind === "end") return div().id(`${id}-n${i}`).absolute().left(n.x).top(n.y).w(14).h(14).rounded_full().border_1().border_color(t.foreground).flex().items_center().justify_center()
       .child(div().w(8).h(8).rounded_full().bg(t.foreground));
-    const card = v_flex().id(`${id}-n${i}`).absolute().left(n.x).top(n.y).w(n.w).h(n.h).px(8).py(5).gap(1).rounded(6).border_1().border_color(n.changed ? t.accent : t.border).bg(t.background)
+    const st = sourceStyle(n.source), lit = n.changed && st.tone !== "muted";
+    const card = v_flex().id(`${id}-n${i}`).absolute().left(n.x).top(n.y).w(n.w).h(n.h).px(8).py(5).gap(1).rounded(6).border_1().border_color(lit ? t.accent : t.border).when(st.dashed, (e) => e.border_dashed()).bg(t.background)
       .when(Boolean(n.at && onJump), (e) => e.cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => { onJump(n.at, cx); cx.stop_propagation(); }))
       .child(h_flex().gap(5).items_center().text_size(12).child(div().flex_none().text_color(t.muted).child(SM_GLYPH[n.type] ?? "▭"))
-        .child(div().flex_1().min_w(0).truncate().font_semibold().text_color(n.changed ? t.accent : t.foreground).child(n.label ?? n.id))
+        .child(div().flex_1().min_w(0).truncate().font_semibold().text_color(lit ? t.accent : st.tone === "muted" ? t.muted : t.foreground).child(n.label ?? n.id))
+        .when(Boolean(st.chip), (e) => e.child(specTag(t, `${id}-n${i}-sp`)))
         .when(n.kind === "block", (e) => e.child(div().flex_none().text_size(10.5).text_color(t.muted).child(n.type ?? ""))))
       .when(Boolean(n.note) && n.kind !== "block", (e) => e.child(div().truncate().text_size(10.5).text_color(t.muted).child(n.note)))
-      .when(Boolean(n.note), (e) => e.tooltip(`${n.label ?? n.id}\n\n${n.note}`));
+      .when(Boolean(n.note || st.tip || n.evidence), (e) => e.tooltip([`${n.label ?? n.id}`, n.note, st.tip, n.evidence].filter(Boolean).join("\n\n")));
     return card;
   });
   const kids = L.nodes.flatMap((n, i) => (n.children ?? []).flatMap((k, j, list) => {
-    const out = [div().id(`${id}-k${i}-${j}`).absolute().left(k.x).top(k.y).w(k.w).h(k.h).px(6).flex().items_center().rounded(5).border_1().border_color(k.changed ? t.accent : t.border).bg(t.surface)
+    const out = [div().id(`${id}-k${i}-${j}`).absolute().left(k.x).top(k.y).w(k.w).h(k.h).px(6).flex().items_center().rounded(5).border_1().border_color(k.changed ? t.accent : t.border).when(k.source === "spec", (e) => e.border_dashed().tooltip(SPEC_TIP)).bg(t.surface)
       .text_size(11).text_color(k.changed ? t.accent : t.foreground).child(div().truncate().child(k.label ?? k.id))];
     const nxt = list[j + 1];
     if (nxt && nxt.branch === k.branch) out.push(vline(`${id}-kl${i}-${j}`, k.x + k.w / 2, k.y + k.h, nxt.y, t.muted));
     return out;
   }));
-  const loops = L.loops.flatMap((l, i) => [div().id(`${id}-o${i}`).absolute().left(l.x).top(l.y).w(14).h(12).rounded(6).border(1.5).border_color(col(l)).tooltip(l.text || "self-transition"),
+  const loops = L.loops.flatMap((l, i) => [div().id(`${id}-o${i}`).absolute().left(l.x).top(l.y).w(14).h(12).rounded(6).border(1.5).border_color(col(l)).when(l.dashed, (e) => e.border_dashed()).tooltip(l.text || "self-transition"),
     ...(l.text ? [div().id(`${id}-ol${i}`).absolute().left(l.x + 17).top(l.y - 1).max_w(80).text_size(10.5).text_color(l.changed ? t.accent : t.muted).tooltip(l.text).child(div().truncate().child(`↺ ${l.text}`))] : [])]);
   const stubs = L.stubs.flatMap((s, i) => {
     const c = /retry/i.test(s.text) ? t.ansi3 : t.ansi1;
-    return [hline(`${id}-sl${i}`, s.x1, s.x2, s.y, c), div().id(`${id}-sc${i}`).absolute().left(s.chip.x).top(s.chip.y).w(s.chip.w).h(s.chip.h).px(5).flex().items_center()
-      .rounded(5).border_1().border_color(c).bg(t.background).text_size(10.5).text_color(t.foreground).tooltip(s.text).child(div().truncate().child(s.text))];
+    return [hline(`${id}-sl${i}`, s.x1, s.x2, s.y, c, s.dashed), div().id(`${id}-sc${i}`).absolute().left(s.chip.x).top(s.chip.y).w(s.chip.w).h(s.chip.h).px(5).flex().items_center()
+      .rounded(5).border_1().border_color(c).when(s.dashed, (e) => e.border_dashed()).bg(t.background).text_size(10.5).text_color(t.foreground).tooltip(s.text).child(div().truncate().child(s.text))];
   });
   return div().id(id).relative().flex_none().w(L.width).h(L.height + 2).children([...els, ...nodes, ...kids, ...loops, ...stubs]);
 }

@@ -67,3 +67,39 @@ assert old["hunks"] == ["h1", "o2"] and old["suggestions"][0]["hunk"] == "h1" an
 assert merged["asks"][0]["hunks"] == ["h1", "o2"] and merged["merge_risk"]["level"] == "low" and "new bits" in merged["summary"]
 assert review.span("@@ -5 +7 @@") == (7, 7) and review.span("@@ -5,2 +7,0 @@") == (7, 7)
 print("ok rules/incremental")
+
+# Refresh diagrams (a stubbed call): only the pictures are replaced, in the files that still hold this analysis.
+import json, pathlib, tempfile  # noqa: E401,E402
+d = pathlib.Path(tempfile.mkdtemp())
+prev = {"generated": "2026-01-01T00:00:00", "hunks": [{"alias": "h1", "id": "x"}], "cost": 0.4, "answer": {
+    "title": "T", "summary": "S", "behavior": "B", "asks": [{"text": "a", "coverage": "seen", "hunks": ["h1"]}],
+    "architecture": {"groups": [], "nodes": [{"id": "old"}], "edges": []}, "visuals": [],
+    "steps": [{"title": "one", "explanation": "e1", "hunks": ["h1"], "visual": {"kind": "flow", "nodes": [{"id": "v"}]}}, {"title": "two", "hunks": []}]}}
+(d / "a.json").write_text(json.dumps(prev))
+(d / "latest.json").write_text(json.dumps(prev))
+(d / "other.json").write_text(json.dumps({**prev, "generated": "2026-02-02T00:00:00"}))
+seen = {}
+def stub(feature, text, **kw):  # noqa: E302
+    seen.update(feature=feature, text=text, schema=kw["schema"], model=kw["model"])
+    kw["meta"].update(cost=0.12, model_id="claude-x")
+    return {"architecture": {"groups": [{"id": "g", "label": "G", "kind": ""}], "nodes": [{"id": "new", "group": "g", "source": "spec"}], "edges": []},
+            "visuals": [{"kind": "state_machine", "title": "Loan", "nodes": [{"id": "s"}], "edges": []}],
+            "layers": [{"layer": 1, "visuals": [{"kind": "flow", "title": "f", "nodes": [{"id": "n"}], "edges": []}]}]}
+real, review.llm.claude = review.llm.claude, stub
+try:
+    r = review.main_diagrams({"diagrams": str(d / "a.json"), "also": [str(d / "latest.json"), str(d / "other.json")], "head": "abc1234",
+                              "model": "sonnet", "context": None, "pr": None, "worktree": None, "hunks": [{"alias": "h1", "path": "p.ts", "lines": ["@@ -1 +1 @@", "+x"]}]})
+finally:
+    review.llm.claude = real
+out = json.loads((d / "a.json").read_text())
+assert seen["feature"] == "Review diagrams" and seen["schema"] is review.DIAGRAMS_SCHEMA and "1. two" in seen["text"] and "Sources:" in seen["text"]
+assert out["answer"]["architecture"]["nodes"][0]["id"] == "new" and out["answer"]["visuals"][0]["title"] == "Loan"
+assert [s.get("visuals") for s in out["answer"]["steps"]] == [[], [{"kind": "flow", "title": "f", "nodes": [{"id": "n"}], "edges": []}]]
+assert "visual" not in out["answer"]["steps"][0]  # the old single picture goes with the rest
+for k in ("title", "summary", "behavior", "asks"):
+    assert out["answer"][k] == prev["answer"][k], k  # the text stays
+assert [s["title"] for s in out["answer"]["steps"]] == ["one", "two"] and out["generated"] == prev["generated"] and out["cost"] == 0.4
+assert out["diagrams"]["head"] == "abc1234" and out["diagrams"]["cost"] == 0.12 and r["cost"] == 0.12
+assert json.loads((d / "latest.json").read_text())["diagrams"]["head"] == "abc1234"
+assert "diagrams" not in json.loads((d / "other.json").read_text())  # a newer analysis there: untouched
+print("ok diagrams")

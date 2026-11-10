@@ -199,6 +199,18 @@ const RULE_ORDER = ["fail", "pass", "n/a"];
 const OLD_SKIM = new Set(["docs", "tests", "rename", "format", "generated"]);
 const level = (x) => (RISKS.includes(x) ? x : "medium");
 
+// Statements with their source (implemented | existing | spec, see arch.js sourceStyle) and evidence (file:line).
+export const SOURCES = ["implemented", "existing", "spec"];
+export const statementsOf = (list) => (Array.isArray(list) ? list : []).filter((x) => x?.text).map((x) => ({ text: String(x.text), source: SOURCES.includes(x.source) ? x.source : null, evidence: x.evidence || null }));
+
+// The pictures' freshness: updated (refreshed after the text analysis, short: for which head) and older (made for
+// another diff head than the shown one; without a refresh record: the analysis is not for today's hunks).
+export function diagramsState(saved, head, exact = true) {
+  const d = saved?.diagrams ?? null;
+  return { updated: Boolean(d?.generated && saved?.generated && d.generated > saved.generated), short: d?.head ? String(d.head).slice(0, 7) : null,
+    older: d?.head ? Boolean(head) && d.head !== head : !exact };
+}
+
 // A layer's (or the whole PR's) pictures: `visuals`, or the older single `visual`; only ones with nodes.
 export const visualsOf = (x) => (Array.isArray(x?.visuals) ? x.visuals : x?.visual ? [x.visual] : []).filter((v) => v?.nodes?.length);
 
@@ -234,12 +246,14 @@ export function mapReview(answer, hunks) {
   // Newer analyses add behavior, merge risk, effort, repo rule checks, an architecture picture and the blast radius;
   // older ones have none of them (null / empty).
   return { title: answer.title ?? "", summary: answer.summary ?? "", steps, suspects, behavior: answer.behavior ?? "",
+    intent: statementsOf(answer.intent), behaviorPoints: statementsOf(answer.behavior_points),
     mergeRisk: RISK_LEVELS.includes(answer.merge_risk?.level) ? answer.merge_risk : null,
     effort: answer.effort?.score >= 1 ? { score: Math.min(5, Math.round(answer.effort.score)), why: answer.effort.why ?? "" } : null,
     rules: (answer.rule_checks ?? []).map((r) => ({ rule: r.rule ?? "", source: r.source ?? "", status: ["pass", "fail", "n/a"].includes(r.status) ? r.status : "n/a", where: r.where ?? null, why: r.why ?? "" }))
       .sort((a, b) => RULE_ORDER.indexOf(a.status) - RULE_ORDER.indexOf(b.status)),
     arch: answer.architecture?.nodes?.length ? answer.architecture : null, visuals: visualsOf(answer), blast: answer.blast_radius?.units?.length ? answer.blast_radius : null,
-    asks: (answer.asks ?? []).map((a) => ({ text: a.text ?? "", coverage: ["seen", "partly", "absent", "extra"].includes(a.coverage) ? a.coverage : "absent", hunks: ids(a.hunks) })) };
+    asks: (answer.asks ?? []).map((a) => ({ text: a.text ?? "", coverage: ["seen", "partly", "absent", "extra"].includes(a.coverage) ? a.coverage : "absent", hunks: ids(a.hunks),
+      elements: (a.elements ?? []).map(String) })) };
 }
 
 // A suspicious line taken over as a pending review comment (rows: its hunk's or file's rows); null when not shown there.
@@ -499,6 +513,16 @@ export function levels(nodes, edges) {
   }
   for (const n of nodes) if (!level.has(n.id)) level.set(n.id, 0); // in a cycle: first column
   return level;
+}
+
+// The spec-only elements of the pictures, by id: {id, label, page: "arch" | null, step: index | null}. Asks link to
+// the ones they name.
+export function specElements(ai) {
+  const out = new Map(), add = (id, label, where) => { if (!out.has(id)) out.set(id, { id, label: label ?? id, ...where }); };
+  for (const n of ai?.arch?.nodes ?? []) if (n.source === "spec") add(n.id, n.label, { page: "arch", step: null });
+  for (const v of ai?.visuals ?? []) for (const n of v.nodes ?? []) if (n.source === "spec") add(n.id, n.label, { page: "arch", step: null });
+  (ai?.steps ?? []).forEach((s, k) => { for (const v of s.visuals ?? []) for (const n of v.nodes ?? []) if (n.source === "spec") add(n.id, n.label, { page: null, step: k }); });
+  return out;
 }
 
 // The layout of these pictures: arch.js archLayout.

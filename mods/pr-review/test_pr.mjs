@@ -281,6 +281,25 @@ console.log("ok");
   const vis = mapReview({ visuals: [pic("state_machine")], steps: [{ title: "t", hunks: [], visuals: [pic("architecture"), pic("state_machine"), { kind: "flow", nodes: [] }] }, { title: "u", hunks: [], visual: pic("flow") }] }, []);
   assert.deepEqual(vis.steps.map((s) => s.visuals.map((v) => v.kind)), [["architecture", "state_machine"], ["flow"]]);
   assert.deepEqual(vis.visuals.map((v) => v.kind), ["state_machine"]);
+  // Sources on statements; asks name the spec-only elements of the pictures they describe.
+  const { specElements } = await import("./pr.js");
+  const src = mapReview({ intent: [{ text: "Remind members", source: "implemented", evidence: "src/r.ts:9" }, { text: "Fine overdue loans", source: "spec" }, { text: "x", source: "bogus" }],
+    behavior_points: [{ text: "Mails go out at 08:00", source: "existing" }],
+    architecture: { groups: [], nodes: [{ id: "fee", label: "Fee service", source: "spec" }, { id: "rem", label: "Reminders", source: "implemented" }], edges: [] },
+    asks: [{ text: "Charge fees", coverage: "absent", hunks: [], elements: ["fee"] }], steps: [{ title: "t", hunks: [], visuals: [{ kind: "state_machine", nodes: [{ id: "over", label: "Overdue", source: "spec" }], edges: [] }] }] }, []);
+  assert.deepEqual(src.intent.map((x) => [x.source, x.evidence]), [["implemented", "src/r.ts:9"], ["spec", null], [null, null]]);
+  assert.deepEqual(src.behaviorPoints.map((x) => x.source), ["existing"]);
+  assert.deepEqual(src.asks[0].elements, ["fee"]);
+  assert.deepEqual([...specElements(src).values()].map((x) => [x.id, x.page, x.step]), [["fee", "arch", null], ["over", null, 0]]);
+  // Diagrams refreshed after the text analysis: "updated for <head>"; made for another head: older.
+  const { diagramsState } = await import("./pr.js");
+  const saved = { generated: "2026-01-01T10:00:00Z", diagrams: { generated: "2026-01-02T10:00:00Z", head: "abc1234567" } };
+  assert.deepEqual(diagramsState(saved, "abc1234567"), { updated: true, short: "abc1234", older: false });
+  assert.deepEqual(diagramsState(saved, "fff0000000"), { updated: true, short: "abc1234", older: true });
+  assert.deepEqual(diagramsState({ generated: "x" }, "abc", true), { updated: false, short: null, older: false }); // never refreshed: as the analysis
+  assert.equal(diagramsState({ generated: "x" }, "abc", false).older, true); // the analysis is for other hunks
+  const plain0 = mapReview({ behavior: "b", steps: [] }, []);
+  assert.deepEqual([plain0.intent, plain0.behaviorPoints], [[], []]); // old analyses: the text as before
   const neu = mapReview({ merge_risk: { level: "high", why: "w" }, effort: { score: 7 }, rule_checks: [{ rule: "a", status: "pass" }, { rule: "b", status: "fail" }], steps: [{ title: "t", new: true, hunks: [] }] }, []);
   assert.deepEqual([neu.mergeRisk.level, neu.effort.score, neu.rules.map((r) => r.rule), neu.steps[0].isNew], ["high", 5, ["b", "a"], true]);
   console.log("ok since/verify/pictures/checks/triage");

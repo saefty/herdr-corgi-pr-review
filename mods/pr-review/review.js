@@ -19,8 +19,9 @@ import { highlightRows, highlightLines, cachedRows, langOf, colors, renderLine, 
 import { lookup, warm, contents, vscodeArgs, where, setTrusted } from "./defs.js";
 import { diffRows, hunksOf, selection, uiLine, lineKey, rangeOf, MODELS, reviewRequest, mapReview, suspectComment, stepKey, fileRows, fileTree, atLine, splitPatch } from "./pr.js";
 import { ghTarget, lowValue, markReviewed, sinceBase, verifyCandidates, applyVerification, blastArch, preMergeChecks, mergeBlockers, triageOf } from "./pr.js";
-import { diffLines, inDiff, ghReview, lineThreads, suggestionBlock, buildReview, layoutPlan } from "./pr.js";
-import { archView, archModel, archLegend, visualsCard, statCard, segBar, foldCard, chip, legend, SEVERITY_COLOR } from "./stack.js";
+import { diffLines, inDiff, ghReview, lineThreads, suggestionBlock, buildReview, layoutPlan, specElements, diagramsState } from "./pr.js";
+import { archView, archModel, archLegend, visualsCard, statCard, segBar, foldCard, chip, legend, specTag, sourceLegend, SEVERITY_COLOR } from "./stack.js";
+import { hasSources } from "./arch.js";
 
 const LEVEL = { high: "ansi1", medium: "ansi3", low: "ansi4", skim: "muted" };
 const COVER = { seen: ["done", "ansi2"], partly: ["partly", "ansi3"], absent: ["missing", "ansi1"], extra: ["extra (not asked)", "ansi4"] };
@@ -174,7 +175,7 @@ const ago = (iso) => { const m = Math.round((Date.now() - Date.parse(iso)) / 600
 export const ReviewMode = {
   initReview(cx) {
     this.tab = "files"; this.cur = 0; this.focusHunk = null; this.fsel = null; this.sug = null;
-    this.ai = null; this.aiBusy = false; this.aiError = null; this.aiModel = null;
+    this.ai = null; this.aiBusy = false; this.aiError = null; this.aiModel = null; this.diaBusy = null; this.diaError = null;
     this.prog = { visited: new Set(), checked: {}, handled: {}, seen: new Set() };
     this.full = {}; this.gaps = {}; this.whole = new Set(); this.collapsed = new Set(); this.closedDirs = new Set();
     // Handles are made here only: creating one later (in a task) throws, which broke the definition view.
@@ -498,6 +499,51 @@ export const ReviewMode = {
     });
   },
 
+  // Refresh diagrams (a click, never by itself): review.py redraws only the pictures of the shown analysis for today's
+  // diff, with its layers as context (one cheaper call, "Review diagrams" in the ledger), and writes them into the
+  // files holding this analysis. The old pictures stay until the new ones arrive.
+  refreshDiagrams(cx) {
+    const url = this.prSel?.url, file = this.aiFile, m = model();
+    if (!url || !file || !this.patch || this.diaBusy) return;
+    const job = reviewRequest({ url, pr: url.startsWith("https://") ? url : null, worktree: this.worktree?.path ?? null, files: this.patch, model: m, context: this.ctxReq(), dir: cacheDir() });
+    const status = `${file}.diagrams.status`;
+    const req = { diagrams: file, also: [job.out, job.latest].filter((x) => x !== file), head: this.head, model: m, context: this.ctxReq(), pr: job.req.pr,
+      worktree: job.req.worktree, hunks: job.req.hunks, status };
+    this.diaBusy = { status, file, url }; this.diaError = null;
+    exec("sh", ["-c", 'nohup python3 "$0" "$1" >/dev/null 2>&1 &', `${appHome()}/mods/pr-review/review.py`, JSON.stringify(req)])
+      .catch((e) => { this.diaError = String(e); this.diaBusy = null; cx.notify(); });
+    this.pollDiagrams(cx);
+    cx.notify();
+  },
+
+  pollDiagrams(cx) {
+    cx.timer.after(5000, (cx) => cx.spawn(async (cx) => {
+      const b = this.diaBusy;
+      if (!b || this.prSel?.url !== b.url) { this.diaBusy = null; return; }
+      const st = JSON.parse(await readTextFile(b.status).catch(() => null) ?? "null");
+      if (!st || st.busy) return this.pollDiagrams(cx);
+      this.diaBusy = null;
+      if (st.error) this.diaError = st.error;
+      else if (this.aiFile === b.file) {
+        const text = await readTextFile(b.file).catch(() => null);
+        if (text) this.ai = this.mapSaved(JSON.parse(text), this.ai?.exact ?? true);
+      }
+      cx.notify();
+    }));
+  },
+
+  // The Refresh diagrams button with its state: Refreshing…, "updated for <head>", "diagrams from an older diff".
+  diagramsBar(t, id, label) {
+    if (!this.ai || !this.aiFile) return div();
+    const st = diagramsState({ diagrams: this.ai.diagrams, generated: this.ai.generated }, this.head, this.ai.exact);
+    return h_flex().flex_wrap().gap(8).items_center().text_size(12)
+      .child(this.diaBusy ? h_flex().gap(6).text_color(t.muted).child(div().child(SPIN[0]).frames(SPIN, 90)).child("Refreshing…")
+        : pill(id, t, `↻ ${label}`, (_e, cx) => { this.refreshDiagrams(cx); cx.stop_propagation(); }))
+      .when(st.updated && Boolean(st.short), (e) => e.child(div().text_color(t.muted).child(`updated for ${st.short}`)))
+      .when(st.older, (e) => e.child(div().text_color(t.ansi3).child("diagrams from an older diff")))
+      .when(Boolean(this.diaError), (e) => e.child(div().max_w(260).truncate().text_color(t.ansi1).tooltip(this.diaError ?? "").child(this.diaError ?? "")));
+  },
+
   pollAi(cx, job, url, m) {
     cx.timer.after(5000, (cx) => cx.spawn(async (cx) => {
       if (this.prSel?.url !== url || !this.aiBusy) return;
@@ -534,7 +580,7 @@ export const ReviewMode = {
     r.steps.push(...extra(`Not analyzed (${left.filter((h) => cut.has(h.alias)).length} hunks)`, "Too large for the model: read these yourself.", left.filter((h) => cut.has(h.alias))),
       ...extra(`In no step (${left.filter((h) => !cut.has(h.alias)).length} hunks)`, exact ? "The model put these hunks in no step." : "New since the analysis.", left.filter((h) => !cut.has(h.alias))));
     for (const s of r.steps) s.stale = s.hunks.length > 0 && !s.hunks.some((id) => this.byId.has(id));
-    return { ...r, exact, cost: saved.cost, ms: saved.ms, budget: saved.budget, model: saved.model, model_id: saved.model_id, generated: saved.generated, cut: saved.cut ?? [], task: saved.task ?? {},
+    return { ...r, exact, diagrams: saved.diagrams ?? null, cost: saved.cost, ms: saved.ms, budget: saved.budget, model: saved.model, model_id: saved.model_id, generated: saved.generated, cut: saved.cut ?? [], task: saved.task ?? {},
       incremental: saved.incremental ?? null };
   },
 
@@ -1337,7 +1383,7 @@ export const ReviewMode = {
         .children(s.questions.map((q, k) => h_flex().id(`rv-q-${i}-${k}`).gap(8).items_start().text_size(13.5).line_height(1.5)
           .child(div().flex_none().text_color(t.accent).child("?"))
           .child(div().flex_1().min_w(0).child(TextView.markdown(`rv-q-${stepKey(s)}-${k}`, this.asked(s, q))))))))
-      .when(on && s.visuals?.length > 0, (e) => e.child(div().pl(26).child(visualsCard(s.visuals, t, `rv-vis-${i}`, (at, cx) => this.jumpTo(at, cx),
+      .when(on && s.visuals?.length > 0, (e) => e.child(div().pl(26).child(this.diagramsBar(t, `rv-dia-${i}`, "Refresh this view"))).child(div().pl(26).child(visualsCard(s.visuals, t, `rv-vis-${i}`, (at, cx) => this.jumpTo(at, cx),
         this.visTab?.[i] ?? 0, (k, cx) => { this.visTab = { ...this.visTab, [i]: k }; cx.notify(); }))))
       .when(on, (e) => e.children((s.flows ?? []).map((f, k) => {
         const picked = this.flowOf()?.f === f;
@@ -1523,9 +1569,10 @@ export const ReviewMode = {
         .child(v_flex().gap(4).child(div().text_size(12).font_semibold().text_color(t.muted).child("Intent"))
           .child(h_flex().flex_wrap().gap(6).items_center().child(div().text_size(13.5).child(task.title ?? pr.title ?? ""))
             .when(Boolean(task.jira), (e) => e.child(chip(t, `Linked issue ${task.jira}`, t.accent))))
-          .when(Boolean(task.note), (e) => e.child(div().text_size(12).text_color(t.ansi3).whitespace_normal().child(task.note))))
-        .when(Boolean(ai?.behavior), (e) => e.child(v_flex().gap(4).child(div().text_size(12).font_semibold().text_color(t.muted).child("Behavior"))
-          .child(div().text_size(13.5).line_height(1.5).child(TextView.markdown(`rv-beh-${ai.generated}`, ai.behavior)))))
+          .when(Boolean(task.note), (e) => e.child(div().text_size(12).text_color(t.ansi3).whitespace_normal().child(task.note)))
+          .when(ai?.intent?.length > 0, (e) => e.child(this.statements(t, ai.intent, "rv-int"))))
+        .when(Boolean(ai?.behavior) || ai?.behaviorPoints?.length > 0, (e) => e.child(v_flex().gap(4).child(div().text_size(12).font_semibold().text_color(t.muted).child("Behavior"))
+          .child(ai.behaviorPoints?.length ? this.statements(t, ai.behaviorPoints, "rv-bp") : div().text_size(13.5).line_height(1.5).child(TextView.markdown(`rv-beh-${ai.generated}`, ai.behavior)))))
         .when(Boolean(ai?.summary), (e) => e.child(div().text_size(13.5).line_height(1.5).child(TextView.markdown(`rv-sum-${ai.generated}`, ai.summary))))
         .when(!ai, (e) => e.child(div().text_size(13).text_color(t.muted).child("No analysis yet: Analyze in the left column.")))
         .when(Boolean(ai), (e) => e.child(this.asksPane(t)))))
@@ -1571,7 +1618,7 @@ export const ReviewMode = {
     const set = (name, v, cx) => { if (this[name] !== v) { this[name] = v; cx.notify(); } };
     return { hl: this[`${k}Hl`], focus: this[`${k}Focus`] ?? null, hover: this[`${k}Hover`] ?? null,
       onHl: (v, cx) => set(`${k}Hl`, v, cx), onHover: (v, cx) => set(`${k}Hover`, v, cx),
-      onFocus: (v, cx) => { this.fh.focus(); set(`${k}Focus`, v, cx); } };
+      onFocus: (v, cx) => { this.fh.focus(); set(`${k}Focus`, v, cx); }, onJump: (at, cx) => this.jumpTo(at, cx) };
   },
 
   archPage(t) {
@@ -1579,15 +1626,16 @@ export const ReviewMode = {
     const seg = (k, label) => div().id(`rv-av-${k}`).px(10).h(24).flex().items_center().rounded(5).cursor_pointer().text_size(12.5)
       .bg(this.archMode === k ? t.selected : t.chrome).text_color(this.archMode === k ? t.foreground : t.muted).on_click((_e, cx) => { this.archMode = k; cx.notify(); }).child(label);
     const more = () => visualsCard(this.ai.visuals, t, "rv-arch-vis", (at, cx) => this.jumpTo(at, cx), this.archVisTab ?? 0, (k, cx) => { this.archVisTab = k; cx.notify(); });
-    if (!a) return v_flex().gap(12).child(div().text_size(13.5).text_color(t.muted).child(this.ai ? "This analysis has no architecture picture (older analysis, or the PR touches no architecture). Re-analyze for one." : "No analysis yet: Analyze in the left column."))
+    if (!a) return v_flex().gap(12).child(this.diagramsBar(t, "rv-dia-arch", "Refresh diagrams")).child(div().text_size(13.5).text_color(t.muted).child(this.ai ? "This analysis has no architecture picture (older analysis, or the PR touches no architecture). Re-analyze for one." : "No analysis yet: Analyze in the left column."))
       .when(this.ai?.visuals?.length > 0, (e) => e.child(div().max_w(760).child(more())));
     const groups = new Set(a.nodes.map((n) => n.group)).size, L = archModel(a, this.archMode);
     const opts = this.archOpts("arch");
     return v_flex().gap(12)
-      .child(div().text_size(20).font_semibold().child("Architecture impact"))
+      .child(h_flex().gap(12).items_center().flex_wrap().child(div().text_size(20).font_semibold().child("Architecture impact")).child(this.diagramsBar(t, "rv-dia-arch", "Refresh diagrams")))
       .child(h_flex().w_full().gap(12).items_center().flex_wrap() // wraps onto two rows when narrow
         .child(div().flex_none().text_size(13).text_color(t.muted).child(`${groups} ${groups === 1 ? "system" : "systems"} | ${(a.edges ?? []).length} edges`))
         .child(div().flex_none().child(legend(t)))
+        .when(hasSources(a) || (this.ai.visuals ?? []).some(hasSources), (e) => e.child(div().flex_none().child(sourceLegend(t))))
         .child(h_flex().flex_none().gap(2).p(2).rounded(7).border_1().border_color(t.border).child(seg("diff", "Structural diff")).child(seg("before", "Before")).child(seg("after", "After"))))
       .child(div().id("rv-arch-scroll").w_full().overflow_x_scroll().pb(8)
         .child(archView(L, t, "rv-arch", (n, _e, cx) => this.jumpTo(n.at, cx), null, opts)))
@@ -1664,8 +1712,25 @@ export const ReviewMode = {
     return `≈ $${usd.toFixed(2)} · cap $${CAP[m]}`;
   },
 
+  // Statements with their source: a "spec" tag before spec-only ones (only in the description/ticket, not in the
+  // diff), existing ones muted, and the evidence (file:line) as a link into the diff.
+  statements(t, list, id) {
+    return v_flex().gap(3).children(list.map((x, k) => h_flex().id(`${id}-${k}`).gap(6).items_start().text_size(13.5).line_height(1.5)
+      .when(x.source === "spec", (e) => e.child(div().pt(2).child(specTag(t, `${id}-${k}-sp`))))
+      .child(div().flex_1().min_w(0).whitespace_normal().text_color(x.source === "existing" ? t.muted : t.foreground).child(x.text))
+      .when(Boolean(x.evidence) && x.source !== "spec", (e) => e.child(div().id(`${id}-${k}-ev`).flex_none().text_size(11.5).text_color(t.accent).cursor_pointer()
+        .child(`${String(x.evidence).split("/").pop()} ↗`).on_click((_e, cx) => { this.jumpTo(x.evidence, cx); cx.stop_propagation(); })))));
+  },
+
+  // An ask's link to a spec-only element of the pictures: the Architecture page focused on it, or its layer.
+  openSpec(el, cx) {
+    if (el.page === "arch") { this.page = "arch"; if ((this.ai.arch?.nodes ?? []).some((n) => n.id === el.id)) this.archFocus = el.id; }
+    else if (el.step !== null) { const i = this.steps().indexOf(this.ai.steps[el.step]); if (i >= 0) this.goStep(i, cx); }
+    cx.notify();
+  },
+
   asksPane(t) {
-    const task = this.ai.task ?? {};
+    const task = this.ai.task ?? {}, specs = specElements(this.ai);
     return v_flex().flex_none().mt(14).pt(12).px(10).gap(8).border_t(1).border_color(t.border).text_size(13.5)
       .child(div().font_semibold().text_size(14.5).child("Check against the task"))
       .child(div().text_size(12).text_color(t.muted).child(`PR description${task.jira ? ` + Jira ${task.jira}` : ""}`))
@@ -1675,6 +1740,9 @@ export const ReviewMode = {
         .on_click((_e, cx) => { const id = a.hunks.find((x) => this.byId.has(x)); if (id) { this.tab = "files"; this.collapsed.delete(this.byId.get(id).path); this.visit(id, cx); this.scrollTo("files", id); } cx.notify(); })
         .child(div().w(78).flex_none().text_size(12).font_semibold().text_color(t[COVER[a.coverage][1]]).child(COVER[a.coverage][0]))
         .child(div().flex_1().min_w(0).line_height(1.5).child(TextView.markdown(`rv-ask-${this.ai.generated}-${i}`, a.text)))
+        .children(a.elements.filter((x) => specs.has(x)).map((x, k) => div().id(`rv-ask-${i}-sp${k}`).flex_none().px(5).rounded(4).border_1().border_dashed().border_color(t.ansi5)
+          .text_size(11).text_color(t.ansi5).cursor_pointer().tooltip("Spec only: in the picture, not found in the diff").child(`spec: ${specs.get(x).label} ↗`)
+          .on_click((_e, cx) => { this.openSpec(specs.get(x), cx); cx.stop_propagation(); })))
         .when(a.hunks.length > 0, (e) => e.child(div().flex_none().text_size(11.5).text_color(t.muted).child(`${a.hunks.length} ↗`)))));
   },
 

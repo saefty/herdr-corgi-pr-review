@@ -1,7 +1,7 @@
 // Run: node test_arch.mjs  (the architecture / blast radius layout: columns, lanes, ports, fans, stubs, hops, badges,
 // card sizes, focus, orchestrator states)
 import assert from "node:assert/strict";
-import { archLayout, archFocus, stateLayout, crossings, clampText, wrapLines, ARCH } from "./arch.js";
+import { archLayout, archFocus, stateLayout, sourceStyle, hasSources, crossings, clampText, wrapLines, ARCH } from "./arch.js";
 import { blastArch } from "./pr.js";
 
 const inside = (s, r) => (s.y1 === s.y2
@@ -253,6 +253,28 @@ const sync = {
   assert.deepEqual(L.stubs.map((x) => [x.from, x.text]), [["load", "Retry ×3"], ["par", "Catch → Failed"]]);
   for (const x of L.stubs) for (const n of L.nodes) assert.ok(!boxOver(x.chip, n), `stub chip on ${n.id}`);
   assert.equal(crossings([...L.edges, ...L.backs]).length, 0);
+}
+
+// Sources: implemented (solid, status colours), existing (muted), spec (dashed, a "spec" chip); none: as before.
+{
+  assert.deepEqual(["implemented", "existing", "spec", undefined].map((x) => { const st = sourceStyle(x); return [st.dashed, st.tone, st.chip]; }),
+    [[false, "status", null], [false, "muted", null], [true, "status", "spec"], [false, "status", null]]);
+  assert.match(sourceStyle("spec").tip, /not found in the diff/);
+  const arch = { groups: [{ id: "a" }, { id: "b" }], nodes: [{ id: "x", group: "a", source: "implemented", evidence: "src/x.ts:3" }, { id: "y", group: "a" }, { id: "t", group: "b", source: "spec" }],
+    edges: [{ from: "x", to: "t", label: "Reads", source: "implemented", evidence: "src/x.ts:9" }, { from: "y", to: "t", label: "reads", source: "spec" }] };
+  const L = archLayout(arch);
+  assert.equal(L.paths.length, 2, "a spec-only call never merges with an implemented one");
+  assert.deepEqual(L.paths.map((p) => [p.source, p.dashed, p.evidence]), [["implemented", false, "src/x.ts:9"], ["spec", true, null]]);
+  assert.equal(L.nodes.find((n) => n.id === "x").at, "src/x.ts:3"); // implemented evidence: the card opens it
+  assert.ok(hasSources(arch));
+  // Old analyses: no source, nothing dashed, no legend.
+  const old = archLayout(sync);
+  assert.ok(old.paths.every((p) => p.source === null && !p.dashed) && !hasSources(sync));
+  // A spec-only transition in a state diagram is dashed.
+  const sm = stateLayout({ nodes: [{ id: "a", label: "A" }, { id: "b", label: "B", source: "spec" }], transitions: [{ from: "a", to: "b", event: "archive", source: "spec" }] });
+  const e = sm.edges.find((x) => x.from === "a");
+  assert.deepEqual([e.source, e.dashed, sm.nodes.find((n) => n.id === "b").source], ["spec", true, "spec"]);
+  assert.ok(sm.edges.filter((x) => x !== e).every((x) => !x.dashed));
 }
 
 // Text clamping.

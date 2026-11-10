@@ -77,6 +77,18 @@ export function crossings(paths) {
 
 const overlaps = (a, b, m = 0) => a.x < b.x + b.w + m && b.x < a.x + a.w + m && a.y < b.y + b.h + m && b.y < a.y + a.h + m;
 
+// Where a picture's element comes from: implemented (in this PR's diff, evidence file:line), existing (already in the
+// codebase, unchanged), spec (only in the PR description, ticket, ADRs or spec docs, not found in the diff: planned or
+// missing). Old analyses have no source and are drawn as before. tone: "status" (the New/Changed colours), "muted".
+export const SPEC_TIP = "From the PR description/ticket, not found in the diff";
+export function sourceStyle(source) {
+  if (source === "spec") return { source, dashed: true, tone: "status", chip: "spec", tip: SPEC_TIP };
+  if (source === "existing") return { source, dashed: false, tone: "muted", chip: null, tip: "Already in the codebase, unchanged" };
+  return { source: source === "implemented" ? source : null, dashed: false, tone: "status", chip: null, tip: null };
+}
+// Whether a picture (architecture or visual) says where its elements come from (then the legend shows the sources).
+export const hasSources = (x) => [...(x?.nodes ?? []), ...(x?.edges ?? []), ...(x?.transitions ?? []), ...(x?.nodes ?? []).flatMap((n) => n.states ?? [])].some((e) => e?.source);
+
 // The focus on one node: the paths that touch it and the cards at their other ends stay; the rest is dimmed.
 // {id, nodes: Set of ids, paths: Set of path nums}, or null (no focus, or the node is not in this view).
 export function archFocus(L, id) {
@@ -102,7 +114,7 @@ export function archLayout(arch, view = "diff", extra = () => 0) {
   const known = new Set((arch?.groups ?? []).map((g) => g.id));
   const groups = [...(arch?.groups ?? []).filter((g) => nodes0.some((n) => n.group === g.id)),
     ...(nodes0.some((n) => !known.has(n.group)) ? [{ id: "\0", label: "System", kind: "" }] : [])];
-  const byId = new Map(nodes0.map((n) => [n.id, { ...n, g: known.has(n.group) ? n.group : "\0", states: (n.states ?? []).filter((s) => s?.name) }]));
+  const byId = new Map(nodes0.map((n) => [n.id, { ...n, at: n.at ?? (n.source === "implemented" ? n.evidence : undefined), g: known.has(n.group) ? n.group : "\0", states: (n.states ?? []).filter((s) => s?.name) }]));
   const gOf = (id) => byId.get(id).g;
   const edges = (arch?.edges ?? []).map((e, i) => ({ ...e, i })).filter((e) => byId.has(e.from) && byId.has(e.to) && e.from !== e.to);
   // A state's call is an edge from its orchestrator that leaves at the state's row: an edge the analysis has, or one
@@ -111,7 +123,7 @@ export function archLayout(arch, view = "diff", extra = () => 0) {
     if (!byId.has(s.calls) || s.calls === n.id) return;
     const e = edges.find((x) => x.from === n.id && x.to === s.calls && x.anchor === undefined);
     if (e) e.anchor = k;
-    else edges.push({ from: n.id, to: s.calls, label: s.name, anchor: k, status: s.status, i: edges.length + 1000 });
+    else edges.push({ from: n.id, to: s.calls, label: s.name, anchor: k, status: s.status, source: s.source, evidence: s.evidence, i: edges.length + 1000 });
   });
   const gIds = groups.map((g) => g.id), ids0 = nodes0.map((n) => n.id);
 
@@ -193,9 +205,10 @@ export function archLayout(arch, view = "diff", extra = () => 0) {
   const paths = [], trunks = [], byKey = new Map(), anchorOf = new Map(); // `${pathKey}:${from}` -> state index
   for (const e of edges) {
     const kind = kindOf(e), fan = kind === "next" && e.anchor === undefined && fanN.get(fanKey(e)) > 2;
-    const key = kind === "stub" ? `stub:${e.i}` : fan ? `fan:${fanKey(e)}:${e.i}` : e.anchor !== undefined ? `next:${e.i}` : `next:${e.to}:${norm(e.label)}`;
+    const key = kind === "stub" ? `stub:${e.i}` : fan ? `fan:${fanKey(e)}:${e.i}` : e.anchor !== undefined ? `next:${e.i}` : `next:${e.to}:${norm(e.label)}:${e.source ?? ""}`;
     if (!byKey.has(key)) {
-      const p = { key, kind: fan ? "fan" : kind, to: e.to, from: [], edges: [], label: e.label ?? "", dashed: Boolean(e.dashed), status: e.status ?? (e.changed ? "changed" : null) };
+      const p = { key, kind: fan ? "fan" : kind, to: e.to, from: [], edges: [], label: e.label ?? "", dashed: Boolean(e.dashed) || e.source === "spec", source: e.source ?? null,
+        evidence: e.evidence ?? null, status: e.status ?? (e.changed ? "changed" : null) };
       byKey.set(key, p); paths.push(p);
       if (fan) {
         const tk = `fan:${fanKey(e)}`;
@@ -381,7 +394,7 @@ const isError = (e) => e.error === "catch" || e.error === "retry" || (!e.event &
 // v: {nodes: [{id, label, type, changed, note, at, parent, branch}], edges | transitions: [{from, to, label | event,
 // guard, action, changed, error: "catch" | "retry"}]}. Returns {nodes, edges, backs, loops, stubs, width, height}.
 export function stateLayout(v, width = SM.W) {
-  const nodes0 = (v?.nodes ?? []).filter((n) => n?.id), byId = new Map(nodes0.map((n) => [n.id, n]));
+  const nodes0 = (v?.nodes ?? []).filter((n) => n?.id), byId = new Map(nodes0.map((n) => [n.id, { ...n, at: n.at ?? (n.source === "implemented" ? n.evidence : undefined) }]));
   const all = [...(v?.edges ?? []), ...(v?.transitions ?? [])].filter((e) => byId.has(e.from) && byId.has(e.to)).map((e, i) => ({ ...e, i, text: transitionText(e) }));
   const blockOf = (id) => { const p = byId.get(id)?.parent; return byId.has(p) && p !== id ? p : null; };
   const top = (id) => blockOf(id) ?? id;
@@ -504,6 +517,7 @@ export function stateLayout(v, width = SM.W) {
     }
     const end = segs.at(-1);
     edges.push({ key: `f${e.i}:${e.a}>${e.b}`, from: e.a, to: e.b, text: e.a === "\0start" ? "" : e.text, changed: Boolean(e.changed) || e.status === "new" || e.status === "changed",
+      source: e.source ?? null, dashed: e.source === "spec", evidence: e.evidence ?? null,
       segments: segs.filter((x) => x.y1 !== x.y2 || x.x1 !== x.x2), arrow: { x: end.x2, y: end.y2 }, labelAt });
   }
   // Each label as wide as the room up to the nearest other line or card to its right (at most 160 px).
@@ -519,14 +533,15 @@ export function stateLayout(v, width = SM.W) {
   const backs = [...back].sort((a, b) => (layer.get(a.a) - layer.get(a.b)) - (layer.get(b.a) - layer.get(b.b))).map((e, k) => {
     const s = at.get(e.a), t = at.get(e.b), laneX = lanesLeft - 8 - k * SM.BACK, sy = s.y + s.h / 2 + 4, ty = t.y + t.h / 2 - 4;
     return { key: `b${e.i}`, from: e.a, to: e.b, text: e.text, changed: Boolean(e.changed) || e.status === "new" || e.status === "changed", laneX, sx: s.x, sy, tx: t.x, ty,
+      source: e.source ?? null, dashed: e.source === "spec",
       segments: [{ x1: s.x, y1: sy, x2: laneX, y2: sy }, { x1: laneX, y1: ty, x2: laneX, y2: sy }, { x1: laneX, y1: ty, x2: t.x, y2: ty }] };
   });
-  const loops = loopsE.filter((e) => at.has(e.a)).map((e) => ({ key: `l${e.i}`, id: e.a, text: e.text, changed: Boolean(e.changed) || e.status === "new" || e.status === "changed", x: at.get(e.a).x + at.get(e.a).w - 7, y: at.get(e.a).y + 3 }));
+  const loops = loopsE.filter((e) => at.has(e.a)).map((e) => ({ key: `l${e.i}`, id: e.a, text: e.text, changed: Boolean(e.changed) || e.status === "new" || e.status === "changed", source: e.source ?? null, dashed: e.source === "spec", x: at.get(e.a).x + at.get(e.a).w - 7, y: at.get(e.a).y + 3 }));
   const stubs = ids.flatMap((id) => stubsOf(id).map((e, k, list) => {
     const n = at.get(id), y0 = n.y + n.h / 2 + (k - (list.length - 1) / 2) * 20, retry = e.error === "retry" || /^retry/i.test(String(e.label ?? ""));
     const name = byId.get(e.to)?.label ?? e.to;
     const text = retry ? (e.text || "Retry") : `${e.text || "Catch"} → ${name}`;
-    return { key: `s${e.i}`, from: id, to: e.to, text, changed: Boolean(e.changed) || e.status === "new" || e.status === "changed", x1: n.x + n.w, x2: n.x + n.w + SM.STUB, y: Math.round(y0), chip: { x: n.x + n.w + SM.STUB + 4, y: Math.round(y0) - 9, w: SM.CHIP, h: 18 } };
+    return { key: `s${e.i}`, from: id, to: e.to, text, changed: Boolean(e.changed) || e.status === "new" || e.status === "changed", source: e.source ?? null, dashed: e.source === "spec", x1: n.x + n.w, x2: n.x + n.w + SM.STUB, y: Math.round(y0), chip: { x: n.x + n.w + SM.STUB + 4, y: Math.round(y0) - 9, w: SM.CHIP, h: 18 } };
   }));
   const kids = (id) => (box.get(id)?.br ?? []).flatMap((b, j) => b.map((cid, k) => ({ ...byId.get(cid), x: at.get(id).x + 8 + j * (SM.CHILD_W + 8), y: at.get(id).y + 26 + k * (SM.CHILD_H + 10), w: SM.CHILD_W, h: SM.CHILD_H, branch: j, step: k })));
   const out = [...at.values()].filter((n) => !n.id.startsWith("\0d")).map((n) => (n.id.startsWith("\0") ? { ...n, kind: n.id === "\0start" ? "start" : "end" }
