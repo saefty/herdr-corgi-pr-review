@@ -1,5 +1,11 @@
 # PR review for Herdr
 
+<h3 align="center">AI-guided pull request review for Herdr. A walkthrough takes you through the PR risk first, with an architecture map of the change, its security blast radius and a GitHub-style diff you comment on and submit from.</h3>
+
+<p align="center"><img src="preview.png" width="88%" alt="The review layout's overview of a demo PR" /></p>
+
+<p align="center"><sub>✓&nbsp;Free,&nbsp;MIT &nbsp;·&nbsp; ✓&nbsp;Runs&nbsp;locally &nbsp;·&nbsp; ✓&nbsp;herdr-app&nbsp;0.1.14+</sub></p>
+
 Part of [Corgi](https://github.com/saefty/herdr-corgi), a set of Herdr mods that plug into each other.
 
 A Herdr mod for reviewing pull requests next to your agents. A side panel shows the focused branch's diff (or any
@@ -9,8 +15,6 @@ security review, optionally Codex) whose findings you can send to the agent to f
 architecture picture, a security blast radius, CI checks, related PRs, and go-to-definition in the diff. You comment
 as on GitHub: a comment box under the line, pending comments as threads, and "Finish your review" posts one GitHub
 review (Comment, Approve or Request changes) or sends it to the agent session.
-
-![The review layout's overview of a demo PR](preview.png)
 
 ![Open a PR, read its layers, the architecture impact and the blast radius, then jump into the diff](docs/screenshots/walkthrough.gif)
 
@@ -57,15 +61,15 @@ The screenshots show an invented demo project (`demo/`), not a real repository.
 - Incremental: "since your last review" view and analysis.
 - Model per review (Haiku, Sonnet, Opus); LLM calls only on click.
 - Restricted Mode for other people's code (see below).
-- Optional hooks for other mods: contexts (accounts, clone folders), a Go to palette, a chat bar.
+- Works with other mods: separate setups (accounts, clone folders), the Go to box and the chat bar.
 
 ## Works with
 
 PR review, [Go to](https://github.com/saefty/herdr-corgi-goto) and the [chat bar](https://github.com/saefty/herdr-corgi-chatbar) each work alone. Installed together, they plug into each other:
 
-- With **Go to** (⌘⇧P), paste a PR link or type `repo#123` and pick "Review PR"; reviews you started are searchable as "Resume review". Go to is extensible: its [provider contract](https://github.com/saefty/herdr-corgi-goto/blob/main/mods/goto/PROVIDERS.md) is how PR review registers these.
+- With **Go to** (⌘⇧P), paste a PR link or type `repo#123` and pick "Review PR"; reviews you started are searchable as "Resume review".
 - With the **chat bar**, Discuss opens the agent's chat bubble so you can follow its answer without leaving the review.
-- Contexts (accounts, clone folders, env per context) come from your own mod through [PROVIDERS.md](mods/pr-review/PROVIDERS.md).
+- **Separate setups**, like work and personal: a small mod of your own can give each its accounts, clone folder and environment, and the panel shows each setup's PRs with its own tag.
 
 ## What's in here
 
@@ -95,9 +99,20 @@ for that language: `typescript-language-server` + `tsc` (TypeScript, JavaScript)
 The reviewers use Claude Code's `/security-review` and a `/code-review` command; without the command in your
 Claude setup the same review runs as a plain prompt.
 
-## Install
+## Install in three steps
 
-Copy `mods/pr-review` to `~/.config/herdr-app/mods/`, then run `herdr-app check ~/.config/herdr-app/mods/pr-review`.
+<table>
+<tr>
+<td align="center" valign="top" width="33%"><h3>1</h3><b>Add the mod</b><br /><sub>With <a href="https://github.com/saefty/herdr-corgi">Corgi</a>: <code>corgi enable pr-review</code>. By hand: copy <code>mods/pr-review</code> to <code>~/.config/herdr-app/mods/</code>. There are no keys to merge.</sub></td>
+<td align="center" valign="top" width="33%"><h3>2</h3><b>Check it</b><br /><sub>Corgi does this for you. By hand: <code>herdr-app check ~/.config/herdr-app/mods/pr-review</code>.</sub></td>
+<td align="center" valign="top" width="33%"><h3>3</h3><b>Open a PR</b><br /><sub>The panel docks on the right. Its Setup says which programs are missing; then pick a PR and press Review.</sub></td>
+</tr>
+</table>
+
+Or tell your agent: add herdr.dev/mods/saefty/herdr-corgi-pr-review
+
+By hand, step by step: copy `mods/pr-review` to `~/.config/herdr-app/mods/`, then run
+`herdr-app check ~/.config/herdr-app/mods/pr-review`.
 The panel docks on the right the first time Herdr sees it. The review layout appears on first use: the first
 "Review" click writes it to `layouts/review.json` (or `layouts/pr-review.json` when you already have a different
 layout named `review`). It never overwrites a file you have.
@@ -119,10 +134,27 @@ Optional, in `~/.config/herdr-app/pr-review.config.json`:
 conventions every PR is checked against; `ledger` is a folder for a JSONL usage ledger of every LLM call; `dryRun`
 makes "Submit review" write the GitHub payload to `pr-data/review-dry-run.json` instead of posting it.
 
+## Customize
+
+Without touching code:
+
+- **What the AI writes and checks:** `language`, `globalRules` (conventions every PR is checked against) and the
+  other keys in `pr-review.config.json` (above).
+- **Which model:** Haiku, Sonnet or Opus, picked per review in the review layout.
+- **The review layout:** `layouts/review.json` is yours once it is written. Move, resize or remove its blocks; the
+  mod never overwrites it.
+- **Your own code review:** with a `/code-review` command in your Claude setup, the Claude reviewer uses it.
+- **Separate setups** (accounts, clone folders, environment) from a small mod of your own; see Plug-ins.
+
+Changed the code itself? Your edits survive `corgi update`: Corgi merges your version, the old release and the new
+one. `corgi diff pr-review` shows what you changed, and `corgi resolve pr-review` helps when an update and your edit
+touch the same lines.
+
 ## Plug-ins
 
-Other mods can add contexts (groups of PRs with their own tag, env vars, clone folder and view filter), mirror the
-review list elsewhere, and hook into Go to and a chat bar. See `mods/pr-review/PROVIDERS.md`.
+Other mods can add setups (groups of PRs with their own tag, environment, clone folder and view filter), show the
+review list somewhere else, and work with Go to and a chat bar. For mod authors, the details are in
+[PROVIDERS.md](mods/pr-review/PROVIDERS.md).
 
 ## Demo
 
