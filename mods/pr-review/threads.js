@@ -103,13 +103,14 @@ export function agentLabel(agent, fallback) {
 // ---- GitHub: exactly what is ticked goes out
 
 // off: the ids unticked; summaryOn: the summary ticked. ready: something to post (a verdict alone counts).
-export function ghPlan({ comments, off = new Set(), summary = "", summaryOn = true, event = "comment", commit, lines, repo }) {
+export function ghPlan({ comments, off = new Set(), summary = "", summaryOn = true, event = "comment", commit, lines, repo, login = null }) {
   const picked = withIds(comments).filter((c) => !off.has(c.id));
   const { payload, outside } = ghReview({ comments: picked, event, summary: summaryOn ? summary : "", commit, lines });
   const n = payload.comments.length, word = { comment: "Comment", approve: "Approve", request_changes: "Request changes" }[event] ?? "Comment";
   const ready = n > 0 || Boolean(payload.body) || payload.event !== "COMMENT";
   const what = [n ? `${n} ${n === 1 ? "comment" : "comments"}` : null, payload.body ? "a review body" : null].filter(Boolean).join(" and ") || "a review";
-  return { payload, outside, picked, ready, label: `Post ${what} to ${repo ?? "GitHub"} as ${word}` };
+  // label: the button (short); target: the line above it, which says who posts where (it wraps, never clipped).
+  return { payload, outside, picked, ready, label: `Post ${what}`, target: `as ${login ?? "your gh login"} · ${repo ?? "GitHub"} · ${word}` };
 }
 
 // One line comment posted at once (POST repos/{o}/{r}/pulls/{n}/comments); null when GitHub can't take it on a line.

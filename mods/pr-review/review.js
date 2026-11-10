@@ -247,7 +247,7 @@ export const ReviewMode = {
     else if (name === "done") { this.registerReview(cx, { status: "done", doneAt: Date.now() }); this.note = "Marked done: it leaves the open reviews"; }
     else if (name === "findings") this.tab = "findings";
     else if (name === "back") leave();
-    else if (name === "finish") this.finishOpen = !this.finishOpen;
+    else if (name === "finish") { this.finishOpen = !this.finishOpen; if (this.finishOpen) this.loadGhLogin(cx); }
     else if (name === "discuss") { const f = this.find.list.find((x) => x.id === arg); if (f) this.discuss(f, cx); } // discuss:<finding id> (scripts, keys)
     else if (name === "keys") openOverlay({ mod: "pr-review", props: { part: "keys" }, kind: "popup", ...KEYS_POP });
     else if (name === "comment") { // comment:<path>:<line>[-<end>]: the composer under that new-side line (scripts, tests)
@@ -1474,10 +1474,21 @@ export const ReviewMode = {
       prompt: buildReview({ pr: this.pr, base: this.base, comments: sent, lang: this.lang(), event: this.event, summary, replies: this.repliesFile(), contract: TH.repliesContract }),
       onSent: (cx) => done(cx, { route: "agent", agent: label }) });
   },
+  // The gh login that posts for this PR's context (its env picks the account), asked once per context.
+  loadGhLogin(cx) {
+    const id = this.ctxId();
+    if (this.ghLogin?.[id] !== undefined) return;
+    this.ghLogin = { ...this.ghLogin, [id]: null };
+    const argv = [...this.ctxEnv(id), "gh", "api", "user", "--jq", ".login"];
+    cx.spawn(async (cx) => {
+      const r = await exec(argv[0], argv.slice(1), { timeout: 20000 }).catch(() => null);
+      if (r?.code === 0 && r.stdout.trim()) { this.ghLogin = { ...this.ghLogin, [id]: r.stdout.trim() }; cx.notify(); }
+    });
+  },
   ghPlanNow() {
     const repo = /github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/.exec(this.prSel?.url ?? "");
     return TH.ghPlan({ comments: this.comments, off: this.off, summary: this.summary.value(), summaryOn: this.summaryOn, event: this.event, commit: this.head,
-      lines: this.diffLines ?? new Map(), repo: repo ? `${repo[1]}#${repo[2]}` : null });
+      lines: this.diffLines ?? new Map(), repo: repo ? `${repo[1]}#${repo[2]}` : null, login: this.ghLogin?.[this.ctxId()] ?? null });
   },
 
   // One GitHub review with these comments (pr.js ghReview), JSON on stdin, as the PR's context (its gh account).
@@ -1617,9 +1628,9 @@ export const ReviewMode = {
       .child(div().flex_1().min_h(0).relative().max_h(330)
         .child(v_flex().id("rv-finish-items").gap(4).max_h(330).overflow_y_scroll()
           .when(gh, (e) => e.child(h_flex().id("rv-fi-summary").gap(8).items_start().p(6).rounded(6).bg(this.summaryOn && summary ? t.surface : t.background)
-            .child(tick("rv-fit-summary", this.summaryOn, () => { this.summaryOn = !this.summaryOn; }))
-            .child(v_flex().flex_1().min_w(0).gap(2).child(div().text_size(12).font_semibold().child("Review body (the summary above)"))
-              .child(div().text_size(12.5).whitespace_normal().text_color(summary && this.summaryOn ? t.foreground : t.muted).child(summary || "(empty)")))))
+            .child(summary ? tick("rv-fit-summary", this.summaryOn, () => { this.summaryOn = !this.summaryOn; }) : div().w(18).flex_none().text_size(14).text_color(t.dim).child("☐"))
+            .child(v_flex().flex_1().min_w(0).gap(2).child(div().text_size(12).font_semibold().text_color(summary ? t.foreground : t.muted).child("Review body (the summary above)"))
+              .child(div().text_size(12.5).whitespace_normal().text_color(summary && this.summaryOn ? t.foreground : t.muted).child(summary || "No body: write one above to post it")))))
           .children(all.map(item))
           .when(!n, (e) => e.child(div().p(6).text_size(12.5).text_color(t.muted).child("No pending comments. AI suggestions and findings go out only after you add them as comments.")))))
       .when(Boolean(this.posted?.url || this.posted?.dry), (e) => e.child(v_flex().gap(2).p(8).rounded(6).bg(t.surface).text_size(12)
@@ -1629,6 +1640,7 @@ export const ReviewMode = {
         .children((this.posted.items ?? []).map((w) => div().truncate().text_color(t.muted).child(`· ${w}`)))))
       .when(Boolean(this.note) && /^(Not posted|Not sent|Dry run|Nothing)/.test(this.note ?? ""), (e) => e.child(div().text_size(12).whitespace_normal()
         .text_color(/^Dry run/.test(this.note) ? t.muted : t.ansi1).child(this.note)))
+      .when(gh, (e) => e.child(div().text_size(12.5).text_color(t.muted).whitespace_normal().text_right().child(plan.target)))
       .child(h_flex().gap(8).items_center()
         .when(n > 0, (e) => e.child(pill("rv-rdrop", t, "Discard pending", (_e, cx) => { this.comments = []; this.persist(cx); cx.notify(); })))
         .child(div().flex_1())
@@ -1692,8 +1704,14 @@ export const ReviewMode = {
       .child(div().id("rv-keys").w(26).h(26).flex().items_center().justify_center().rounded_full().border_1().border_color(t.border).text_size(12.5).text_color(t.muted)
         .cursor_pointer().hover((s) => s.text_color(t.foreground)).on_mouse_down("left", stop).tooltip("Keyboard shortcuts")
         .on_click(() => openOverlay({ mod: "pr-review", props: { part: "keys" }, kind: "popup", ...KEYS_POP })).child("?"))
-      .child(pill("rv-reviews-btn", t, Object.values(shared("review.reviewers") ?? {}).some((r) => r.busy) ? "Reviews ⋯" : "Reviews ▾",
-        () => openOverlay({ mod: "pr-review", props: { part: "reviews" }, kind: "popup", width: 460, height: 250 })))
+      .child((() => {
+        const runs = Object.values(shared("review.reviewers") ?? {}), open = () => openOverlay({ mod: "pr-review", props: { part: "reviews" }, kind: "popup", width: 460, height: 250 });
+        const label = runs.some((r) => r.busy) ? "Reviews running ⋯" : "Run review ▾";
+        // Until a reviewer ran, the deep review is the button to find: green, like Finish your review.
+        return runs.some((r) => r.at || r.busy) ? pill("rv-reviews-btn", t, label, open)
+          : div().id("rv-reviews-btn").flex_none().px(12).h(30).flex().items_center().rounded(7).bg(GH_GREEN).text_color("#ffffff").text_size(13).font_semibold()
+            .cursor_pointer().on_mouse_down("left", stop).on_click(open).child(label);
+      })())
       .when(Boolean(this.worktree?.path) && !this.trustedPr(), (e) => e.child(div().id("rv-trust-wrap").tooltip("Restricted Mode: someone else's code, so language servers don't run anything from the repository and go-to-definition may find less. Click to trust this PR.")
         .child(pill("rv-trust", t, "Restricted Mode · Trust", (_e, cx) => this.trust("pr", cx), false, t.ansi3))))
       .child(pill("rv-values", t, `Values: ${valuesOn() ? "On" : "Off"}`, () => setShared("review.values", !valuesOn()), valuesOn()))
@@ -1904,6 +1922,7 @@ export const ReviewMode = {
         .when(Boolean(pr.state), (e) => e.child(badge(t, pr.state === "open" ? "Open" : pr.state, t[{ open: "ansi2", draft: "dim", merged: "ansi5", closed: "ansi1" }[pr.state]] ?? t.dim))))
       .when(Boolean(ai?.mergeRisk || ai?.effort), (e) => e.child(this.riskBadges(t, ai, "rv-ob")))
       .when(Boolean(this.since), (e) => e.child(div().rounded(8).overflow_hidden().border_1().border_color(t.border).child(this.sinceBanner(t))))
+      .when(!ai && !this.aiBusy, (e) => e.child(this.startCards(t)))
       .child(h_flex().gap(12)
         .child(statCard(t, "rv-st-layers", "Layers", ai ? `${layers.length} ${layers.length === 1 ? "layer" : "layers"}` : "—",
           segBar(t, layers.map((s, k) => ({ weight: 1, color: t[hues[k % hues.length]] }))), layers.map((s) => plain(s.title)).join(" · ") || "Not analyzed yet"))
@@ -2001,6 +2020,18 @@ export const ReviewMode = {
       .child(archLegend(L, t, "rv-arch-edges", "Edges", opts))
       .when(this.ai?.visuals?.length > 0, (e) => e.child(div().pt(6).text_size(13).font_semibold().text_color(t.muted).child("More views"))
         .child(div().max_w(760).child(more())));
+  },
+
+  // The two deep looks, side by side on a fresh review: the analysis (understanding) and the code review (findings).
+  startCards(t) {
+    const m = model(), cr = this.find.runs.claude ?? {};
+    const card = (id, label, what, click, busy) => v_flex().id(id).flex_1().min_w(0).gap(6).p(12).rounded(10).border_1().border_color(t.border).bg(t.surface)
+      .child(div().id(`${id}-go`).flex_none().px(12).h(30).flex().items_center().justify_center().rounded(8).text_size(13).font_semibold().bg(busy ? t.raised : t.solid)
+        .text_color(busy ? t.muted : t.solid_foreground).cursor_pointer().on_click(click).child(busy ? `${label}…` : label))
+      .child(div().text_size(12.5).text_color(t.muted).whitespace_normal().child(what));
+    return h_flex().gap(12).items_start()
+      .child(card("rv-start-ai", `Analyze with ${MODELS[m].label}`, `Understand the change: layers in reading order, pictures, sample values and a walkthrough. ${this.estimate(m)}.`, (_e, cx) => this.loadAi(cx, "run"), Boolean(this.aiBusy)))
+      .child(card("rv-start-cr", "Run Claude code review", "Find problems: bugs and risks as findings on their lines, each with Fix and Verify.", (_e, cx) => this.runReviewer("claude", cx), Boolean(cr.busy)));
   },
 
   // ---- Ask about this (review.py main_ask, "Review: architecture question"): a question on the picture, a node or a
@@ -2235,8 +2266,10 @@ export const ReviewMode = {
         .child(h_flex().flex_wrap().gap(4).children([["open", "Open"], ["fixed", "Fixed"], ["dismissed", "Dismissed"], ["all", "All"]].map(([v, label]) =>
           chip("status", v, label, v === "all" ? all.length : v === "open" ? count((x) => ["open", "progress", "recheck"].includes(this.fstatus(x))) : count((x) => this.fstatus(x) === v)))))
         .child(h_flex().gap(8).items_center()
-          .child(div().flex_1().text_size(12).text_color(t.muted).child(Object.values(runs).some((r) => r.busy) ? "A reviewer is running…" : all.length ? `${shown.length} shown` : "No findings yet: run a reviewer from Reviews ▾ in the top bar."))
+          .child(div().flex_1().text_size(12).text_color(t.muted).child(Object.values(runs).some((r) => r.busy) ? "A reviewer is running…" : all.length ? `${shown.length} shown` : "No findings yet. Run a reviewer:"))
           .when(open.length > 0, (e) => e.child(pill("rv-fixall", t, `Fix ${open.length} open (shown)`, (_e, cx) => this.fix(open, cx), false, t.foreground)))))
+      .when(!all.length, (e) => e.child(h_flex().flex_none().flex_wrap().px(14).py(8).gap(6).border_b(1).border_color(t.border)
+        .children(reviewersNow().map(([k, [label]]) => pill(`rv-frun-${k}`, t, runs[k]?.busy ? `${label} running…` : label, (_e, cx) => this.runReviewer(k, cx), false, t.foreground)))))
       .child(div().flex_1().min_h(0).relative()
         .child(v_flex().id("rv-find-left").absolute().inset_0().overflow_y_scroll().p(8).gap(6)
           .children(inDiff.map(card))

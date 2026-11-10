@@ -62,7 +62,9 @@ const comments = [{ id: "c1", file: "a.py", start: 3, end: 4, text: "Warum? (edi
 let plan = TH.ghPlan({ comments, off: new Set(["c2"]), summary: "Overall", summaryOn: true, event: "comment", commit: "h", lines, repo: "acme/x#7" });
 assert.deepEqual(plan.payload.comments.map((c) => c.body), ["Warum? (edited)"]);
 assert.ok(plan.payload.body.includes("Overall") && plan.payload.body.includes("outside"), "out-of-diff notes go into the body when ticked");
-assert.equal(plan.label, "Post 1 comment and a review body to acme/x#7 as Comment");
+assert.equal(plan.label, "Post 1 comment and a review body");
+assert.equal(TH.ghPlan({ comments, summary: "", event: "approve", commit: "h", lines, repo: "acme/x#7", login: "saefty" }).target, "as saefty · acme/x#7 · Approve");
+assert.equal(TH.ghPlan({ comments: [], summary: "  ", summaryOn: true, event: "comment", commit: "h", lines }).ready, false, "an empty body is not posted");
 plan = TH.ghPlan({ comments, off: new Set(["c1", "c2", "c3"]), summary: "Overall", summaryOn: false, event: "comment", commit: "h", lines });
 assert.equal(plan.ready, false, "nothing ticked and no body: Submit is off");
 assert.equal(TH.ghPlan({ comments, off: new Set(["c1", "c2", "c3"]), summaryOn: false, event: "approve", commit: "h", lines }).ready, true, "a verdict alone posts");
