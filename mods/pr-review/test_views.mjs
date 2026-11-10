@@ -1,0 +1,52 @@
+// Run: node test_views.mjs  (the panel's picking / selected state, the in-progress cap, a flow visual as archLayout input)
+import assert from "node:assert/strict";
+import { panelState, bodyTab, capped, flowArch, IN_PROGRESS_MAX } from "./views.js";
+import { archLayout } from "./arch.js";
+
+// Picking until something is chosen; PRs ▾ goes back to picking without dropping the choice.
+assert.equal(panelState({ chosen: null, picking: false }), "picking");
+assert.equal(panelState({ chosen: { url: "u" }, picking: false }), "selected");
+assert.equal(panelState({ chosen: { url: "u" }, picking: true }), "picking");
+assert.equal(panelState({ chosen: "branch", picking: false }), "selected");
+assert.equal(bodyTab("walk"), "walk");
+assert.equal(bodyTab("diff"), "diff");
+assert.equal(bodyTab(undefined), "diff");
+
+// In progress: three, then "Show all (n)".
+const six = [1, 2, 3, 4, 5, 6];
+assert.equal(IN_PROGRESS_MAX, 3);
+assert.deepEqual(capped(six), { shown: [1, 2, 3], more: 3 });
+assert.deepEqual(capped(six, true), { shown: six, more: 0 });
+assert.deepEqual(capped([1, 2]), { shown: [1, 2], more: 0 });
+assert.deepEqual(capped([]), { shown: [], more: 0 });
+
+// A flow: one implicit group, notes as descriptions, changed as status, transition text as labels, sources kept.
+const flow = { kind: "flow", title: "One run", nodes: [
+  { id: "job", label: "Job" }, { id: "rem", label: "sendDueReminders", changed: true, note: "new", source: "implemented", at: "src/loans/reminders.ts:3" },
+  { id: "mail", label: "sendEmail", source: "existing" }, { id: "sms", label: "SMS", source: "spec" }],
+  edges: [{ from: "job", to: "rem", label: "run" }, { from: "rem", to: "mail", label: "reminder", changed: true, source: "implemented" },
+    { from: "rem", to: "sms", event: "due", guard: "opted in", source: "spec" }] };
+const a = flowArch(flow);
+assert.deepEqual(a.groups, [{ id: "flow", label: "", kind: "" }]);
+assert.ok(a.nodes.every((n) => n.group === "flow"));
+const rem = a.nodes.find((n) => n.id === "rem");
+assert.equal(rem.description, "new"); assert.equal(rem.status, "changed"); assert.equal(rem.source, "implemented"); assert.equal(rem.at, "src/loans/reminders.ts:3");
+assert.equal(a.nodes.find((n) => n.id === "job").status, undefined);
+assert.equal(a.edges[1].status, "changed");
+assert.equal(a.edges[2].label, "due [opted in]");
+assert.equal(a.edges[2].source, "spec");
+// Laid out like Architecture impact: left to right, one numbered path per edge, the spec one dashed.
+const L = archLayout(a);
+const x = new Map(L.nodes.map((n) => [n.id, n.x]));
+assert.ok(x.get("job") < x.get("rem") && x.get("rem") < x.get("mail"));
+assert.deepEqual(L.paths.map((p) => p.num), [1, 2, 3]);
+assert.ok(L.paths.find((p) => p.to === "sms").dashed);
+assert.equal(L.groups.length, 1);
+
+// Its own groups stay; transitions count as edges too; an empty visual lays out empty.
+const g = flowArch({ groups: [{ id: "api", label: "API", kind: "service" }], nodes: [{ id: "a", label: "A", group: "api" }], transitions: [{ from: "a", to: "a", label: "loop" }] });
+assert.deepEqual(g.groups.map((x) => x.id), ["api"]);
+assert.equal(g.nodes[0].group, "api");
+assert.equal(g.edges.length, 1);
+assert.equal(archLayout(flowArch({})).nodes.length, 0);
+console.log("views: ok");
