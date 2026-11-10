@@ -22,6 +22,7 @@ import { ghTarget, lowValue, markReviewed, sinceBase, verifyCandidates, applyVer
 import { diffLines, inDiff, ghReview, lineThreads, suggestionBlock, buildReview, layoutPlan, specElements, diagramsState } from "./pr.js";
 import { archView, archModel, archLegend, visualsCard, statCard, segBar, foldCard, chip, legend, specTag, sourceLegend, SEVERITY_COLOR } from "./stack.js";
 import { hasSources } from "./arch.js";
+import { leftWidth } from "./explore.js";
 
 const LEVEL = { high: "ansi1", medium: "ansi3", low: "ansi4", skim: "muted" };
 const COVER = { seen: ["done", "ansi2"], partly: ["partly", "ansi3"], absent: ["missing", "ansi1"], extra: ["extra (not asked)", "ansi4"] };
@@ -31,7 +32,7 @@ const GH_GREEN = "#238636"; // GitHub's "Review changes" button
 const STATUS = { added: ["A", "ansi2"], deleted: ["D", "ansi1"], renamed: ["R", "ansi4"], modified: ["M", "ansi3"] };
 const SPIN = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 // Diff column geometry: clicks inside the virtual list are placed by x (one click handler per list).
-const LEFT = 420, ROW = 22, GUTTER = 4 + 48 + 48 + 22, GAP_SEG = 110, BTN = 110, BTN_GAP = 8, ACT = 44;
+const SPLIT = 6, ROW = 22, GUTTER = 4 + 48 + 48 + 22, GAP_SEG = 110, BTN = 110, BTN_GAP = 8, ACT = 44;
 const FILE_CHEV = 30, FILE_SEEN = 100, FILE_WHOLE = 124;
 const MORE = 20; // lines per ↑/↓ click
 const COMPOSE = 168; // the composer row: header + a fixed-height textarea (the list needs every row's height up front)
@@ -1992,6 +1993,16 @@ export const ReviewMode = {
     return h_flex().overflow_hidden().children(renderLine(div, m?.shown[it.ri]?.text ?? r.text, m?.spans[it.ri] ?? [], this.syn));
   },
 
+  // The left column's width: while dragging the pointer's, else the kept one (default 560, 340 to 65% of the window).
+  leftW() { return leftWidth(this.dragW ?? shared("review.leftWidth"), this.winW); },
+  // The 6 px divider between the column and the diff: drag to resize, double-click for the default width.
+  splitter(t) {
+    return h_flex().id("rv-split").w(SPLIT).h_full().flex_none().justify_center().cursor_col_resize().bg(this.drag ? t.accent + "33" : t.chrome).hover((s) => s.bg(t.accent + "33"))
+      .on_mouse_down("left", (_e, cx) => { this.drag = true; cx.stop_propagation(); cx.notify(); })
+      .on_click((e, cx) => { if (e.click_count === 2) { this.drag = false; this.dragW = null; setShared("review.leftWidth", null); cx.notify(); } })
+      .child(div().w(1).h_full().bg(this.drag ? t.accent : t.border));
+  },
+
   renderReview(cx) {
     const t = theme(), target = shared("review.target") ?? null;
     if (target?.url !== this.prSel?.url) { this.prSel = target; this.resetReview(); }
@@ -2001,9 +2012,14 @@ export const ReviewMode = {
       cx.timer.after(0, (cx) => { this.refreshQueued = false; this.refresh(cx); });
     }
     if (this.hunks && model() !== this.aiModel && !this.aiBusy) this.loadAi(cx, "cache");
+    if (this.winW) this.listW = this.winW - this.leftW() - SPLIT; // the diff column's width: card heights wrap to it
     const other = target && !C.shown(ctxDoc(), prCtx(target), shared);
     const root = v_flex().id("rv-root").size_full().bg(t.background).text_color(t.foreground).text_size(13.5)
-      .on_size_change((size, cx) => { if (Math.abs((this.listW ?? 0) - (size.width - LEFT)) > 8) { this.listW = size.width - LEFT; cx.notify(); } })
+      .on_size_change((size, cx) => { if (Math.abs((this.winW ?? 0) - size.width) > 8) { this.winW = size.width; cx.notify(); } })
+      // Dragging the divider: the column follows the pointer; the width is kept (shared "review.leftWidth") on release.
+      // ponytail: a release outside the window keeps dragging until the next release here.
+      .on_mouse_move((e, cx) => { if (this.drag) { this.dragW = leftWidth(e.local_position?.x ?? e.position.x, this.winW); cx.notify(); } })
+      .on_mouse_up("left", (_e, cx) => { if (this.drag) { this.drag = false; if (this.dragW !== null && this.dragW !== undefined) setShared("review.leftWidth", this.dragW); this.dragW = null; cx.notify(); } })
       .track_focus(this.fh).on_key_down((e, cx) => this.onReviewKey(e, cx));
     if (!target || other) {
       return root.items_center().justify_center().gap(12).text_color(t.muted)
@@ -2037,11 +2053,12 @@ export const ReviewMode = {
       .on_click((_e, cx) => { this.tab = id; cx.notify(); }).child(label);
     return root
       .child(h_flex().flex_1().min_h(0)
-        .child(v_flex().w(LEFT).flex_none().h_full().bg(t.chrome).border_r(1).border_color(t.border)
+        .child(v_flex().w(this.leftW()).flex_none().h_full().bg(t.chrome)
           .child(h_flex().flex_none().p(8).gap(6).border_b(1).border_color(t.border)
             .child(tabBtn("files", `Files · ${this.shown().patch.length}`)).child(tabBtn("steps", `Layers${this.ai ? ` · ${this.ai.steps.filter((s) => !s.pseudo).length}` : ""}`))
             .child(tabBtn("findings", `Findings${this.find.list.length ? ` · ${this.find.list.filter((x) => ["open", "progress", "recheck"].includes(this.fstatus(x))).length}` : ""}`)))
           .child(this.tab === "steps" ? this.stepsPane(t) : this.tab === "findings" ? this.findingsPane(t) : this.filesPane(t)))
+        .child(this.splitter(t))
         .child(v_flex().flex_1().min_w(0).h_full().relative()
           .child(div().id("rv-probe").absolute().top(-100).font_family(settings().font_family ?? "JetBrains Mono").text_size(13).whitespace_nowrap()
             .on_size_change((size, cx) => { const w = size.width / PROBE.length; if (w > 0 && Math.abs((this.charW ?? 0) - w) > 0.01) { this.charW = w; cx.notify(); } }).child(PROBE))
