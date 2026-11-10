@@ -71,12 +71,29 @@ title bar (traffic lights at 12, 16):
   `Comment` / `Approve` / `Request changes` with GitHub's descriptions, `Send to: GitHub | Agent session` (only
   when the PR has a session), a preview of what goes out ("Posts one review to owner/repo#n: Comment, 2 line
   comments, 1 in the body." and the lines), `Discard pending` and a green `Submit review`.
-- **Architecture impact** and **Security blast radius**: groups as dashed columns of cards (title up to 2 lines,
-  description up to 3, type, a status chip: ADDED `ansi2`, CHANGED `accent`, UNCHANGED `muted`, REMOVED
-  `ansi1`); every connection on its own lane with an arrow and a numbered round badge; a small hop where two
-  unrelated lines cross; an "Edges" list (blast radius: "How the context links to the changes", larger) with
-  "① A → B: label" rows. Hovering a badge or row highlights that line. A Structural diff / Before / After
-  toggle; the stats, legend and toggle wrap onto a second row when narrow.
+- **Architecture impact** and **Security blast radius**: groups as dashed frames of cards (title up to 2 lines,
+  description up to 3, type, "Open ↗" to the code, a status chip: ADDED `ansi2`, CHANGED `accent`, UNCHANGED
+  `muted`, REMOVED `ansi1`). Every call points left to right. Inside a group a node sits right of its caller, so a
+  group can span columns. Groups whose columns overlap stack vertically (arch.js archLayout). Each call to the next
+  column gets its own lane, an arrow and a numbered round badge, with a small hop where two unrelated lines cross.
+  A call that would skip a column or close a cycle is a 16 px stub with a chip ("→ Target ⑭"). Hovering the chip
+  highlights the target, and clicking it focuses the target. Three or more calls from one node into one group share
+  one trunk that fans out in the group's left inset. Clicking a card focuses it: its lines and neighbours stay, and
+  the rest drops to 25 % (hover: 55 %). A second click or Esc clears the focus. An orchestrator with `states` shows
+  them as a lane in its card, and each state's call leaves at its row. An "Edges" list (blast radius: "How the
+  context links to the changes", larger) has "① A → B: label" rows. Hovering a badge or row highlights that line.
+  A Structural diff / Before / After toggle; the stats, legend and toggle wrap onto a second row when narrow.
+- Sources: elements and intent/behavior statements may carry `source` (implemented with `evidence` file:line,
+  existing in grey, spec dashed with a "spec" tag: only in the description or ticket). A legend row reads
+  "Implemented · Existing · Spec only". "Check against the task" links to the spec-only elements it names.
+- `↻ Refresh diagrams` (the page header) and `Refresh this view` (an expanded layer) run review.py in diagrams
+  mode: one call ("Review diagrams") that redraws only the pictures for today's diff and merges them into the
+  cached analysis. While it runs the button reads "Refreshing…". When it finishes, the pictures say "updated for
+  <head>", or "diagrams from an older diff" when the head moved since.
+- A layer can carry several `visuals`; more than two show as tabs. A `state_machine` is drawn top to bottom
+  (arch.js stateLayout): a start dot, states by layer, an end ring. A choice forks into columns, and Parallel/Map
+  branches sit side by side in their block. Transitions back go up a rounded return lane on the left. Self-loops
+  are a small loop on the card edge. Catch/Retry are stubs to the right. Labels read "event [guard] / action".
 
 ## How it behaves
 

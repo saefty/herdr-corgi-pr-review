@@ -31,13 +31,17 @@ The screenshots show an invented demo project (`demo/`), not a real repository.
 ## Highlights
 
 **The changeset, visualized.** The PR is grouped into layers by intent (data model, API, UI, tests) and ordered by
-risk or by reading order. Each layer says why it matters, which files it touches and what to check, with a small
-diagram of its flow, sequence or state machine.
+risk or by reading order. Each layer says why it matters, which files it touches and what to check, with one or more
+small diagrams of its flow, sequence or state machine. A state machine is drawn top to bottom, either as an entity's
+lifecycle or as a Step Functions workflow.
 
 ![Layers: the change grouped by intent, with a picture per layer](docs/screenshots/layers.png)
 
 **Architecture impact.** A map of the components the PR adds, changes or removes and how they connect, with a
-Before / After toggle. Connections get their own lanes and numbered labels, so you can follow them.
+Before / After toggle. Calls point left to right. Each connection gets its own lane and a numbered label. A call that
+would skip a column becomes a short chip that names the target. Click a card to dim everything it doesn't touch.
+Elements that only the PR description or ticket mentions, and that the diff doesn't contain, show as dashed "spec".
+↻ Refresh diagrams redraws the pictures for today's diff without re-running the whole analysis.
 
 ![Architecture impact: components as cards with New, Changed and Unchanged, numbered connections and a legend](docs/screenshots/architecture-impact.png)
 
