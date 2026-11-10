@@ -244,7 +244,7 @@ export const ReviewMode = {
 
   command(c, cx) {
     const [name, ...rest] = c.split(":"), arg = rest.join(":");
-    if (name === "steps" || name === "files" || name === "findings") this.tab = name;
+    if (name === "steps" || name === "files" || name === "findings" || name === "comments") this.tab = name;
     else if (name === "def") this.defineAt(arg, cx);
     else if (name === "page") { this.tab = "steps"; this.page = PAGES.some(([k]) => k === arg) ? arg : "overview"; }
     else if (name === "verify") this.runVerify(cx);
@@ -911,7 +911,7 @@ export const ReviewMode = {
     if (!h) { this.note = `Could not find ${at} in the diff`; return cx.notify(); }
     this.visit(h.id, cx); this.page = null; // from a Layers page: show the diff
     const view = this.tab === "steps" && this.itemsOf("steps").at[h.id] !== undefined ? "steps" : "files";
-    if (view === "files") { if (this.tab !== "findings") this.tab = "files"; this.collapsed.delete(h.path); this.sinceOn = false; } // the whole PR has every hunk
+    if (view === "files") { if (this.tab !== "findings" && this.tab !== "comments") this.tab = "files"; this.collapsed.delete(h.path); this.sinceOn = false; } // the whole PR has every hunk
     const k = `+${line}`, { items } = this.itemsOf(view), row = items.findIndex((x) => x.t === "row" && x.path === h.path && lineKey(x.src[x.ri]) === k);
     if (line && row >= 0) { this.fsel = { path: h.path, a: k, b: k }; this.lists[view].scroll_to_item(Math.max(0, row - 3), "top"); }
     else this.scrollTo(view, h.id);
@@ -950,6 +950,7 @@ export const ReviewMode = {
     const finds = this.find.list.filter((f) => f.file === path && ["open", "progress", "recheck"].includes(this.fstatus(f)));
     const own = this.ghOwn(), gh = this.gh.filter((g) => g.path === path && !own(g)), f = this.fsel, range = this.composing && f?.path === path && rangeOf(rows, f.a, f.b);
     const ths = this.threads().filter((x) => x.file === path), notes = codePins(this.pins(), path);
+    const show = this.show();
     const thread = { gh, editId: this.composing ? this.editing?.id ?? null : null, composeKey: range && at.compose === undefined ? lineKey(rows[range[1]]) : null };
     rows.forEach((r, ri) => {
       if (r.kind === "gap") { items.push({ t: "gap", path, r }); return; }
@@ -958,18 +959,23 @@ export const ReviewMode = {
       items.push({ t: "row", path, src: rows, ri, hunk });
       if (r.number === undefined) return;
       if (this.defAt && this.defAt.key === `${path}:${lineKey(r)}`) items.push({ t: "def", d: this.defAt });
-      for (const s of sugs) if (atLine(r, s.line, s.old)) items.push({ t: "sug", s }, { t: "sugact", s });
+      // The Show switch: a kind switched off folds away here, never silently ("n hidden").
+      const hidden = {}, hide = (k) => { hidden[k] = (hidden[k] ?? 0) + 1; };
+      for (const s of sugs) if (atLine(r, s.line, s.old)) { if (show.ai) items.push({ t: "sug", s }, { t: "sugact", s }); else hide("AI"); }
       for (const it of lineThreads(r, cms, thread)) {
         if (it.c) used.add(it.c);
         if (it.t === "compose") { if (at.compose !== undefined) continue; at.compose = items.length; } // one composer, even when a hunk shows twice
         if (it.t === "composeact" && at.compose !== items.length - 1) continue;
-        if (it.t === "comment") { items.push(...this.cardItems("c", it.c)); continue; }
+        if (it.t === "comment") { const k = it.c.from === "ki" ? "ai" : "mine"; if (show[k]) items.push(...this.cardItems("c", it.c)); else hide(k === "ai" ? "AI" : "Mine"); continue; }
         if (it.t === "cact") continue;
+        if (it.t === "gh" && !show.github) { hide("GitHub"); continue; }
         items.push(it);
       }
-      for (const th of ths) if (atLine(r, th.end, th.old)) items.push(...this.cardItems("th", th));
-      for (const pin of notes) if (atLine(r, pin.anchor.end, pin.anchor.old)) items.push(...this.cardItems("pin", pin));
-      if (r.kind !== "-") for (const f of finds) if (f.line === r.number) items.push({ t: "find", f }, { t: "fact", f });
+      for (const th of ths) if (atLine(r, th.end, th.old)) { if (show.mine) items.push(...this.cardItems("th", th)); else hide("Mine"); }
+      for (const pin of notes) if (atLine(r, pin.anchor.end, pin.anchor.old)) { if (show.notes) items.push(...this.cardItems("pin", pin)); else hide("Notes"); }
+      if (r.kind !== "-") for (const f of finds) if (f.line === r.number) { if (show.ai) items.push({ t: "find", f }, { t: "fact", f }); else hide("AI"); }
+      const n = Object.values(hidden).reduce((a, b) => a + b, 0);
+      if (n) items.push({ t: "hidden", text: `${n} hidden · ${Object.keys(hidden).join(", ")}`, key: `${path}:${lineKey(r)}` });
     });
     return cms.filter((c) => !used.has(c));
   },
@@ -1402,7 +1408,7 @@ export const ReviewMode = {
       const action = fv?.commit && fv.job.target === "sub" ? ["Apply to PR", (cx) => this.applyFix(fv.job, cx)] : fv ? ["Go to fix", () => this.goFix(fv.job)] : ["Fix", (cx) => this.fixComments([o.id], cx)];
       return { key: `th:${o.id}`, id: o.id, src: "mine", author: "You", time: hm(o.sentAt), sel: true, status, text: o.text, action,
         folded: v.collapsed ? `You: ${plain(o.text)} · ${status[0]}` : null,
-        replies: v.entries.map((e) => ({ author: e.who === "you" ? "You" : e.who === "agent" ? agent : e.who, src: e.who === "you" ? "mine" : e.who === "agent" ? "agents" : "github",
+        replies: v.entries.filter((e) => this.show().agents || e.who !== "agent").map((e) => ({ author: e.who === "you" ? "You" : e.who === "agent" ? agent : e.who, src: e.who === "you" ? "mine" : e.who === "agent" ? "agents" : "github",
           text: e.text, status: e.status ? [{ fixed: `Fixed${e.commit ? ` in ${String(e.commit).slice(0, 7)}` : ""}`, wontfix: "Declined", answered: "Answered", question: "Question" }[e.status] ?? e.status, THREAD_COLOR[e.status] ?? "muted"] : null })),
         menu: [["Reply", false, (cx) => this.startReply(o.id, cx)], ...(fv?.job.terminal ? [["Go to fix", false, () => this.goFix(fv.job)]] : []),
           ...(fv?.job.target === "sub" ? [["Discard fix", true, (cx) => this.discardFix(fv.job, cx)]] : []), ...(v.status === "fixed" || v.status === "wontfix" ? [[this.openThreads.has(o.id) ? "Fold" : "Unfold", false, () => { if (this.openThreads.has(o.id)) this.openThreads.delete(o.id); else this.openThreads.add(o.id); }]] : []),
@@ -1802,6 +1808,60 @@ export const ReviewMode = {
           .on_click((_e, cx) => this.sendConfirmed(cx)).child(this.sending ? "Sending…" : p.fix?.target === "sub" ? "Start sub-agent" : "Send to agent")));
   },
 
+  // ---- the Comments tab and the Show switch (shared "review.show": per user, all on by default)
+
+  show() { return TH.showOf(shared("review.show")); },
+  toggleShow(k) { setShared("review.show", { ...this.show(), [k]: !this.show()[k] }); },
+  // Every comment of the PR as rows (threads.js commentRows), memoized on what they come from.
+  commentRowsNow() {
+    const deps = [this.comments, this.threadDoc, this.replies, this.gh, this.deep.pins, this.prSel?.url];
+    if (!this.rowsOf || this.rowsOf.deps.some((d, i) => d !== deps[i])) {
+      this.rowsOf = { deps, rows: TH.commentRows({ pending: this.comments ?? [], threads: this.threads(), replies: this.replies, gh: this.gh, ghOwn: this.ghOwn(), notes: this.pins() }) };
+    }
+    return this.rowsOf.rows;
+  },
+  showCountsNow() {
+    const agents = Object.values(this.replies ?? {}).reduce((n, r) => n + r.length, 0);
+    return TH.showCounts({ rows: this.commentRowsNow(), ai: this.openSugs().length + this.openFindings().length, agents });
+  },
+  // The switch as chips: what shows in the diff, with counts.
+  showChips(t, id) {
+    const show = this.show(), counts = this.showCountsNow();
+    return h_flex().flex_none().gap(4).items_center().child(div().text_size(12).text_color(t.muted).child("Show"))
+      .children(TH.SHOW_KINDS.map(([k, label]) => div().id(`${id}-${k}`).px(7).h(20).flex().items_center().gap(4).rounded(10).border_1().cursor_pointer().text_size(11.5)
+        .border_color(show[k] ? t[SOURCE[k]] ?? t.accent : t.border).text_color(show[k] ? t.foreground : t.dim).hover((s) => s.bg(t.hover))
+        .on_click((_e, cx) => { this.toggleShow(k); cx.notify(); }).child(label).child(div().text_color(t.muted).child(String(counts[k] ?? 0)))));
+  },
+  commentsPane(t) {
+    const all = this.commentRowsNow(), f = this.cfilter ?? "all", rows = TH.filterRows(all, f, this.show()), sel = new Set(this.selected());
+    const STATE = { pending: ["Pending", "ansi3"], waiting: ["Waiting on agent", "ansi6"], replied: ["Agent replied", "accent"], fixed: ["Fixed", "ansi2"], declined: ["Declined", "muted"], github: ["GitHub", "ansi4"], note: ["Note", "ansi5"] };
+    const chip = (k, label) => div().id(`rv-cf-${k}`).px(8).h(24).flex().items_center().rounded(6).cursor_pointer().text_size(12).border_1()
+      .bg(f === k ? t.selected : t.chrome).text_color(f === k ? t.foreground : t.muted).border_color(f === k ? t.accent : t.border).on_click((_e, cx) => { this.cfilter = k; cx.notify(); }).child(label);
+    const files = [...new Set(rows.map((r) => r.file))];
+    return v_flex().flex_1().min_h(0)
+      .child(v_flex().flex_none().px(14).py(10).gap(8).border_b(1).border_color(t.border)
+        .child(div().text_size(12.5).text_color(t.muted).whitespace_normal().child(TH.commentSummary(all) || "No comments yet"))
+        .child(h_flex().flex_wrap().gap(4).children([["all", "All"], ["pending", "Pending"], ["waiting", "Waiting"], ["replied", "Replied"], ["fixed", "Fixed"]].map(([k, l]) => chip(k, l))))
+        .child(h_flex().flex_wrap().child(this.showChips(t, "rv-cshow"))))
+      .child(div().flex_1().min_h(0).relative()
+        .child(v_flex().id("rv-comments-left").absolute().inset_0().overflow_y_scroll().p(8).gap(2)
+          .when(!rows.length, (e) => e.child(div().p(6).text_size(12.5).text_color(t.muted).child(all.length ? "Nothing matches these filters." : "Comments you write, send or post show here, with their replies.")))
+          .children(files.flatMap((file) => [div().pt(8).pb(2).px(6).text_size(11.5).font_semibold().text_color(t.muted).truncate().child(file),
+            ...rows.filter((r) => r.file === file).map((r) => {
+              const st = STATE[r.state], mine = r.kind === "pending" || r.kind === "thread";
+              return h_flex().id(`rv-cr-${r.id}`).gap(8).items_center().px(6).h(30).rounded(6).cursor_pointer().hover((s) => s.bg(t.hover))
+                .on_click((_e, cx) => { if (r.kind === "thread") this.openThreads.add(r.id); if (r.kind === "note") (this.openNotes ??= new Set()).add(r.id); this.jumpTo(`${r.file}:${r.line}`, cx); })
+                .child(div().id(`rv-crb-${r.id}`).w(14).h(14).flex_none().rounded(3).border_1().border_color(sel.has(r.id) ? t.accent : mine ? t.input : "#00000000").bg(sel.has(r.id) ? t.accent : "#00000000")
+                  .flex().items_center().justify_center().text_size(10).text_color(t.accent_foreground).child(sel.has(r.id) ? "✓" : "")
+                  .when(mine, (e) => e.on_click((_e, cx) => { this.toggleSel(r.id, cx); cx.stop_propagation(); })))
+                .child(div().w(40).flex_none().text_size(11.5).text_color(t.muted).child(`${r.old ? "−" : ""}${r.line}`))
+                .child(div().flex_1().min_w(0).truncate().text_size(13).child(plain(String(r.text).split("\n")[0])))
+                .when(r.replies > 0, (e) => e.child(div().flex_none().text_size(11.5).text_color(t.muted).child(`↩ ${r.replies}`)))
+                .child(div().flex_none().px(6).h(18).flex().items_center().rounded(9).border_1().border_color(t[st[1]] ?? t.muted).text_size(11).text_color(t[st[1]] ?? t.muted).child(st[0]));
+            })])))
+        .child(Scrollbar.vertical("rv-comments-left").absolute().inset_0()));
+  },
+
   // While comments are selected: a toolbar floating at the bottom centre of the diff (the list keeps room for it).
   selectionBar(t) {
     const n = this.selected().length, w = 340, left = Math.max(8, Math.round(((this.listW ?? 900) - w) / 2));
@@ -1877,6 +1937,7 @@ export const ReviewMode = {
     return h_flex().id("rv-meta").flex_none().flex_wrap().min_h(28).px(14).gap(8).items_center().border_b(1).border_color(t.border).bg(t.chrome).text_size(12).text_color(t.muted)
       .children(facts.flatMap((f, k) => (k ? [sep(), f] : [f])))
       .child(div().flex_1())
+      .child(this.showChips(t, "rv-show")).child(sep())
       .when(Boolean(this.worktree?.path) && !this.trustedPr(), (e) => e.child(link("rv-trust", div().text_color(t.ansi3).child("Restricted Mode · Trust"), (_e, cx) => this.trust("pr", cx))
         .tooltip("Someone else's code: language servers don't run anything from the repository, so go-to-definition may find less. Click to trust this PR.")))
       .child(link("rv-model", h_flex().gap(4).child(this.aiBusy ? div().child(SPIN[0]).frames(SPIN, 90) : div()).child(modelText).child("▾"),
@@ -2582,6 +2643,7 @@ export const ReviewMode = {
     if (it.t === "step") return 66 + 24 * it.s.questions.length;
     if (it.t === "sug") return 44 + 21 * this.lines(it.s.reason);
     if (it.t === "pad") return 60;
+    if (it.t === "hidden") return 24;
     if (it.t === "ch") return this.cardOf(it).folded ? 28 + 2 * CARD_GAP : CARD_HEAD;
     if (it.t === "cb") { const c = this.cardOf(it), w = this.cardW(c); return 12 + 20 * this.cardLines(c.text, w) + c.replies.reduce((n, r) => n + 26 + 19 * Math.min(8, this.cardLines(r.text, w - 22)), 0) + (it.k === "th" ? 0 : CARD_GAP); }
     if (it.t === "cr") return CARD_REPLY + CARD_GAP;
@@ -2657,6 +2719,7 @@ export const ReviewMode = {
     }
     if (it.t === "ch" || it.t === "cb" || it.t === "cr") return this.cardRow(it, t);
     if (it.t === "pad") return div().w_full().h(60);
+    if (it.t === "hidden") return div().w_full().h(24).pl(GUTTER + 4).flex().items_center().text_size(11.5).italic().text_color(t.muted).child(it.text);
     if (it.t === "gh") {
       const g = it.g;
       return div().w_full().h(this.sizeOf(it)).pl(GUTTER).pr(16).pt(6).child(v_flex().size_full().px(12).pt(8).gap(6).border_l(4).border_r(1).border_t(1).border_b(1)
@@ -2805,8 +2868,9 @@ export const ReviewMode = {
         .child(v_flex().w(this.leftW()).flex_none().h_full().bg(t.chrome)
           .child(h_flex().flex_none().p(8).gap(6).border_b(1).border_color(t.border)
             .child(tabBtn("files", `Files · ${this.shown().patch.length}`)).child(tabBtn("steps", `Layers${this.ai ? ` · ${this.ai.steps.filter((s) => !s.pseudo).length}` : ""}`))
+            .child(tabBtn("comments", `Comments${this.commentRowsNow().length ? ` · ${this.commentRowsNow().length}` : ""}`))
             .child(tabBtn("findings", `Findings${this.find.list.length ? ` · ${this.find.list.filter((x) => ["open", "progress", "recheck"].includes(this.fstatus(x))).length}` : ""}`)))
-          .child(this.tab === "steps" ? this.stepsPane(t) : this.tab === "findings" ? this.findingsPane(t) : this.filesPane(t)))
+          .child(this.tab === "steps" ? this.stepsPane(t) : this.tab === "findings" ? this.findingsPane(t) : this.tab === "comments" ? this.commentsPane(t) : this.filesPane(t)))
         .child(this.splitter(t))
         .child(v_flex().flex_1().min_w(0).h_full().relative()
           .child(div().id("rv-probe").absolute().top(-100).font_family(settings().font_family ?? "JetBrains Mono").text_size(13).whitespace_nowrap()

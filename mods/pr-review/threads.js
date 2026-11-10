@@ -183,3 +183,32 @@ export function applyPlan({ status, head, branch }) {
 }
 // The hand-over when the checkout isn't clean: the main agent cherry-picks it itself.
 export const applyPrompt = ({ branch, head, path }) => `The reviewer's fix is ready on branch ${branch} (worktree ${path}). Please cherry-pick its commits onto your PR branch: git cherry-pick ${head}..${branch}. Resolve conflicts if any, run the tests, and don't push.`;
+
+// ---- the Comments tab and the Show switch
+
+export const SHOW_KINDS = [["mine", "Mine"], ["ai", "AI"], ["agents", "Agents"], ["github", "GitHub"], ["notes", "Notes"]];
+export const showOf = (s) => Object.fromEntries(SHOW_KINDS.map(([k]) => [k, s?.[k] !== false])); // all on by default
+// Every comment of the PR as a row for the Comments tab: pending ones, sent threads (with their state and replies),
+// other people's GitHub comments, notes. state: pending | waiting | replied | fixed | declined | github | note.
+export function commentRows({ pending = [], threads = [], replies = {}, gh = [], ghOwn = () => false, notes = [] }) {
+  const rows = withIds(pending).map((c) => ({ id: c.id, kind: "pending", src: c.from === "ki" ? "ai" : "mine", file: c.file, line: c.end, old: Boolean(c.old), text: c.text, state: "pending", replies: 0 }));
+  for (const t of threads) {
+    const r = replies[t.id] ?? [], last = r.at(-1)?.status, g = ghRepliesTo(gh, t.ghId).length;
+    const state = last === "fixed" ? "fixed" : last === "wontfix" ? "declined" : last || g ? "replied" : "waiting";
+    rows.push({ id: t.id, kind: "thread", src: "mine", file: t.file, line: t.end, old: Boolean(t.old), text: t.text, state, replies: r.length + g, route: t.route });
+  }
+  for (const g of gh) if (!ghOwn(g) && !g.in_reply_to_id) rows.push({ id: `gh${g.id}`, kind: "gh", src: "github", file: g.path, line: g.line, old: g.side === "LEFT", text: g.body ?? "", state: "github", replies: gh.filter((x) => x.in_reply_to_id === g.id).length, author: g.user });
+  for (const p of notes) if (p.anchor?.file) rows.push({ id: p.id, kind: "note", src: "notes", file: p.anchor.file, line: p.anchor.end, old: Boolean(p.anchor.old), text: p.summary, state: "note", replies: 0 });
+  return rows.sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line);
+}
+// "5 comments · 2 pending · 1 waiting on agent · 2 fixed"
+export function commentSummary(rows) {
+  const mine = rows.filter((r) => r.kind === "pending" || r.kind === "thread"), n = (s) => mine.filter((r) => r.state === s).length;
+  return [`${mine.length} ${mine.length === 1 ? "comment" : "comments"}`, n("pending") && `${n("pending")} pending`, n("waiting") && `${n("waiting")} waiting on agent`,
+    n("replied") && `${n("replied")} replied`, n("fixed") && `${n("fixed")} fixed`, n("declined") && `${n("declined")} declined`].filter(Boolean).join(" · ");
+}
+// The tab's filters: state (all | pending | waiting | replied | fixed) and the Show switch's kinds.
+export const filterRows = (rows, state, show) => rows.filter((r) => show[r.src] !== false && (state === "all" || r.state === state));
+// The Show switch's counts: comments per kind in the diff (AI: suggestions and findings).
+export const showCounts = ({ rows, ai = 0, agents = 0 }) => ({ mine: rows.filter((r) => r.src === "mine").length, ai: ai + rows.filter((r) => r.src === "ai").length, agents,
+  github: rows.filter((r) => r.src === "github").length, notes: rows.filter((r) => r.src === "notes").length });

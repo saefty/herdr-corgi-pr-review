@@ -115,3 +115,19 @@ assert.ok(sub.includes("own git worktree /w on branch fix/7-c1") && sub.includes
 assert.ok(!main.includes("worktree") && main.includes("[c1]"));
 assert.equal(TH.confirm(TH.preview({ what: "Fix", agent: "x", prompt: sub })).text, sub);
 console.log("threads ok");
+// ---- the Comments tab: rows, summary, filters
+{
+  const rows = TH.commentRows({ pending: [{ id: "p1", file: "b.py", end: 4, text: "p" }, { id: "p2", file: "a.py", end: 9, text: "ai", from: "ki" }],
+    threads: [{ id: "t1", file: "a.py", end: 2, text: "w" }, { id: "t2", file: "a.py", end: 5, text: "f" }, { id: "t3", file: "c.py", end: 1, text: "r", ghId: 7, route: "github" }],
+    replies: { t2: [{ status: "fixed", commit: "c" }] }, gh: [{ id: 8, in_reply_to_id: 7, body: "ok" }, { id: 9, path: "a.py", line: 1, body: "theirs", user: "anna" }],
+    ghOwn: (g) => g.id === 7 || g.in_reply_to_id === 7, notes: [{ id: "n1", anchor: { file: "a.py", end: 3 }, summary: "note" }, { id: "n2", anchor: { node: "x" }, summary: "card" }] });
+  assert.deepEqual(rows.map((r) => `${r.file}:${r.line}:${r.state}`), ["a.py:1:github", "a.py:2:waiting", "a.py:3:note", "a.py:5:fixed", "a.py:9:pending", "b.py:4:pending", "c.py:1:replied"], "by file and line");
+  assert.equal(rows.find((r) => r.id === "t3").replies, 1, "a GitHub reply counts");
+  assert.equal(TH.commentSummary(rows), "5 comments · 2 pending · 1 waiting on agent · 1 replied · 1 fixed");
+  const show = TH.showOf({ github: false });
+  assert.deepEqual(show, { mine: true, ai: true, agents: true, github: false, notes: true });
+  assert.deepEqual(TH.filterRows(rows, "all", show).map((r) => r.id), ["t1", "n1", "t2", "p2", "p1", "t3"], "GitHub hidden");
+  assert.deepEqual(TH.filterRows(rows, "pending", TH.showOf({ ai: false })).map((r) => r.id), ["p1"], "pending, without AI");
+  assert.deepEqual(TH.showCounts({ rows, ai: 3, agents: 2 }), { mine: 4, ai: 4, agents: 2, github: 1, notes: 1 });
+  console.log("comments tab ok");
+}
