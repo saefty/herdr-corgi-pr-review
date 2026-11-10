@@ -5,6 +5,7 @@ import { div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { levels } from "./pr.js";
 import { archLayout, archFocus, stateLayout, transitionText, sourceStyle, hasSources, SPEC_TIP, ARCH } from "./arch.js";
+import { flowArch } from "./views.js";
 
 export const STATUS_COLOR = { new: "ansi2", added: "ansi2", changed: "accent", unchanged: "muted", removed: "ansi1" };
 export const SEVERITY_COLOR = { critical: "ansi1", high: "ansi1", medium: "ansi3", low: "ansi4", minimal: "ansi2" };
@@ -47,7 +48,7 @@ export function foldCard(t, id, title, right, open, toggle, body) {
 const memo = new Map();
 export function archModel(arch, view = "diff", extra = () => 0) {
   const key = `${view}|${JSON.stringify(arch)}`;
-  if (!memo.has(key)) { if (memo.size > 6) memo.delete(memo.keys().next().value); memo.set(key, archLayout(arch, view, extra)); }
+  if (!memo.has(key)) { if (memo.size > 12) memo.delete(memo.keys().next().value); memo.set(key, archLayout(arch, view, extra)); }
   return memo.get(key);
 }
 
@@ -143,6 +144,20 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
       .when(Boolean(s.calls), (e) => e.child(div().flex_none().text_color(t.muted).child("→"))))), dimN(n))]));
   return div().id(id).relative().flex_none().w(L.width + 4).h(L.height + 4).children([...groups, ...els, ...nodes, ...states, ...badges, ...chips]);
 }
+const FLOW_FITS = 380;
+// A layer's flow laid out by archLayout with narrower cards (the column is about 420 px), memoized like archModel.
+// ponytail: lends archLayout smaller ARCH sizes for one synchronous call; a sizes option on archLayout would replace it.
+const COMPACT = { W: 160, TITLE_CH: 19, DESC_CH: 25 }, flowMemo = new Map();
+function flowModel(v) {
+  const key = JSON.stringify(v);
+  if (!flowMemo.has(key)) {
+    const keep = Object.fromEntries(Object.keys(COMPACT).map((k) => [k, ARCH[k]]));
+    Object.assign(ARCH, COMPACT);
+    try { flowMemo.set(key, archLayout(flowArch(v))); } finally { Object.assign(ARCH, keep); }
+    if (flowMemo.size > 12) flowMemo.delete(flowMemo.keys().next().value);
+  }
+  return flowMemo.get(key);
+}
 const STATE_GLYPH = { task: "▭", choice: "◇", parallel: "⫴", map: "⧉", wait: "⏱", pass: "↓", fail: "✕", succeed: "✓" };
 const PAD_IN = 10;
 
@@ -167,7 +182,8 @@ export const legend = (t) => h_flex().gap(10).text_size(11.5).text_color(t.muted
   .map(([label, c]) => h_flex().gap(4).items_center().child(div().w(10).h(10).rounded(3).border_1().border_color(t[c]).bg(t[c] + "33")).child(label)));
 
 // A layer's pictures in the narrow left column (several: stacked with their kind above each, as tabs when more than
-// two). flow/architecture: rows by topological level, the edges leaving a level listed under it; sequence:
+// two). flow/architecture: Architecture impact's picture (archLayout via views.js flowArch: cards left to right, real
+// connectors with numbered badges, the labels in a legend), scrolling sideways when wider than the column; sequence:
 // participants, then numbered calls; state_machine: a state diagram top to bottom (stateView); steps: a numbered
 // list. Changed nodes and edges in the accent colour; onJump(at, cx) for nodes with a place.
 export const KIND_NAME = { architecture: "Architecture", flow: "Flow", sequence: "Sequence", state_machine: "State diagram", steps: "Steps" };
@@ -205,10 +221,13 @@ export function visualCard(v, t, id, onJump) {
     const lv = levels(v.nodes, edges), order = [...v.nodes].sort((a, b) => lv.get(a.id) - lv.get(b.id));
     body = v_flex().gap(4).children(order.map((n, k) => h_flex().gap(6).items_start().child(div().w(16).flex_none().text_size(12).text_color(t.muted).child(`${k + 1}.`)).child(box(n, k))));
   } else {
-    const lv = levels(v.nodes, edges), depth = Math.max(0, ...lv.values());
-    body = v_flex().gap(4).children(Array.from({ length: depth + 1 }, (_, d) => v_flex().gap(4)
-      .child(h_flex().flex_wrap().gap(4).children(v.nodes.filter((n) => lv.get(n.id) === d).map((n) => box(n, v.nodes.indexOf(n)))))
-      .children(edges.filter((e) => lv.get(e.from) === d).map((e) => edge(e, `${d}-${edges.indexOf(e)}`, "↓ ")))));
+    const L = flowModel(v);
+    body = v_flex().gap(6)
+      .child(div().id(`${id}-fs`).w_full().overflow_x_scroll().pb(6)
+        .child(archView(L, t, `${id}-av`, onJump ? (n, _e, cx) => { onJump(n.at, cx); cx.stop_propagation(); } : null, null, {})))
+      // ponytail: the layer column is about 420 px; a wider picture says so instead of being scaled down.
+      .when(L.width > FLOW_FITS, (e) => e.child(div().text_size(10.5).text_color(t.dim).child("Scroll sideways for the whole picture →")))
+      .child(archLegend(L, t, `${id}-lg`, "Edges"));
   }
   return v_flex().id(id).flex_none().mt(4).p(10).gap(8).rounded(8).border_1().border_color(t.border).bg(t.surface)
     .child(h_flex().gap(8).items_center().text_size(11.5).child(div().flex_none().font_semibold().text_color(t.muted).child((KIND_NAME[v.kind] ?? v.kind).toUpperCase()))
