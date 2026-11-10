@@ -89,12 +89,14 @@ older than 3 minutes (↻). The commands `pr-review.page:arch`, `pr-review.step:
 `cd mods/pr-review && for f in test_*.mjs; do node $f; done && for f in test_*.py; do python3 $f; done`
 (no network; `LIVE=1 node test_defs.mjs` also asks pyright).
 
-## Security: other people's code
+## Security: other people's code (Restricted Mode)
 
-Language servers can run code from the repository they index (Gradle/Maven build scripts, Rust build scripts and
-proc macros, a project-local TypeScript). pr-review therefore treats a PR as **untrusted** unless it is your own
-branch, a PR from your own sessions, or authored by your GitHub login. For untrusted PRs the language servers start
-in **safe mode** (Java without Gradle/Maven import, the global TypeScript only, Go without module downloads or cgo,
-and no rust-analyzer at all, since a repo's toolchain and cargo config can run its own programs)
-and are not warmed up; go-to-definition may find less. The review header shows **Safe mode · Trust code** to opt a
-PR into full mode.
+Language servers can run code from the repository they index (Gradle/Maven build scripts, Rust build scripts, proc
+macros and toolchain/cargo config, a project-local TypeScript). Like VS Code's Workspace Trust, pr-review treats a PR
+as **untrusted** unless it is your own branch, a PR from your own sessions, or authored by your GitHub login.
+
+The first time you open an untrusted PR, a banner asks: **Trust this PR**, **Trust all PRs in owner/repo**, or **Stay
+in Restricted Mode**. In Restricted Mode the language servers don't run anything from the repository (Java without
+build import, the global TypeScript only, Go without module downloads or cgo, no rust-analyzer) and aren't warmed up,
+so go-to-definition may find less. The diff, reviewers and the AI analysis work the same either way. While restricted,
+the review header shows **Restricted Mode · Trust**.

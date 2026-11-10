@@ -23,7 +23,7 @@ try:  # rust-analyzer never starts on untrusted code
     b.Server(root, "rust", safe=True)
     raise AssertionError("rust-analyzer started in safe mode")
 except RuntimeError as e:
-    assert "Trust code" in str(e)
+    assert "Restricted Mode" in str(e)
 assert b.Server(root, "rust", safe=False).options["cargo"]["buildScripts"] == {"enable": True}
 
 java = b.Server(root, "java", safe=True).options["settings"]["java"]

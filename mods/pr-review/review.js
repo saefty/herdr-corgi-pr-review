@@ -239,12 +239,31 @@ export const ReviewMode = {
   // clone: the "Clone to …" click; never otherwise (worktree.py exits 3 with the folder it would use).
   // Someone else's PR is untrusted: its language servers run in safe mode (no build scripts, proc macros, project
   // TypeScript, module downloads) and aren't warmed up. Trusted: your branch, your sessions' PRs, PRs you authored,
-  // and PRs you marked with "Trust code".
+  // and PRs (or repos) you chose to trust.
   trustedPr(pr = this.prSel) {
     if (!pr) return false;
     if (pr.space || !pr.source || pr.source === "mine") return true;
     if (pr.author && pr.author === shared("gh.login")) return true;
-    return (shared("pr-review.trusted") ?? []).includes(pr.url);
+    return (shared("pr-review.trusted") ?? []).includes(pr.url) || (shared("pr-review.trustedRepos") ?? []).includes(pr.repo);
+  },
+  // Like VS Code's Workspace Trust: asked once per PR (Restricted Mode stays until you trust it).
+  trustAsked(pr = this.prSel) { return (shared("pr-review.trustAsked") ?? []).includes(pr?.url); },
+  trust(kind, cx) {
+    const pr = this.prSel, add = (key, v) => setShared(key, [v, ...(shared(key) ?? []).filter((x) => x !== v)].slice(0, 200));
+    if (kind === "pr") add("pr-review.trusted", pr.url);
+    if (kind === "repo" && pr.repo) add("pr-review.trustedRepos", pr.repo);
+    add("pr-review.trustAsked", pr.url);
+    this.applyTrust(); cx.notify();
+  },
+  trustPrompt(t) {
+    const pr = this.prSel, who = pr.author ? `@${pr.author}` : "someone else";
+    return v_flex().flex_none().px(14).py(10).gap(8).bg(t.ansi3 + "1c").border_b(1).border_color(t.border).text_size(12.5)
+      .child(div().font_semibold().text_color(t.foreground).child(`Do you trust the authors of this code? This PR is by ${who}.`))
+      .child(div().whitespace_normal().text_color(t.muted).child("Language servers for go-to-definition can run code from the repository (build scripts, proc macros, its own TypeScript). In Restricted Mode they don't: Java has no build import, Rust has no go-to-definition, and nothing is downloaded. Reading the diff, reviewers and the AI analysis work the same either way."))
+      .child(h_flex().gap(8).flex_wrap()
+        .child(pill("rv-trust-pr", t, "Trust this PR", (_e, cx) => this.trust("pr", cx), false, t.foreground))
+        .when(Boolean(pr.repo), (e) => e.child(pill("rv-trust-repo", t, `Trust all PRs in ${pr.repo}`, (_e, cx) => this.trust("repo", cx))))
+        .child(pill("rv-trust-no", t, "Stay in Restricted Mode", (_e, cx) => this.trust("ask", cx))));
   },
   applyTrust() {
     const w = this.worktree, yes = this.trustedPr();
@@ -1016,8 +1035,8 @@ export const ReviewMode = {
       .child(pill("rv-done", t, "Mark done", () => run("pr-review.done")))
       .child(pill("rv-reviews-btn", t, Object.values(shared("review.reviewers") ?? {}).some((r) => r.busy) ? "Reviews ⋯" : "Reviews ▾",
         () => openOverlay({ mod: "pr-review", props: { part: "reviews" }, kind: "popup", width: 460, height: 250 })))
-      .when(Boolean(this.worktree?.path) && !this.trustedPr(), (e) => e.child(div().id("rv-trust-wrap").tooltip("Someone else's code: language servers run in safe mode (no build scripts, proc macros or project TypeScript), so go-to-definition may find less. Click to trust this PR's code.")
-        .child(pill("rv-trust", t, "Safe mode · Trust code", (_e, cx) => { setShared("pr-review.trusted", [this.prSel.url, ...(shared("pr-review.trusted") ?? [])].slice(0, 200)); this.applyTrust(); cx.notify(); }))))
+      .when(Boolean(this.worktree?.path) && !this.trustedPr(), (e) => e.child(div().id("rv-trust-wrap").tooltip("Restricted Mode: someone else's code, so language servers don't run anything from the repository and go-to-definition may find less. Click to trust this PR.")
+        .child(pill("rv-trust", t, "Restricted Mode · Trust", (_e, cx) => this.trust("pr", cx), false, t.ansi3))))
       .child(pill("rv-values", t, `Values: ${valuesOn() ? "On" : "Off"}`, () => setShared("review.values", !valuesOn()), valuesOn()))
       .child(h_flex().flex_none().gap(4).p(3).items_center().rounded(8).border_1().border_color(t.border)
         .children(Object.entries(MODELS).map(([k, v]) => pill(`rv-m-${k}`, t, v.label, () => setShared("review.model", k), m === k)))
@@ -1627,6 +1646,7 @@ export const ReviewMode = {
           .when(Boolean(this.defFile), (e) => e.child(this.defView(t)))
           .when(!this.defFile && this.tab === "steps" && Boolean(this.page), (e) => e.child(this.pageView(t)))
           .when(!this.defFile && this.tab === "files" && Boolean(this.since), (e) => e.child(this.sinceBanner(t)))
+          .when(Boolean(this.worktree?.path) && !this.trustedPr() && !this.trustAsked(), (e) => e.child(this.trustPrompt(t)))
           .when(Boolean(this.needClone), (e) => e.child(h_flex().flex_none().px(14).py(8).gap(10).items_center().bg(t.ansi3 + "1c").border_b(1).border_color(t.border).text_size(12.5)
             .child(div().flex_1().min_w(0).whitespace_normal().child(`No local clone of ${target.repo ?? "this repo"}: reviewers, whole files, definitions and the AI analysis need one. The diff works without.`))
             .child(pill("rv-clone", t, this.cloning ? "Cloning…" : `Clone to ${this.needClone.replace(home(), "~")}`, (_e, cx) => { if (!this.cloning) { this.makeWorktree(cx, true); cx.notify(); } }, false, t.foreground))))

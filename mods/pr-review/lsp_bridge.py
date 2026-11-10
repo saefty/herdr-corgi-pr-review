@@ -245,7 +245,7 @@ class Server:
         if safe and lang == "rust":  # rust-toolchain.toml, .cargo/config.toml wrappers and rust-analyzer.toml can all
             # make rust-analyzer run the repo's programs; options and env vars don't cover every path. Off until trusted.
             raise RuntimeError("Rust go-to-definition is off for someone else's code (rust-analyzer would run the repo's build "
-                               "tooling). Use \"Trust code\" in the review header to turn it on.")
+                               "tooling). Restricted Mode: trust this PR in the review header to turn it on.")
         cmd = list(SERVERS[lang])
         if lang == "typescript" and (safe or not os.path.isfile(os.path.join(root, "node_modules", "typescript", "lib", "tsserver.js"))):
             cmd = ["tsc", "--lsp", "--stdio"]  # no project TypeScript: the global TypeScript 7 (native) has its own LSP
