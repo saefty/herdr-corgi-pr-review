@@ -596,7 +596,7 @@ export default class PrReview extends View {
   // A PR's context for one you didn't open: the contexts' rules on its folder and remote, else the context your
   // session PRs of that repo have, else the space's (This repo) or the default.
   contextOfPr(repo, folder, fallback) {
-    return C.ruleContext(folder, `https://github.com/${repo}`, ctxDoc()?.rules, home()) ?? this.prs.find((p) => p.repo === repo)?.context ?? fallback ?? C.defaultOf(ctxDoc());
+    return C.ruleContext(folder, `https://github.com/${repo}`, ctxDoc()?.rules, home()) ?? (this.prs ?? []).find((p) => p.repo === repo)?.context ?? fallback ?? C.defaultOf(ctxDoc());
   }
 
   // The list of a source, from sources.json when fresh (force: ↻), else gh; the triage line follows.
@@ -673,7 +673,7 @@ export default class PrReview extends View {
     setShared("pr.goto", null);
     const r = (shared("review.open") ?? []).find((x) => x.url === g.url);
     if (r) return startReview(r.target ?? r);
-    const mine = this.prs.find((x) => x.url === g.url);
+    const mine = (this.prs ?? []).find((x) => x.url === g.url);
     const ref = mine ?? parsePrRef(g.url);
     if (!ref) return;
     const sr = this.spaceSlug?.slug === ref.repo ? this.spaceSlug.root : null;
@@ -840,7 +840,11 @@ export default class PrReview extends View {
     if (this.part === "reviews") return renderReviews();
     if (this.part === "agentbar") return renderAgentBar();
     if (this.part === "keys") return renderKeys();
-    if (this.part === "review") return this.renderReview(cx);
+    if (this.part === "review") {
+      // Go to hands PRs over through "pr.goto"; the panel isn't mounted while the review layout shows, so take it here.
+      if (shared("pr.goto")?.url && !this.gotoQueued) { this.gotoQueued = true; cx.timer.after(0, (cx) => { this.gotoQueued = false; this.takeGoto(cx); }); }
+      return this.renderReview(cx);
+    }
     if (this.view === "walk" && this.walkModel && walkModel() !== this.walkModel && !this.walkBusy) this.openWalk(cx, false); // picker changed: that model's cache
     // Go to: a handed-over PR (outside render), and the reviews-in-progress items when that list changes.
     if (shared("pr.goto")?.url && !this.gotoQueued) { this.gotoQueued = true; cx.timer.after(0, (cx) => { this.gotoQueued = false; this.takeGoto(cx); }); }
