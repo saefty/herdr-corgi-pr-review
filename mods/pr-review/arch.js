@@ -1,14 +1,20 @@
 // The architecture picture's layout (also the blast radius): pure and deterministic, drawn by stack.js archView.
-// Groups are columns; inside one, nodes are ordered by their neighbours (barycentre sweeps) so lines cross less.
-// Every edge runs in a gutter between columns on a lane of its own; edges to the same target with the same meaning
-// (label) merge into one lane and one entry port (a bus), anything else gets its own lane and port. Edges inside a
-// column use lanes right of it; edges that skip a column go down to a channel under the cards. Ports are spread
-// along the card side, ordered by where the other end is. Lane order per gutter is the one with the fewest
-// crossings; a crossing that stays gets a hop on the horizontal line. Labels are not drawn on lines: each path has a
-// numbered badge on its lane, and the text goes in a legend. Cards grow with their text: title up to 2 lines,
-// description up to 3 (cut with an ellipsis; the full text is the tooltip).
+// Every call points left to right. Columns come from the calls: inside a group, a node sits right of what calls it
+// (longest chain); a group starts far enough right that each call into it goes right too, and groups whose columns
+// overlap stack vertically (so a group can span columns, and several groups can share one). A call that closes a
+// cycle, or that would skip a column, is not drawn as a line: it is a short stub at the source with a chip naming the
+// target ("→ Code host API ⑧"). The other calls reach the next column on a lane of their own in the gutter between;
+// calls to the same target with the same meaning (label) merge into one lane and one entry port (a bus). When one node
+// calls several cards of one group, one trunk enters the group's frame and fans out in its left inset (a fan).
+// Inside a column, groups and nodes are ordered by their neighbours (barycentre sweeps) so lines cross less; lane
+// order per gutter is the one with the fewest crossings, and a crossing that stays gets a hop. Labels are not drawn
+// on lines: each path has a numbered badge (a stub: its chip), and the text goes in a legend. Cards grow with their
+// text: title up to 2 lines, description up to 3 (cut with an ellipsis; the full text is the tooltip). A node with
+// `states` (an orchestrator: Step Functions, a state machine) shows them as a vertical lane in its card, and each
+// state's `calls` leaves the card at that state's row.
 
-export const ARCH = { W: 230, PAD: 12, HEAD: 30, GAP_Y: 18, LANE: 12, GAP_MIN: 64, BADGE: 18, HOP: 8, PORT: 12, TITLE_CH: 29, DESC_CH: 38 };
+export const ARCH = { W: 230, PAD: 12, HEAD: 30, GAP_Y: 18, GAP_G: 20, LANE: 12, GAP_MIN: 64, BADGE: 18, HOP: 8, PORT: 12,
+  STUB: 16, CHIP_H: 18, CHIP_GAP: 22, CH: 6.4, FAN: 30, ROW: 18, TITLE_CH: 29, DESC_CH: 38 };
 
 // Word-wrapped lines of text at `per` characters (long words are split).
 export function wrapLines(text, per) {
@@ -35,10 +41,22 @@ export function clampText(text, per, max) {
 
 const circled = (n) => (n >= 1 && n <= 20 ? String.fromCharCode(0x2460 + n - 1) : `(${n})`);
 const norm = (s) => String(s ?? "").trim().toLowerCase();
+const avg = (xs) => xs.reduce((s, x) => s + x, 0) / xs.length;
 
-function permutations(list) {
+export function permutations(list) {
   if (list.length <= 1) return [list];
   return list.flatMap((x, i) => permutations([...list.slice(0, i), ...list.slice(i + 1)]).map((p) => [x, ...p]));
+}
+
+// Items ordered so that every pair [a, b] has a before b; when only cycles are left, the earliest remaining item goes
+// next (its incoming pairs are the ones that close a cycle). Deterministic.
+export function topo(items, pairs) {
+  const left = [...items], out = [];
+  while (left.length) {
+    const k = Math.max(0, left.findIndex((x) => !pairs.some(([a, b]) => b === x && a !== x && left.includes(a))));
+    out.push(left.splice(k, 1)[0]);
+  }
+  return out;
 }
 
 // Crossings between horizontal and vertical segments of different paths: [{h, v, x, y}].
@@ -59,177 +77,279 @@ export function crossings(paths) {
 
 const overlaps = (a, b, m = 0) => a.x < b.x + b.w + m && b.x < a.x + a.w + m && a.y < b.y + b.h + m && b.y < a.y + a.h + m;
 
+// The focus on one node: the paths that touch it and the cards at their other ends stay; the rest is dimmed.
+// {id, nodes: Set of ids, paths: Set of path nums}, or null (no focus, or the node is not in this view).
+export function archFocus(L, id) {
+  if (!id || !L.nodes.some((n) => n.id === id)) return null;
+  const nodes = new Set([id]), paths = new Set();
+  for (const p of L.paths) {
+    if (p.to !== id && !p.from.includes(id)) continue;
+    paths.add(p.num); nodes.add(p.to);
+    if (p.to === id) p.from.forEach((f) => nodes.add(f));
+  }
+  return { id, nodes, paths };
+}
+
 // view: "diff" all, "before" without new nodes, "after" without removed ones. extra(n): more lines in a card (findings).
-// Returns {groups, nodes, paths, hops, badges, width, height}; every box in px. paths: one per lane (merged edges
-// share one) {key, num, mark, from: [ids], to, label, edges: [indexes], segments: [{x1, y1, x2, y2}], arrow: {x, y, left},
-// badge: {x, y}, dashed, status}.
+// Returns {groups, nodes, paths, trunks, hops, width, height}; every box in px. paths: one per legend row {key, num,
+// mark, kind: "next" | "fan" | "stub", from: [ids], to, label, edges: [indexes], segments: [{x1, y1, x2, y2}],
+// arrow: {x, y, left}, badge: {x, y} (null for a stub), chip: {x, y, w, h, text} (stubs), trunk (fans: the trunk's
+// key; the trunk's segments are part of each of its paths), dashed, status}. trunks: [{key, segments}] for hops.
 export function archLayout(arch, view = "diff", extra = () => 0) {
-  const { W, PAD, HEAD, GAP_Y, LANE, GAP_MIN, BADGE, PORT, TITLE_CH, DESC_CH } = ARCH;
+  const { W, PAD, HEAD, GAP_Y, GAP_G, LANE, GAP_MIN, BADGE, PORT, STUB, CHIP_H, CHIP_GAP, CH, FAN, ROW, TITLE_CH, DESC_CH } = ARCH;
   const hide = view === "before" ? "new" : view === "after" ? "removed" : null;
   const nodes0 = (arch?.nodes ?? []).filter((n) => n.status !== hide);
   const known = new Set((arch?.groups ?? []).map((g) => g.id));
   const groups = [...(arch?.groups ?? []).filter((g) => nodes0.some((n) => n.group === g.id)),
     ...(nodes0.some((n) => !known.has(n.group)) ? [{ id: "\0", label: "System", kind: "" }] : [])];
-  const colOf = new Map(groups.map((g, i) => [g.id, i]));
-  const byId = new Map(nodes0.map((n) => [n.id, { ...n, col: colOf.get(known.has(n.group) ? n.group : "\0") }]));
+  const byId = new Map(nodes0.map((n) => [n.id, { ...n, g: known.has(n.group) ? n.group : "\0", states: (n.states ?? []).filter((s) => s?.name) }]));
+  const gOf = (id) => byId.get(id).g;
   const edges = (arch?.edges ?? []).map((e, i) => ({ ...e, i })).filter((e) => byId.has(e.from) && byId.has(e.to) && e.from !== e.to);
+  // A state's call is an edge from its orchestrator that leaves at the state's row: an edge the analysis has, or one
+  // made from the state (labelled with its name).
+  for (const n of byId.values()) n.states.forEach((s, k) => {
+    if (!byId.has(s.calls) || s.calls === n.id) return;
+    const e = edges.find((x) => x.from === n.id && x.to === s.calls && x.anchor === undefined);
+    if (e) e.anchor = k;
+    else edges.push({ from: n.id, to: s.calls, label: s.name, anchor: k, status: s.status, i: edges.length + 1000 });
+  });
+  const gIds = groups.map((g) => g.id), ids0 = nodes0.map((n) => n.id);
 
-  // Order inside columns: barycentre of the neighbours' rows, a few sweeps; ties keep the given order.
-  const cols = groups.map((_, c) => nodes0.filter((n) => byId.get(n.id).col === c).map((n) => n.id));
-  const nb = new Map(nodes0.map((n) => [n.id, []]));
-  for (const e of edges) { nb.get(e.from).push(e.to); nb.get(e.to).push(e.from); }
-  const rowOf = () => new Map(cols.flatMap((ids) => ids.map((id, r) => [id, r / Math.max(1, ids.length - 1)])));
+  // 1. Columns: sub-columns inside each group by its own calls, then each group's first column so calls between
+  // groups go right, then everything pulled right next to what it calls (as far as its group allows).
+  const gOrder = topo(gIds, edges.map((e) => [gOf(e.from), gOf(e.to)]).filter(([a, b]) => a !== b)), gRank = new Map(gOrder.map((g, k) => [g, k]));
+  const sub = new Map();
+  for (const g of gIds) {
+    const inner = edges.filter((e) => gOf(e.from) === g && gOf(e.to) === g).map((e) => [e.from, e.to]);
+    const order = topo(ids0.filter((id) => gOf(id) === g), inner), r = new Map(order.map((id, k) => [id, k]));
+    for (const id of order) sub.set(id, Math.max(0, ...inner.filter(([a, b]) => b === id && r.get(a) < r.get(id)).map(([a]) => sub.get(a) + 1)));
+  }
+  const cross = edges.filter((e) => gRank.get(gOf(e.from)) < gRank.get(gOf(e.to))), base = new Map();
+  for (const g of gOrder) base.set(g, Math.max(0, ...cross.filter((e) => gOf(e.to) === g).map((e) => base.get(gOf(e.from)) + sub.get(e.from) + 1 - sub.get(e.to))));
+  for (const g of [...gOrder].reverse()) {
+    const out = cross.filter((e) => gOf(e.from) === g);
+    if (out.length) base.set(g, Math.max(base.get(g), Math.min(...out.map((e) => base.get(gOf(e.to)) + sub.get(e.to) - 1 - sub.get(e.from)))));
+  }
+  const col = new Map(ids0.map((id) => [id, base.get(gOf(id)) + sub.get(id)]));
+  const lastCol = (g) => Math.max(...ids0.filter((id) => gOf(id) === g).map((id) => col.get(id)));
+  for (const id of [...ids0].sort((a, b) => col.get(b) - col.get(a))) {
+    const out = edges.filter((e) => e.from === id && col.get(e.to) > col.get(id));
+    if (out.length) col.set(id, Math.max(col.get(id), Math.min(lastCol(gOf(id)), ...out.map((e) => col.get(e.to) - 1))));
+  }
+  const ncol = Math.max(0, ...col.values()) + 1;
+  const kindOf = (e) => (col.get(e.to) - col.get(e.from) === 1 ? "next" : "stub");
+  const nexts = edges.filter((e) => kindOf(e) === "next");
+
+  // 2. Order: groups and nodes by the mean position of their neighbours, a few sweeps (ties keep the given order),
+  // then per group column of up to 6 cards the order with the fewest swapped neighbour pairs.
+  const nb = new Map(ids0.map((id) => [id, []]));
+  for (const e of nexts) { nb.get(e.from).push(e.to); nb.get(e.to).push(e.from); }
+  // Groups stack in order of their first column (one reaching in from the left sits on top), then by gl.
+  const gLo = new Map(gIds.map((g) => [g, Math.min(...ids0.filter((id) => gOf(id) === g).map((id) => col.get(id)))]));
+  let gl = [...gIds], pos = new Map(ids0.map((id, k) => [id, k]));
+  const gCmp = (a, b) => gLo.get(a) - gLo.get(b) || gl.indexOf(a) - gl.indexOf(b);
+  const colIds = (c) => ids0.filter((id) => col.get(id) === c).sort((a, b) => gCmp(gOf(a), gOf(b)) || pos.get(a) - pos.get(b));
+  const rows = () => new Map(Array.from({ length: ncol }, (_, c) => colIds(c)).flatMap((ids) => ids.map((id, r) => [id, r / Math.max(1, ids.length - 1)])));
   for (let sweep = 0; sweep < 4; sweep++) {
-    const order = sweep % 2 ? [...cols.keys()].reverse() : [...cols.keys()];
-    for (const c of order) {
-      const row = rowOf();
-      const bc = (id) => { const o = nb.get(id).filter((x) => byId.get(x).col !== c); return o.length ? o.reduce((s, x) => s + row.get(x), 0) / o.length : row.get(id); };
-      cols[c] = cols[c].map((id, k) => [id, bc(id), k]).sort((a, b) => a[1] - b[1] || a[2] - b[2]).map((x) => x[0]);
+    const row = rows(), bc = new Map(ids0.map((id) => [id, nb.get(id).length ? avg(nb.get(id).map((x) => row.get(x))) : row.get(id)]));
+    pos = new Map([...ids0].sort((a, b) => bc.get(a) - bc.get(b) || pos.get(a) - pos.get(b)).map((id, k) => [id, k]));
+    const gbc = new Map(gIds.map((g) => [g, avg(ids0.filter((id) => gOf(id) === g).map((id) => bc.get(id)))]));
+    gl = [...gl].sort((a, b) => gbc.get(a) - gbc.get(b) || gIds.indexOf(a) - gIds.indexOf(b));
+  }
+  // Then exact search where it is small: the order of the groups sharing a column (up to 4), then the cards of each
+  // group column (up to 6), each by the number of swapped call pairs between neighbouring columns.
+  const swapped = () => {
+    const row = rows();
+    let n = 0;
+    for (const a of nexts) for (const b of nexts) if (col.get(a.from) === col.get(b.from) && row.get(a.from) < row.get(b.from) && row.get(a.to) > row.get(b.to)) n++;
+    return n;
+  };
+  for (let c = 0; c < ncol; c++) {
+    const gs = gl.filter((g) => colIds(c).some((id) => gOf(id) === g)), slots = gs.map((g) => gl.indexOf(g));
+    if (gs.length < 2 || gs.length > 4) continue;
+    let best = gl, bestCost = swapped();
+    for (const p of permutations(gs)) {
+      const prev = gl;
+      gl = [...gl]; p.forEach((g, k) => { gl[slots[k]] = g; });
+      const k = swapped();
+      if (k < bestCost) { best = gl; bestCost = k; }
+      gl = prev;
     }
+    gl = best;
+  }
+  for (let c = 0; c < ncol; c++) for (const g of gl) {
+    const block = colIds(c).filter((id) => gOf(id) === g);
+    if (block.length < 2 || block.length > 6) continue;
+    const slots = block.map((id) => pos.get(id)).sort((a, b) => a - b), set = (order) => order.forEach((id, k) => pos.set(id, slots[k]));
+    let best = block, bestCost = swapped();
+    for (const p of permutations(block)) { set(p); const k = swapped(); if (k < bestCost) { best = p; bestCost = k; } }
+    set(best);
   }
 
-  // Then, per column of up to 7 cards, the order with the fewest estimated crossings: inner edges spanning cards that
-  // send lines right, inner edges interleaving, and lines to a neighbour column in swapped order.
-  for (const [c, ids] of cols.entries()) {
-    if (ids.length < 2 || ids.length > 7) continue;
-    const row = rowOf(), local = edges.filter((e) => byId.get(e.from).col === c || byId.get(e.to).col === c);
-    const inner = local.filter((e) => byId.get(e.from).col === c && byId.get(e.to).col === c);
-    const right = (id) => local.filter((e) => (e.from === id || e.to === id) && (byId.get(e.from).col > c || byId.get(e.to).col > c || (byId.get(e.from).col === c && byId.get(e.to).col === c))).length;
-    const cost = (order) => {
-      const r = new Map(order.map((id, k) => [id, k]));
-      let n = 0;
-      const spans = inner.map((e) => [Math.min(r.get(e.from), r.get(e.to)), Math.max(r.get(e.from), r.get(e.to)), e]);
-      for (const [lo, hi] of spans) for (const id of order.slice(lo + 1, hi)) n += right(id);
-      for (const [a, b] of spans) for (const [x, y] of spans) if (a < x && x < b && b < y) n++;
-      const cross = local.filter((e) => byId.get(e.from).col !== byId.get(e.to).col).map((e) => { const mine = byId.get(e.from).col === c ? e.from : e.to, other = mine === e.from ? e.to : e.from; return [r.get(mine), row.get(other), Math.sign(byId.get(other).col - c)]; });
-      for (const [a, oa, sa] of cross) for (const [b, ob, sb] of cross) if (sa === sb && a < b && oa > ob) n++;
-      return n;
-    };
-    let best = ids, bestCost = cost(ids);
-    for (const p of permutations(ids)) { const k = cost(p); if (k < bestCost) { best = p; bestCost = k; } }
-    cols[c] = best;
-  }
-
-  // Paths: same target + same meaning share one (and one port); skips and inner edges keyed the same way.
-  const kindOf = (e) => { const a = byId.get(e.from).col, b = byId.get(e.to).col; return a === b ? "inner" : Math.abs(a - b) === 1 ? "next" : "skip"; };
-  const paths = [], pathOf = new Map();
+  // 3. Paths: stubs; fans (one source, three or more calls into one group, not from a state row); buses (same target, same
+  // meaning share one lane and one port).
+  const fanKey = (e) => `${e.from}>${gOf(e.to)}`, fanN = new Map();
+  for (const e of nexts) if (e.anchor === undefined) fanN.set(fanKey(e), (fanN.get(fanKey(e)) ?? 0) + 1);
+  const paths = [], trunks = [], byKey = new Map(), anchorOf = new Map(); // `${pathKey}:${from}` -> state index
   for (const e of edges) {
-    const kind = kindOf(e), dir = byId.get(e.to).col >= byId.get(e.from).col ? 1 : -1;
-    const key = kind === "skip" ? `skip:${e.i}` : `${kind}:${e.to}:${norm(e.label)}:${dir}:${kind === "next" ? byId.get(e.from).col : ""}`;
-    if (!pathOf.has(key)) { const p = { key, kind, dir, to: e.to, from: [], edges: [], label: e.label ?? "", dashed: Boolean(e.dashed), status: e.status ?? (e.changed ? "changed" : null) }; pathOf.set(key, p); paths.push(p); }
-    const p = pathOf.get(key);
+    const kind = kindOf(e), fan = kind === "next" && e.anchor === undefined && fanN.get(fanKey(e)) > 2;
+    const key = kind === "stub" ? `stub:${e.i}` : fan ? `fan:${fanKey(e)}:${e.i}` : e.anchor !== undefined ? `next:${e.i}` : `next:${e.to}:${norm(e.label)}`;
+    if (!byKey.has(key)) {
+      const p = { key, kind: fan ? "fan" : kind, to: e.to, from: [], edges: [], label: e.label ?? "", dashed: Boolean(e.dashed), status: e.status ?? (e.changed ? "changed" : null) };
+      byKey.set(key, p); paths.push(p);
+      if (fan) {
+        const tk = `fan:${fanKey(e)}`;
+        let tr = trunks.find((x) => x.key === tk);
+        if (!tr) trunks.push(tr = { key: tk, kind: "trunk", from: [e.from], branches: [] });
+        tr.branches.push(p); p.trunk = tk;
+      }
+    }
+    const p = byKey.get(key);
     if (!p.from.includes(e.from)) p.from.push(e.from);
     p.edges.push(e.i);
+    if (e.anchor !== undefined) anchorOf.set(`${key}:${e.from}`, e.anchor);
     if (e.status === "new" || e.status === "changed" || e.changed) p.status = p.status ?? e.status ?? "changed";
   }
   paths.forEach((p, k) => { p.num = k + 1; p.mark = circled(k + 1); });
+  const srcCol = (p) => col.get(p.from[0]);
 
-  // Ports per card side: a path's target end is one port; each source end is one.
-  const side = (p, end) => (p.kind === "inner" ? "r" : (end === "to") === (p.dir > 0) ? "l" : "r");
-  const ports = new Map(); // `${id}:${side}` -> [{p, end, from}]
+  // 4. Ports per card side: incoming on the left (a bus's target end, a fan branch), outgoing on the right (a bus
+  // source, a fan trunk, a stub).
+  const ports = new Map(); // `${id}:${side}` -> [{p, end, from, stub}]
   const addPort = (id, s, item) => { const k = `${id}:${s}`; ports.set(k, [...(ports.get(k) ?? []), item]); };
   for (const p of paths) {
-    addPort(p.to, side(p, "to"), { p, end: "to" });
-    for (const f of p.from) addPort(f, side(p, "from"), { p, end: "from", from: f });
+    if (p.kind === "stub") addPort(p.from[0], "r", { p, end: "from", stub: true });
+    else addPort(p.to, "l", { p, end: "to" });
+    if (p.kind === "next") for (const f of p.from) addPort(f, "r", { p, end: "from", from: f });
+  }
+  for (const tr of trunks) addPort(tr.from[0], "r", { p: tr, end: "from" });
+
+  // 5. Card sizes from their text and states, at least room for their ports (a side with stubs: room for chips).
+  const size = new Map();
+  for (const id of ids0) {
+    const n = byId.get(id), title = clampText(n.label ?? n.id, TITLE_CH, 2), desc = clampText(n.description ?? "", DESC_CH, 3);
+    const stateTop = 8 + title.lines * 17 + 3 + (desc.lines ? desc.lines * 15 + 3 : 0) + (extra(n) ?? 0) * 18 + 4;
+    const content = n.states.length ? stateTop + n.states.length * ROW + 6 + 16 + 8 : 8 + title.lines * 17 + (desc.lines ? 4 + desc.lines * 15 : 0) + (extra(n) ?? 0) * 18 + 6 + 16 + 8;
+    const need = (s) => { const items = ports.get(`${id}:${s}`) ?? []; return (items.length + 1) * (items.some((it) => it.stub) ? CHIP_GAP : PORT); };
+    size.set(id, { h: Math.max(72, content, need("l"), n.states.length ? 0 : need("r")), title, desc, stateTop });
   }
 
-  // Card sizes from their text, at least room for their ports.
-  const nodes = [];
-  for (const [c, ids] of cols.entries()) {
-    let y = HEAD + PAD;
-    for (const id of ids) {
-      const n = byId.get(id), title = clampText(n.label ?? n.id, TITLE_CH, 2), desc = clampText(n.description ?? "", DESC_CH, 3);
-      const content = 8 + title.lines * 17 + (desc.lines ? 4 + desc.lines * 15 : 0) + (extra(n) ?? 0) * 18 + 6 + 16 + 8;
-      const most = Math.max(ports.get(`${id}:l`)?.length ?? 0, ports.get(`${id}:r`)?.length ?? 0);
-      const h = Math.max(72, content, (most + 1) * PORT);
-      nodes.push({ ...n, col: c, row: ids.indexOf(id), y, h, w: W, title: title.text, titleLines: title.lines, desc: desc.text, descLines: desc.lines, cut: title.cut || desc.cut });
-      y += h + GAP_Y;
+  // 6. Geometry. Column insets for fan spines (per group column), stub zones and lanes per gutter, then groups
+  // stacked where their columns overlap (in barycentre order), cards stacked inside.
+  const spine = new Map(), inset = Array(ncol).fill(0);
+  for (const tr of trunks) {
+    const b = tr.branches[0].to, k = `${gOf(b)}@${col.get(b)}`, j = [...spine.values()].filter((v) => v.k === k).length;
+    spine.set(tr.key, { k, j }); inset[col.get(b)] = Math.max(inset[col.get(b)], 10 + j * LANE + FAN - PAD);
+  }
+  const zone = Array(ncol).fill(0), lanesN = Array(ncol).fill(0);
+  for (const p of paths) if (p.kind === "stub") {
+    const l = String(byId.get(p.to).label ?? p.to), text = `→ ${l.length > 22 ? `${l.slice(0, 21)}…` : l} ${p.mark}`;
+    p.chip = { text, w: Math.min(180, Math.round(text.length * CH + 14)), h: CHIP_H };
+    zone[srcCol(p)] = Math.max(zone[srcCol(p)], STUB + 4 + p.chip.w + 8 - PAD);
+  }
+  for (const p of [...paths.filter((q) => q.kind === "next"), ...trunks]) lanesN[srcCol(p)]++;
+  const cw = inset.map((i) => i + W + 2 * PAD);
+  const gw = cw.map((_, c) => (c < ncol - 1 ? Math.max(GAP_MIN, zone[c] + lanesN[c] * LANE + 28) : zone[c]));
+  const colX = [];
+  for (let c = 0; c < ncol; c++) colX[c] = c ? colX[c - 1] + cw[c - 1] + gw[c - 1] : 0;
+
+  const frames = [], at = new Map(), nodes = [];
+  for (const g of [...gl].sort(gCmp)) {
+    const mine = ids0.filter((id) => gOf(id) === g), lo = Math.min(...mine.map((id) => col.get(id))), hi = Math.max(...mine.map((id) => col.get(id)));
+    const stack = (c) => colIds(c).filter((id) => gOf(id) === g);
+    const tall = Math.max(...Array.from({ length: hi - lo + 1 }, (_, k) => stack(lo + k).reduce((s, id, j) => s + size.get(id).h + (j ? GAP_Y : 0), 0)));
+    const y = Math.max(0, ...frames.filter((f) => f.lo <= hi && lo <= f.hi).map((f) => f.y + f.h + GAP_G));
+    frames.push({ g, lo, hi, y, h: HEAD + PAD + tall + PAD });
+    for (let c = lo; c <= hi; c++) {
+      let yy = y + HEAD + PAD;
+      stack(c).forEach((id, row) => {
+        const n = byId.get(id), s = size.get(id);
+        const node = { ...n, col: c, row, x: colX[c] + PAD + inset[c], y: yy, h: s.h, w: W, title: s.title.text, titleLines: s.title.lines,
+          desc: s.desc.text, descLines: s.desc.lines, cut: s.title.cut || s.desc.cut, stateTop: n.states.length ? s.stateTop : null };
+        delete node.g;
+        nodes.push(node); at.set(id, node); yy += s.h + GAP_Y;
+      });
     }
   }
-  const at = new Map(nodes.map((n) => [n.id, n]));
-  const colBottom = cols.map((ids) => Math.max(HEAD + PAD, ...ids.map((id) => at.get(id).y + at.get(id).h)) + PAD);
+  nodes.sort((a, b) => ids0.indexOf(a.id) - ids0.indexOf(b.id));
 
-  // Gutters: gutter g is right of column g. Lanes: inner paths of column g, then paths between g and g+1, then skip legs.
-  const gut = groups.map(() => []);
-  for (const p of paths) {
-    const a = at.get(p.from[0]).col, b = at.get(p.to).col;
-    if (p.kind === "inner") gut[a].push({ p, leg: "all" });
-    else if (p.kind === "next") gut[Math.min(a, b)].push({ p, leg: "all" });
-    else { gut[p.dir > 0 ? a : a - 1].push({ p, leg: "out" }); gut[p.dir > 0 ? b - 1 : b].push({ p, leg: "in" }); }
-  }
-  const gw = gut.map((g, i) => (i === groups.length - 1 ? (g.length ? g.length * LANE + 20 : 0) : Math.max(GAP_MIN, g.length * LANE + 28)));
-  const frameX = [];
-  groups.forEach((_, i) => { frameX[i] = i === 0 ? 0 : frameX[i - 1] + W + 2 * PAD + gw[i - 1]; });
-  for (const n of nodes) n.x = frameX[n.col] + PAD;
-
-  // Port y: spread along the side, ordered by the other end's height.
+  // Port y: a state's call at its row; the rest spread along the side (above the states), by the other end's height.
   const portY = new Map(); // `${pathKey}:${end}:${id}` -> y
-  // A skip path heads for the channel under the cards: its ports go to the bottom of the side.
-  const otherY = (it) => { if (it.p.kind === "skip") return Infinity; const n = it.end === "to" ? it.p.from.map((f) => at.get(f)) : [at.get(it.p.to)]; return n.reduce((s, x) => s + x.y + x.h / 2, 0) / n.length; };
+  const otherY = (it) => { const ends = it.p.kind === "trunk" ? it.p.branches.map((b) => b.to) : it.end === "to" ? it.p.from : [it.p.to]; return avg(ends.map((id) => at.get(id).y + at.get(id).h / 2)); };
   for (const [k, items] of ports) {
-    const id = k.slice(0, k.lastIndexOf(":")), n = at.get(id);
-    const sorted = items.map((it, j) => [it, otherY(it), j]).sort((a, b) => a[1] - b[1] || a[2] - b[2]);
-    sorted.forEach(([it], j) => portY.set(`${it.p.key}:${it.end}:${it.from ?? id}`, Math.round(n.y + (n.h * (j + 1)) / (sorted.length + 1))));
+    const id = k.slice(0, k.lastIndexOf(":")), n = at.get(id), right = k.endsWith(":r");
+    const fixed = (it) => (right ? anchorOf.get(`${it.p.key}:${id}`) : undefined);
+    const free = items.filter((it) => fixed(it) === undefined).map((it, j) => [it, otherY(it), j]).sort((a, b) => a[1] - b[1] || a[2] - b[2]);
+    const span = right && n.stateTop !== null ? n.stateTop : n.h;
+    free.forEach(([it], j) => portY.set(`${it.p.key}:${it.end}:${it.from ?? id}`, Math.round(n.y + (span * (j + 1)) / (free.length + 1))));
+    for (const it of items) if (fixed(it) !== undefined) portY.set(`${it.p.key}:${it.end}:${it.from ?? id}`, Math.round(n.y + n.stateTop + fixed(it) * ROW + ROW / 2));
   }
-  const portX = (id, s) => (s === "l" ? at.get(id).x : at.get(id).x + W);
+  const PY = (p, end, id) => portY.get(`${p.key}:${end}:${id}`);
+  const spineX = (tr) => colX[col.get(tr.branches[0].to)] + 10 + spine.get(tr.key).j * LANE;
+  const ysOf = (p) => (p.kind === "trunk" ? [PY(p, "from", p.from[0]), ...p.branches.map((b) => PY(b, "to", b.to))] : [PY(p, "to", p.to), ...p.from.map((f) => PY(p, "from", f))]);
 
-  // Channel under the cards for skip paths, one row each.
-  const skips = paths.filter((p) => p.kind === "skip");
-  const chan = new Map(skips.map((p, k) => [p.key, Math.max(...colBottom) + 14 + k * LANE]));
-
-  // A path's segments for given lane xs ({out, in, all} per path key).
+  // A bus's or trunk's segments for given lane xs (path key -> x). A trunk goes straight when its source is level
+  // with one of its branches' rows (it then needs no lane).
   const build = (p, lane) => {
-    const segs = [], tx = portX(p.to, side(p, "to")), ty = portY.get(`${p.key}:to:${p.to}`);
-    if (p.kind !== "skip") {
-      const x = lane.get(`${p.key}:all`), ys = [ty];
-      for (const f of p.from) { const sy = portY.get(`${p.key}:from:${f}`); ys.push(sy); segs.push({ x1: portX(f, side(p, "from")), y1: sy, x2: x, y2: sy }); }
-      if (Math.max(...ys) > Math.min(...ys)) segs.push({ x1: x, y1: Math.min(...ys), x2: x, y2: Math.max(...ys) });
-      segs.push({ x1: x, y1: ty, x2: tx, y2: ty });
-      return { segs, arrow: { x: tx, y: ty, left: tx < x } };
+    const x = lane.get(p.key), segs = [];
+    if (p.kind === "trunk") {
+      const sx = at.get(p.from[0]).x + W, sy = PY(p, "from", p.from[0]), bys = p.branches.map((b) => PY(b, "to", b.to));
+      const ty = Math.min(Math.max(sy, Math.min(...bys)), Math.max(...bys)), sp = spineX(p);
+      if (sy === ty) segs.push({ x1: sx, y1: sy, x2: sp, y2: sy });
+      else segs.push({ x1: sx, y1: sy, x2: x, y2: sy }, { x1: x, y1: sy, x2: x, y2: ty }, { x1: x, y1: ty, x2: sp, y2: ty });
+      return { segs, ty, sp };
     }
-    const f = p.from[0], sy = portY.get(`${p.key}:from:${f}`), xo = lane.get(`${p.key}:out`), xi = lane.get(`${p.key}:in`), cy = chan.get(p.key);
-    segs.push({ x1: portX(f, side(p, "from")), y1: sy, x2: xo, y2: sy }, { x1: xo, y1: sy, x2: xo, y2: cy }, { x1: xo, y1: cy, x2: xi, y2: cy },
-      { x1: xi, y1: cy, x2: xi, y2: ty }, { x1: xi, y1: ty, x2: tx, y2: ty });
-    return { segs, arrow: { x: tx, y: ty, left: tx < xi } };
-  };
-
-  // The part of a skip path inside one gutter: port to lane, and the lane down to (or up from) the channel.
-  const legSegs = (it, lane) => {
-    const p = it.p, x = lane.get(`${p.key}:${it.leg}`), cy = chan.get(p.key);
-    const id = it.leg === "out" ? p.from[0] : p.to, end = it.leg === "out" ? "from" : "to", y = portY.get(`${p.key}:${end}:${id}`);
-    return [{ x1: portX(id, side(p, end)), y1: y, x2: x, y2: y }, { x1: x, y1: y, x2: x, y2: cy }];
+    const tx = at.get(p.to).x, ty = PY(p, "to", p.to), ys = [ty];
+    for (const f of p.from) { const sy = PY(p, "from", f); ys.push(sy); segs.push({ x1: at.get(f).x + W, y1: sy, x2: x, y2: sy }); }
+    if (Math.max(...ys) > Math.min(...ys)) segs.push({ x1: x, y1: Math.min(...ys), x2: x, y2: Math.max(...ys) });
+    segs.push({ x1: x, y1: ty, x2: tx, y2: ty });
+    return { segs, arrow: { x: tx, y: ty, left: false } };
   };
 
   // Lane order per gutter: the permutation (small gutters) or sort with the fewest crossings inside the gutter.
   const lane = new Map();
-  gut.forEach((items, g) => {
-    if (!items.length) return;
-    const left = frameX[g] + W + 2 * PAD + 14;
-    const inner = items.filter((it) => it.p.kind === "inner"), rest = items.filter((it) => it.p.kind !== "inner");
-    const ymid = (it) => { const ys = [portY.get(`${it.p.key}:to:${it.p.to}`), ...it.p.from.map((f) => portY.get(`${it.p.key}:from:${f}`))]; return ys; };
-    const cands = (list) => list.length <= 6 ? permutations(list) : [
-      list, [...list].sort((a, b) => Math.min(...ymid(a)) - Math.min(...ymid(b))), [...list].sort((a, b) => Math.max(...ymid(b)) - Math.max(...ymid(a))),
-      [...list].sort((a, b) => (Math.max(...ymid(a)) - Math.min(...ymid(a))) - (Math.max(...ymid(b)) - Math.min(...ymid(b))))];
+  for (let c = 0; c < ncol - 1; c++) {
+    const items = [...paths.filter((p) => p.kind === "next" && srcCol(p) === c), ...trunks.filter((tr) => srcCol(tr) === c)];
+    if (!items.length) continue;
+    const left = colX[c] + cw[c] + zone[c] + 14;
+    const cands = items.length <= 6 ? permutations(items) : [items, [...items].sort((a, b) => Math.min(...ysOf(a)) - Math.min(...ysOf(b))),
+      [...items].sort((a, b) => Math.max(...ysOf(b)) - Math.max(...ysOf(a))), [...items].sort((a, b) => (Math.max(...ysOf(a)) - Math.min(...ysOf(a))) - (Math.max(...ysOf(b)) - Math.min(...ysOf(b))))];
     let best = null;
-    for (const ci of cands(inner)) for (const cr of cands(rest)) {
-      const order = [...ci, ...cr], trial = new Map(lane);
-      order.forEach((it, k) => trial.set(`${it.p.key}:${it.leg}`, left + k * LANE));
-      const local = order.map((it) => ({ key: it.p.key, segments: it.leg === "all" ? build(it.p, trial).segs : legSegs(it, trial) }));
-      const n = crossings(local).length;
+    for (const order of cands) {
+      const trial = new Map(order.map((p, k) => [p.key, left + k * LANE]));
+      const n = crossings(order.map((p) => ({ key: p.key, segments: build(p, trial).segs }))).length;
       if (!best || n < best.n) best = { n, trial };
       if (n === 0) break;
     }
     for (const [k, v] of best.trial) lane.set(k, v);
-  });
+  }
 
-  for (const p of paths) { const b = build(p, lane); p.segments = b.segs; p.arrow = b.arrow; }
-  const hops = crossings(paths);
+  for (const p of paths.filter((q) => q.kind === "next")) { const b = build(p, lane); p.segments = b.segs; p.arrow = b.arrow; }
+  for (const tr of trunks) {
+    const { segs, ty, sp } = build(tr, lane), bys = tr.branches.map((b) => PY(b, "to", b.to));
+    for (const p of tr.branches) {
+      const by = PY(p, "to", p.to), cx = at.get(p.to).x;
+      p.segments = [...segs, ...(by !== ty ? [{ x1: sp, y1: ty, x2: sp, y2: by }] : []), { x1: sp, y1: by, x2: cx, y2: by }];
+      p.arrow = { x: cx, y: by, left: false };
+    }
+    tr.segments = [...segs, ...(Math.max(...bys) > Math.min(...bys) ? [{ x1: sp, y1: Math.min(...bys), x2: sp, y2: Math.max(...bys) }] : []),
+      ...tr.branches.map((p) => p.segments.at(-1))];
+  }
+  for (const p of paths.filter((q) => q.kind === "stub")) {
+    const f = at.get(p.from[0]), sx = f.x + W, sy = PY(p, "from", f.id);
+    p.segments = [{ x1: sx, y1: sy, x2: sx + STUB, y2: sy }];
+    p.arrow = { x: sx + STUB, y: sy, left: false };
+    Object.assign(p.chip, { x: sx + STUB + 4, y: sy - CHIP_H / 2 });
+  }
+  const hops = crossings([...paths.filter((p) => p.kind === "next"), ...trunks]);
 
-  // Badges: on the path's own lane (its longest vertical), else its target line; never on a card or another badge.
-  const rects = nodes.map((n) => ({ x: n.x, y: n.y, w: n.w, h: n.h })), placed = [];
+  // Badges: a fan branch's next to its card; else on the path's own lane (its longest vertical), else its target line;
+  // never on a card, a chip or another badge. Stubs carry their number in the chip.
+  const rects = [...nodes.map((n) => ({ x: n.x, y: n.y, w: n.w, h: n.h })), ...paths.filter((p) => p.chip).map((p) => p.chip)], placed = [];
   for (const p of paths) {
+    if (p.kind === "stub") { p.badge = null; continue; }
     const segs = [...p.segments].sort((a, b) => (Math.abs(b.y2 - b.y1) + Math.abs(b.x2 - b.x1) * 0.5) - (Math.abs(a.y2 - a.y1) + Math.abs(a.x2 - a.x1) * 0.5));
-    const spots = [];
+    const spots = p.kind === "fan" ? [{ x: p.arrow.x - FAN + 12, y: p.arrow.y }] : [];
     for (const s of segs) for (const t of [0.5, 0.3, 0.7, 0.15, 0.85]) spots.push({ x: s.x1 + (s.x2 - s.x1) * t, y: s.y1 + (s.y2 - s.y1) * t });
     const box = (q) => ({ x: q.x - BADGE / 2, y: q.y - BADGE / 2, w: BADGE, h: BADGE });
     const free = spots.find((q) => !rects.some((r) => overlaps(box(q), r, 2)) && !placed.some((b) => overlaps(box(q), b, 2))) ?? spots[0] ?? { x: 0, y: 0 };
@@ -237,8 +357,180 @@ export function archLayout(arch, view = "diff", extra = () => 0) {
     placed.push(box(p.badge));
   }
 
-  const outGroups = groups.map((g, i) => ({ ...g, x: frameX[i], y: 0, w: W + 2 * PAD, h: colBottom[i] }));
-  const width = (frameX[groups.length - 1] ?? 0) + W + 2 * PAD + (gw[groups.length - 1] ?? 0);
-  const height = Math.max(0, ...colBottom, ...[...chan.values()].map((y) => y + 12));
-  return { groups: outGroups, nodes, paths, hops, width, height };
+  const outGroups = frames.map((f) => ({ ...groups.find((g) => g.id === f.g), x: colX[f.lo], y: f.y, w: colX[f.hi] + cw[f.hi] - colX[f.lo], h: f.h, cols: [f.lo, f.hi] }))
+    .sort((a, b) => gIds.indexOf(a.id) - gIds.indexOf(b.id));
+  const width = ncol ? colX[ncol - 1] + cw[ncol - 1] + gw[ncol - 1] : 0;
+  const height = Math.max(0, ...frames.map((f) => f.y + f.h));
+  return { groups: outGroups, nodes, paths, trunks, hops, width, height };
+}
+
+// ---- state diagrams (a layer's state_machine picture): top to bottom
+
+export const SM = { W: 300, NODE: 150, H: 28, NOTE_H: 48, DOT: 14, DUMMY: 14, GAP_X: 18, GAP_Y: 40, BACK: 10, CHILD_W: 108, CHILD_H: 24, STUB: 10, CHIP: 96 };
+
+// A transition's text: "event [guard] / action" when given, else its label.
+export const transitionText = (e) => (`${e.event ?? ""}${e.guard ? ` [${e.guard}]` : ""}${e.action ? ` / ${e.action}` : ""}`.trim() || String(e.label ?? "").trim());
+const isError = (e) => e.error === "catch" || e.error === "retry" || (!e.event && /^(catch|retry)\b/i.test(String(e.label ?? "")));
+
+// A state machine (Step Functions) or state diagram (an entity's lifecycle) laid out top to bottom: a start dot, the
+// states by their longest path from it, an end ring under the last ones. States in one layer sit side by side (a
+// choice forks into columns); Parallel and Map states are blocks with their branches side by side (children: nodes
+// with `parent`, grouped by `branch`). Forward transitions run down (fork and merge in the gap between layers, long
+// ones through spacers); transitions back up (a lifecycle going back) run in return lanes on the left; self-loops are
+// a small loop on the card's right edge; Catch and Retry are short stubs to the right ("Catch → Fail", "Retry ×3").
+// v: {nodes: [{id, label, type, changed, note, at, parent, branch}], edges | transitions: [{from, to, label | event,
+// guard, action, changed, error: "catch" | "retry"}]}. Returns {nodes, edges, backs, loops, stubs, width, height}.
+export function stateLayout(v, width = SM.W) {
+  const nodes0 = (v?.nodes ?? []).filter((n) => n?.id), byId = new Map(nodes0.map((n) => [n.id, n]));
+  const all = [...(v?.edges ?? []), ...(v?.transitions ?? [])].filter((e) => byId.has(e.from) && byId.has(e.to)).map((e, i) => ({ ...e, i, text: transitionText(e) }));
+  const blockOf = (id) => { const p = byId.get(id)?.parent; return byId.has(p) && p !== id ? p : null; };
+  const top = (id) => blockOf(id) ?? id;
+  const errors = all.filter(isError), plain = all.filter((e) => !isError(e));
+  const inner = plain.filter((e) => blockOf(e.from) && blockOf(e.from) === blockOf(e.to));
+  const outer = plain.filter((e) => !inner.includes(e)).map((e) => ({ ...e, a: top(e.from), b: top(e.to) }));
+  const loopsE = outer.filter((e) => e.a === e.b), flow = outer.filter((e) => e.a !== e.b);
+  // States only reached by a Catch and leading nowhere (a Fail) appear in the stubs, not as cards.
+  const onlyErr = (id) => errors.some((e) => top(e.to) === id) && !flow.some((e) => e.a === id || e.b === id);
+  const ids = nodes0.filter((n) => !blockOf(n.id) && !onlyErr(n.id)).map((n) => n.id);
+  const order = topo(ids, flow.map((e) => [e.a, e.b])), rank = new Map(order.map((id, k) => [id, k]));
+  const fwd = flow.filter((e) => rank.get(e.a) < rank.get(e.b)), back = flow.filter((e) => rank.get(e.a) > rank.get(e.b));
+  const layer = new Map();
+  for (const id of order) layer.set(id, 1 + Math.max(0, ...fwd.filter((e) => e.b === id).map((e) => layer.get(e.a))));
+  // Start and end: the start dot points at the states nothing leads to; the end ring follows those that lead nowhere.
+  const roots = ids.filter((id) => !fwd.some((e) => e.b === id)), sinks = ids.filter((id) => !flow.some((e) => e.a === id));
+  const last = Math.max(0, ...layer.values());
+  layer.set("\0start", 0);
+  const links = [...roots.map((id) => ({ a: "\0start", b: id, text: "", i: -1 })), ...fwd];
+  if (sinks.length) { layer.set("\0end", last + 1); links.push(...sinks.map((id) => ({ a: id, b: "\0end", text: "", i: -2 }))); }
+  // Spacers where a transition skips layers.
+  const chain = new Map(); // link -> [ids through layers]
+  for (const e of links) {
+    const ids2 = [e.a];
+    for (let l = layer.get(e.a) + 1; l < layer.get(e.b); l++) { const d = `\0d${e.i}:${e.a}>${e.b}:${l}`; layer.set(d, l); ids2.push(d); }
+    chain.set(e, [...ids2, e.b]);
+  }
+  // Order inside layers: barycentre sweeps down and up; states with a transition back lean left (their return lane
+  // is on the left), spacers lean right; ties keep the given order.
+  const nl = Math.max(...layer.values()) + 1, rows = Array.from({ length: nl }, () => []);
+  const given = (id) => (byId.has(id) ? nodes0.findIndex((n) => n.id === id) : 1e3);
+  for (const [id, l] of layer) rows[l].push(id);
+  rows.forEach((r) => r.sort((a, b) => given(a) - given(b)));
+  const up = new Map(), down = new Map();
+  for (const c of chain.values()) for (let k = 0; k + 1 < c.length; k++) { (down.get(c[k]) ?? down.set(c[k], []).get(c[k])).push(c[k + 1]); (up.get(c[k + 1]) ?? up.set(c[k + 1], []).get(c[k + 1])).push(c[k]); }
+  const lean = (id) => (back.some((e) => e.a === id || e.b === id) ? -0.5 : id.startsWith("\0d") ? 0.25 : 0);
+  for (let sweep = 0; sweep < 4; sweep++) {
+    const pos = new Map(rows.flatMap((r) => r.map((id, k) => [id, r.length > 1 ? k / (r.length - 1) : 0.5])));
+    const range = sweep % 2 ? [...rows.keys()].reverse() : [...rows.keys()];
+    for (const l of range) {
+      const nbr = sweep % 2 ? down : up;
+      const bc = (id) => { const o = nbr.get(id) ?? []; return (o.length ? avg(o.map((x) => pos.get(x))) : pos.get(id)) + lean(id) * 0.01; };
+      rows[l] = rows[l].map((id, k) => [id, bc(id), k]).sort((a, b) => a[1] - b[1] || a[2] - b[2]).map((x) => x[0]);
+    }
+  }
+  // Sizes: a card (taller with a note or several stubs), a block with its branches, a dot, a spacer.
+  const stubsOf = (id) => errors.filter((e) => top(e.from) === id);
+  const branchesOf = (id) => {
+    const kids = nodes0.filter((n) => blockOf(n.id) === id), keyOf = new Map();
+    for (const k of kids) keyOf.set(k.id, k.branch ?? null);
+    // Without branch numbers, children linked by transitions share a branch.
+    for (let pass = 0; pass < kids.length; pass++) for (const e of inner) if (blockOf(e.from) === id && keyOf.get(e.from) !== keyOf.get(e.to)) {
+      if (keyOf.get(e.to) === null) keyOf.set(e.to, keyOf.get(e.from)); else if (keyOf.get(e.from) === null) keyOf.set(e.from, keyOf.get(e.to));
+    }
+    kids.forEach((k, j) => { if (keyOf.get(k.id) === null) keyOf.set(k.id, `#${j}`); });
+    const keys = [...new Set(kids.map((k) => keyOf.get(k.id)))];
+    return keys.map((key) => topo(kids.filter((k) => keyOf.get(k.id) === key).map((k) => k.id), inner.map((e) => [e.from, e.to])));
+  };
+  const box = new Map();
+  for (const [id] of layer) {
+    if (id === "\0start" || id === "\0end") box.set(id, { w: SM.DOT, h: SM.DOT });
+    else if (id.startsWith("\0d")) box.set(id, { w: SM.DUMMY, h: 0 });
+    else {
+      const n = byId.get(id), br = branchesOf(id);
+      if (br.length) box.set(id, { w: Math.max(SM.NODE, br.length * SM.CHILD_W + (br.length - 1) * 8 + 16), h: 26 + Math.max(...br.map((b) => b.length)) * (SM.CHILD_H + 10) + 4, br });
+      else box.set(id, { w: SM.NODE, h: Math.max(n.note ? SM.NOTE_H : SM.H, stubsOf(id).length * 20 + 8) });
+    }
+  }
+  const lanesLeft = back.length ? 10 + back.length * SM.BACK : 6;
+  const stubW = Math.max(0, ...ids.map((id) => (stubsOf(id).length ? SM.STUB + 4 + SM.CHIP : 0)));
+  const rowW = (r) => r.reduce((s, id) => s + box.get(id).w, 0) + SM.GAP_X * Math.max(0, r.length - 1);
+  const inner0 = Math.max(width - lanesLeft - stubW, ...rows.map(rowW));
+  let y = 0;
+  const at = new Map();
+  rows.forEach((r, l) => {
+    const h = Math.max(SM.DOT, ...r.map((id) => box.get(id).h));
+    // Centred on the states (spacers beside them), so a plain chain stays one straight column.
+    const xs = [];
+    let x = 0;
+    for (const id of r) { xs.push(x); x += box.get(id).w + SM.GAP_X + (stubsOf(id).length ? SM.STUB + 4 + SM.CHIP : 0); }
+    const real = r.map((id, k) => [id, k]).filter(([id]) => !id.startsWith("\0d")), lo = real.length ? xs[real[0][1]] : 0;
+    const hi = real.length ? xs[real.at(-1)[1]] + box.get(real.at(-1)[0]).w : x - SM.GAP_X;
+    const shift = Math.max(lanesLeft - (xs[0] ?? 0), lanesLeft + inner0 / 2 - (lo + hi) / 2);
+    r.forEach((id, k) => { const b = box.get(id); at.set(id, { id, x: Math.round(xs[k] + shift), y, w: b.w, h: id.startsWith("\0d") ? h : b.h, layer: l }); });
+    rows[l].bottom = y + h; rows[l].top = y;
+    y += h + SM.GAP_Y;
+  });
+  // Forward transitions: out of the source's bottom, down to the source's own line in the gap, across, down into the
+  // target's top. Exits and entries are spread along the card side (ordered by the other end), so every transition
+  // has its own last stretch, where its label goes; a lone exit or entry is in the middle (a chain stays straight).
+  const hops = []; // [{e, k, a, b}]
+  for (const [e, c] of chain) for (let k = 0; k + 1 < c.length; k++) hops.push({ e, k, a: c[k], b: c[k + 1] });
+  const mid0 = (id) => at.get(id).x + at.get(id).w / 2;
+  const spread = (id, list, other) => {
+    const n = at.get(id), sorted = [...list].sort((p, q) => mid0(other(p)) - mid0(other(q)) || p.e.i - q.e.i);
+    return new Map(sorted.map((h, j) => [h, Math.round(n.x + (n.w * (j + 1)) / (sorted.length + 1))]));
+  };
+  const exitX = new Map(), entryX = new Map();
+  for (const id of at.keys()) {
+    for (const [h, x] of spread(id, hops.filter((h) => h.a === id), (h) => h.b)) exitX.set(h, x);
+    for (const [h, x] of spread(id, hops.filter((h) => h.b === id), (h) => h.a)) entryX.set(h, x);
+  }
+  const bent = (h) => exitX.get(h) !== entryX.get(h);
+  const forkIdx = new Map(rows.map((r) => r.filter((id) => hops.some((h) => h.a === id && bent(h)))).flatMap((list) => list.map((id, k) => [id, k])));
+  const edges = [];
+  for (const [e, c] of chain) {
+    const segs = [];
+    let labelAt = null;
+    for (const h of hops.filter((x) => x.e === e)) {
+      const s = at.get(h.a), t = at.get(h.b), sx = exitX.get(h), tx = entryX.get(h);
+      const mid = rows[s.layer].bottom + 10 + Math.min(4, forkIdx.get(h.a) ?? 0) * 5;
+      if (sx === tx) segs.push({ x1: sx, y1: s.y + s.h, x2: sx, y2: t.y });
+      else segs.push({ x1: sx, y1: s.y + s.h, x2: sx, y2: mid }, { x1: sx, y1: mid, x2: tx, y2: mid }, { x1: tx, y1: mid, x2: tx, y2: t.y });
+      if (h.k === 0) {
+        // The label: beside the first hop's last stretch, as wide as the room up to the next entry into that card.
+        const next = [...entryX].filter(([o, x]) => o.b === h.b && x > tx).map(([, x]) => x);
+        const room = Math.min(next.length ? Math.min(...next) : at.get(h.b).x + at.get(h.b).w + 60, at.get(h.b).x + Math.max(at.get(h.b).w, 120) + 80) - tx - 8;
+        labelAt = { x: tx + 5, y: sx === tx ? s.y + s.h + (t.y - s.y - s.h - 13) / 2 : mid + 2, w: Math.max(40, Math.round(room)) };
+      }
+    }
+    const end = segs.at(-1);
+    edges.push({ key: `f${e.i}:${e.a}>${e.b}`, from: e.a, to: e.b, text: e.a === "\0start" ? "" : e.text, changed: Boolean(e.changed) || e.status === "new" || e.status === "changed",
+      segments: segs.filter((x) => x.y1 !== x.y2 || x.x1 !== x.x2), arrow: { x: end.x2, y: end.y2 }, labelAt });
+  }
+  // Each label as wide as the room up to the nearest other line or card to its right (at most 160 px).
+  const cards = [...at.values()].filter((n) => !n.id.startsWith("\0d"));
+  for (const e of edges) {
+    const l = e.labelAt;
+    if (!l) continue;
+    const walls = [...edges.filter((o) => o !== e).flatMap((o) => o.segments.filter((x) => x.x1 === x.x2 && x.x1 > l.x && Math.max(x.y1, x.y2) > l.y && Math.min(x.y1, x.y2) < l.y + 13).map((x) => x.x1)),
+      ...cards.filter((n) => n.x > l.x && n.y < l.y + 13 && n.y + n.h > l.y).map((n) => n.x)];
+    l.w = Math.max(24, Math.min(160, ...walls.map((x) => x - l.x - 4)));
+  }
+  // Back: from the source's left side out to its lane, up, and into the target's left side (outermost lane: the longest).
+  const backs = [...back].sort((a, b) => (layer.get(a.a) - layer.get(a.b)) - (layer.get(b.a) - layer.get(b.b))).map((e, k) => {
+    const s = at.get(e.a), t = at.get(e.b), laneX = lanesLeft - 8 - k * SM.BACK, sy = s.y + s.h / 2 + 4, ty = t.y + t.h / 2 - 4;
+    return { key: `b${e.i}`, from: e.a, to: e.b, text: e.text, changed: Boolean(e.changed) || e.status === "new" || e.status === "changed", laneX, sx: s.x, sy, tx: t.x, ty,
+      segments: [{ x1: s.x, y1: sy, x2: laneX, y2: sy }, { x1: laneX, y1: ty, x2: laneX, y2: sy }, { x1: laneX, y1: ty, x2: t.x, y2: ty }] };
+  });
+  const loops = loopsE.filter((e) => at.has(e.a)).map((e) => ({ key: `l${e.i}`, id: e.a, text: e.text, changed: Boolean(e.changed) || e.status === "new" || e.status === "changed", x: at.get(e.a).x + at.get(e.a).w - 7, y: at.get(e.a).y + 3 }));
+  const stubs = ids.flatMap((id) => stubsOf(id).map((e, k, list) => {
+    const n = at.get(id), y0 = n.y + n.h / 2 + (k - (list.length - 1) / 2) * 20, retry = e.error === "retry" || /^retry/i.test(String(e.label ?? ""));
+    const name = byId.get(e.to)?.label ?? e.to;
+    const text = retry ? (e.text || "Retry") : `${e.text || "Catch"} → ${name}`;
+    return { key: `s${e.i}`, from: id, to: e.to, text, changed: Boolean(e.changed) || e.status === "new" || e.status === "changed", x1: n.x + n.w, x2: n.x + n.w + SM.STUB, y: Math.round(y0), chip: { x: n.x + n.w + SM.STUB + 4, y: Math.round(y0) - 9, w: SM.CHIP, h: 18 } };
+  }));
+  const kids = (id) => (box.get(id)?.br ?? []).flatMap((b, j) => b.map((cid, k) => ({ ...byId.get(cid), x: at.get(id).x + 8 + j * (SM.CHILD_W + 8), y: at.get(id).y + 26 + k * (SM.CHILD_H + 10), w: SM.CHILD_W, h: SM.CHILD_H, branch: j, step: k })));
+  const out = [...at.values()].filter((n) => !n.id.startsWith("\0d")).map((n) => (n.id.startsWith("\0") ? { ...n, kind: n.id === "\0start" ? "start" : "end" }
+    : { ...byId.get(n.id), ...n, kind: box.get(n.id).br ? "block" : "state", children: kids(n.id), changed: Boolean(byId.get(n.id).changed) }));
+  const right = Math.max(width, ...out.map((n) => n.x + n.w), ...stubs.map((s) => s.chip.x + s.chip.w), ...loops.map((l) => l.x + 14));
+  return { nodes: out, edges, backs, loops, stubs, width: Math.ceil(right + 2), height: Math.max(0, y - SM.GAP_Y) };
 }

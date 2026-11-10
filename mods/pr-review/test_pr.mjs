@@ -235,20 +235,20 @@ console.log("ok");
   const cyc = levels([{ id: "p" }, { id: "q" }], [{ from: "p", to: "q" }, { from: "q", to: "p" }]);
   assert.deepEqual([cyc.get("p"), cyc.get("q")], [0, 0]);
 
-  // Architecture: groups as columns, nodes stacked, an edge between columns as three segments with its label on the lane.
+  // Architecture: columns by calls, nodes stacked, an edge between columns as segments with its badge on the lane.
   const arch = { groups: [{ id: "web", label: "Web" }, { id: "api", label: "API" }], nodes: [{ id: "ui", group: "web", status: "changed" }, { id: "inv", group: "api", status: "new" }, { id: "db", group: "api", status: "removed" }, { id: "x", group: "nope" }],
     edges: [{ from: "ui", to: "inv", label: "Creates" }, { from: "inv", to: "db", label: "Persists" }] };
   const { archLayout } = await import("./arch.js");
   const L = archLayout(arch);
   assert.deepEqual(L.groups.map((g) => g.label), ["Web", "API", "System"]);
   const [ui, inv, db] = ["ui", "inv", "db"].map((id) => L.nodes.find((n) => n.id === id));
-  assert.deepEqual([ui.col, inv.col, db.col, inv.y < db.y], [0, 1, 1, true]);
+  assert.deepEqual([ui.col, inv.col, db.col], [0, 1, 2]); // inv calls db: db one column right, inside the API group
   const e = L.paths[0];
   assert.ok(e.segments.length >= 2); // the lane leg drops out when both ports are level
   assert.equal(e.segments[0].x1, ui.x + ui.w); // leaves the right edge of the source
   assert.equal(e.segments.at(-1).x2, inv.x); // ends at the left edge of the target
   assert.ok(e.badge.x > ui.x + ui.w && e.badge.x < inv.x && e.label === "Creates" && e.mark === "①");
-  assert.ok(L.paths[1].segments[1].x1 > inv.x + inv.w); // inside one group: a lane on its right
+  assert.ok(L.paths[1].segments.at(-1).x2 === db.x && L.groups[1].x + L.groups[1].w > db.x + db.w); // the API frame spans both columns
   assert.deepEqual(archLayout(arch, "before").nodes.map((n) => n.id).sort(), ["db", "ui", "x"]);
   assert.deepEqual(archLayout(arch, "after").paths.length, 1);
   const b = blastArch({ units: [{ id: "u1", label: "API", status: "added", files: ["api.ts"], spots: 5 }], context: [{ id: "c1", file: "src/perm.ts", direction: "upstream", relation: "Checks admin", links_to: "u1" }, { id: "c2", file: "mail.ts", direction: "downstream", relation: "Sends", links_to: "u1" }] }, [{ file: "api.ts", severity: "high" }]);
@@ -275,7 +275,12 @@ console.log("ok");
 
   // Old analyses (no merge risk, rules, pictures) still map.
   const old = mapReview({ steps: [{ title: "t", risk: "high", hunks: [] }] }, []);
-  assert.deepEqual([old.mergeRisk, old.effort, old.rules, old.arch, old.blast, old.steps[0].visual, old.steps[0].isNew], [null, null, [], null, null, null, false]);
+  assert.deepEqual([old.mergeRisk, old.effort, old.rules, old.arch, old.blast, old.steps[0].visuals, old.steps[0].isNew], [null, null, [], null, null, [], false]);
+  // Several pictures per layer (and for the whole PR); the older single `visual` reads as a list of one.
+  const pic = (kind) => ({ kind, title: kind, nodes: [{ id: "a", label: "A" }], edges: [] });
+  const vis = mapReview({ visuals: [pic("state_machine")], steps: [{ title: "t", hunks: [], visuals: [pic("architecture"), pic("state_machine"), { kind: "flow", nodes: [] }] }, { title: "u", hunks: [], visual: pic("flow") }] }, []);
+  assert.deepEqual(vis.steps.map((s) => s.visuals.map((v) => v.kind)), [["architecture", "state_machine"], ["flow"]]);
+  assert.deepEqual(vis.visuals.map((v) => v.kind), ["state_machine"]);
   const neu = mapReview({ merge_risk: { level: "high", why: "w" }, effort: { score: 7 }, rule_checks: [{ rule: "a", status: "pass" }, { rule: "b", status: "fail" }], steps: [{ title: "t", new: true, hunks: [] }] }, []);
   assert.deepEqual([neu.mergeRisk.level, neu.effort.score, neu.rules.map((r) => r.rule), neu.steps[0].isNew], ["high", 5, ["b", "a"], true]);
   console.log("ok since/verify/pictures/checks/triage");

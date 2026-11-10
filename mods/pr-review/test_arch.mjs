@@ -1,26 +1,39 @@
-// Run: node test_arch.mjs  (the architecture / blast radius layout: lanes, ports, hops, badges, card sizes)
+// Run: node test_arch.mjs  (the architecture / blast radius layout: columns, lanes, ports, fans, stubs, hops, badges,
+// card sizes, focus, orchestrator states)
 import assert from "node:assert/strict";
-import { archLayout, crossings, clampText, wrapLines } from "./arch.js";
+import { archLayout, archFocus, stateLayout, crossings, clampText, wrapLines, ARCH } from "./arch.js";
 import { blastArch } from "./pr.js";
 
 const inside = (s, r) => (s.y1 === s.y2
   ? s.y1 > r.y + 1 && s.y1 < r.y + r.h - 1 && Math.max(s.x1, s.x2) > r.x + 1 && Math.min(s.x1, s.x2) < r.x + r.w - 1
   : s.x1 > r.x + 1 && s.x1 < r.x + r.w - 1 && Math.max(s.y1, s.y2) > r.y + 1 && Math.min(s.y1, s.y2) < r.y + r.h - 1);
 const over = (a, b) => Math.abs(a.x - b.x) < 18 && Math.abs(a.y - b.y) < 18;
+const boxOver = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
 
 function sane(L, what) {
+  const node = new Map(L.nodes.map((n) => [n.id, n])), bottom = Math.max(...L.nodes.map((n) => n.y + n.h));
   for (const p of L.paths) for (const s of p.segments) for (const n of L.nodes) assert.ok(!inside(s, n), `${what}: path ${p.mark} runs through ${n.id}`);
-  L.paths.forEach((p, i) => L.paths.slice(i + 1).forEach((q) => assert.ok(!over(p.badge, q.badge), `${what}: badges ${p.mark} ${q.mark} overlap`)));
-  for (const p of L.paths) for (const n of L.nodes) assert.ok(!(Math.abs(p.badge.x - n.x - n.w / 2) < n.w / 2 + 9 && Math.abs(p.badge.y - n.y - n.h / 2) < n.h / 2 + 9), `${what}: badge ${p.mark} on ${n.id}`);
-  const vs = L.paths.flatMap((p) => p.segments.filter((s) => s.x1 === s.x2 && s.y1 !== s.y2).map((s) => ({ p: p.key, s })));
+  // Every call points left to right; nothing runs under the cards.
+  for (const p of L.paths) {
+    assert.equal(p.arrow.left, false, `${what}: ${p.mark} points left`);
+    if (p.kind !== "stub") for (const f of p.from) assert.equal(node.get(p.to).col, node.get(f).col + 1, `${what}: ${p.mark} is a line but not to the next column`);
+    for (const s of p.segments) assert.ok(Math.max(s.y1, s.y2) <= bottom + 4, `${what}: ${p.mark} runs below the cards`);
+  }
+  const badges = L.paths.filter((p) => p.badge);
+  badges.forEach((p, i) => badges.slice(i + 1).forEach((q) => assert.ok(!over(p.badge, q.badge), `${what}: badges ${p.mark} ${q.mark} overlap`)));
+  for (const p of badges) for (const n of L.nodes) assert.ok(!(Math.abs(p.badge.x - n.x - n.w / 2) < n.w / 2 + 9 && Math.abs(p.badge.y - n.y - n.h / 2) < n.h / 2 + 9), `${what}: badge ${p.mark} on ${n.id}`);
+  for (const p of L.paths.filter((q) => q.chip)) for (const n of L.nodes) assert.ok(!boxOver(p.chip, n), `${what}: chip ${p.mark} on ${n.id}`);
+  const vs = L.paths.flatMap((p) => p.segments.filter((s) => s.x1 === s.x2 && s.y1 !== s.y2).map((s) => ({ p: p.trunk ?? p.key, s })));
   vs.forEach((a, i) => vs.slice(i + 1).forEach((b) => {
     if (a.p === b.p || a.s.x1 !== b.s.x1) return;
     const lo = Math.max(Math.min(a.s.y1, a.s.y2), Math.min(b.s.y1, b.s.y2)), hi = Math.min(Math.max(a.s.y1, a.s.y2), Math.max(b.s.y1, b.s.y2));
     assert.ok(lo >= hi, `${what}: two paths share a lane`);
   }));
+  assert.equal(L.hops.length, crossings([...L.paths.filter((p) => p.kind === "next"), ...L.trunks]).length, `${what}: every crossing that stays has its hop`);
 }
 
-// One column of 6 nodes with 5 edges inside it, plus 3 edges to the next column (the shape from a real PR).
+// A chain inside one group: each call goes one column right (the group spans the columns); a call that would skip
+// columns is a stub; groups whose columns overlap stack.
 {
   const arch = { groups: [{ id: "app", label: "App" }, { id: "ops", label: "Ops" }],
     nodes: [...["runner", "props", "health", "intercept", "config", "main"].map((id) => ({ id, group: "app", label: id, description: "A component that does a thing in the service and has a long description that wraps over several lines and then goes on for a good while longer", status: "changed" })),
@@ -30,14 +43,16 @@ function sane(L, what) {
       { from: "health", to: "probe", label: "reports NOT_SERVING" }, { from: "k8s", to: "probe", label: "polls" }, { from: "config", to: "k8s", label: "env vars" }] };
   const L = archLayout(arch);
   assert.equal(L.paths.length, 8);
-  sane(L, "real shape");
+  sane(L, "chain");
   assert.ok(L.nodes.every((n) => n.descLines <= 3 && n.titleLines <= 2));
   assert.ok(L.nodes.filter((n) => n.group === "app").every((n) => n.cut)); // long descriptions are cut, with the tooltip
-  assert.equal(L.hops.length, crossings(L.paths).length); // every crossing that stays has its hop
-  assert.ok(L.hops.length <= 2, `${L.hops.length} hops`); // ordering keeps them few
-  // Inner edges use lanes right of their column, left of the next one.
-  const app = L.nodes.find((n) => n.id === "runner"), next = L.nodes.find((n) => n.id === "probe");
-  for (const p of L.paths.filter((p) => p.kind === "inner" && L.nodes.find((n) => n.id === p.to).col === 0)) for (const s of p.segments.filter((s) => s.x1 === s.x2)) assert.ok(s.x1 > app.x + app.w && s.x1 < next.x);
+  const col = (id) => L.nodes.find((n) => n.id === id).col;
+  assert.deepEqual(["main", "config", "props", "runner", "health", "intercept"].map(col), [0, 1, 2, 3, 4, 4]);
+  assert.deepEqual(L.paths.filter((p) => p.kind === "stub").map((p) => `${p.from[0]}>${p.to}`), ["config>k8s"]);
+  const [app, ops] = L.groups;
+  assert.deepEqual(app.cols, [0, 4]);
+  assert.ok(ops.y >= app.y + app.h, "ops shares column 4 with app: stacked under it");
+  assert.equal(L.hops.length, 0);
 }
 
 // Ordering removes avoidable crossings: given crosswise, barycentre ordering makes them parallel. Zero hops.
@@ -45,21 +60,20 @@ function sane(L, what) {
   const arch = { groups: [{ id: "a" }, { id: "b" }], nodes: [{ id: "a1", group: "a" }, { id: "a2", group: "a" }, { id: "b1", group: "b" }, { id: "b2", group: "b" }],
     edges: [{ from: "a1", to: "b2", label: "x" }, { from: "a2", to: "b1", label: "y" }] };
   const L = archLayout(arch);
-  const order = L.nodes.map((n) => n.id).join(" ");
-  assert.ok(order === "a2 a1 b1 b2" || order === "a1 a2 b2 b1", order); // one column reordered
+  const order = L.nodes.map((n) => `${n.id}:${n.y}`), y = (id) => L.nodes.find((n) => n.id === id).y;
+  assert.equal(y("a1") < y("a2"), y("b2") < y("b1"), order.join(" ")); // one column reordered
   assert.equal(L.hops.length, 0);
   sane(L, "parallel");
 }
 
-// An unavoidable crossing gets exactly one hop, on the horizontal line.
+// A crossing that can't be ordered away gets exactly one hop, on the horizontal line.
 {
   const arch = { groups: [{ id: "a" }, { id: "b" }], nodes: ["n1", "n2", "n3"].map((id) => ({ id, group: "a" })).concat(["m1", "m2", "m3"].map((id) => ({ id, group: "b" }))),
-    edges: [{ from: "n1", to: "m1", label: "p" }, { from: "n2", to: "m2", label: "q" }, { from: "n3", to: "m3", label: "r" }, { from: "n1", to: "n3", label: "inner" }] };
+    edges: [{ from: "n1", to: "m3", label: "p" }, { from: "n2", to: "m2", label: "q" }, { from: "n3", to: "m1", label: "r" }, { from: "n1", to: "m1", label: "s" }, { from: "n3", to: "m3", label: "t" }] };
   const L = archLayout(arch);
-  assert.equal(L.hops.length, 1);
-  assert.equal(L.hops[0].h.y1, L.hops[0].h.y2); // the hop sits on the horizontal segment
-  assert.equal(L.paths.find((p) => p.key === L.hops[0].h.p).to, "m2");
-  sane(L, "one crossing");
+  assert.ok(L.hops.length >= 1);
+  for (const h of L.hops) assert.equal(h.h.y1, h.h.y2); // the hop sits on the horizontal segment
+  sane(L, "crossing");
 }
 
 // Same target and same meaning: one path, one lane, one entry port (a bus). Different meaning: separate.
@@ -78,14 +92,108 @@ function sane(L, what) {
   sane(L, "bus");
 }
 
-// A skipped column: down to the channel under the cards, never through the middle column.
+// A call that skips a column is a stub: a short line out of the source and a chip naming the target with the number.
 {
-  const arch = { groups: [{ id: "a" }, { id: "b" }, { id: "c" }], nodes: [{ id: "a1", group: "a" }, { id: "b1", group: "b" }, { id: "b2", group: "b" }, { id: "c1", group: "c" }],
-    edges: [{ from: "a1", to: "c1", label: "skips" }, { from: "a1", to: "b1", label: "next" }] };
+  const arch = { groups: [{ id: "a" }, { id: "b" }, { id: "c" }], nodes: [{ id: "a1", group: "a" }, { id: "b1", group: "b" }, { id: "b2", group: "b" }, { id: "c1", group: "c", label: "Store" }],
+    edges: [{ from: "a1", to: "c1", label: "skips" }, { from: "a1", to: "b1", label: "next" }, { from: "b2", to: "c1", label: "writes" }] };
   const L = archLayout(arch);
   sane(L, "skip");
-  const skip = L.paths.find((p) => p.kind === "skip");
-  assert.ok(Math.max(...skip.segments.map((s) => s.y1)) > Math.max(...L.nodes.map((n) => n.y + n.h)));
+  const skip = L.paths.find((p) => p.label === "skips"), a1 = L.nodes.find((n) => n.id === "a1");
+  assert.equal(skip.kind, "stub");
+  assert.equal(skip.segments.length, 1);
+  assert.deepEqual([skip.segments[0].x1, skip.segments[0].x2 - skip.segments[0].x1], [a1.x + a1.w, ARCH.STUB]);
+  assert.equal(skip.chip.text, `→ Store ${skip.mark}`);
+  assert.equal(skip.badge, null);
+  assert.ok(skip.chip.x + skip.chip.w < L.nodes.find((n) => n.id === "b1").x, "the chip fits in the gutter");
+}
+
+// A cycle between groups: the call that closes it is a stub, nothing points right to left.
+{
+  const arch = { groups: [{ id: "a" }, { id: "b" }], nodes: [{ id: "p", group: "a" }, { id: "q", group: "b" }, { id: "r", group: "b" }],
+    edges: [{ from: "p", to: "q", label: "asks" }, { from: "q", to: "r", label: "passes" }, { from: "r", to: "p", label: "calls back" }] };
+  const L = archLayout(arch);
+  sane(L, "cycle");
+  assert.deepEqual(L.paths.map((p) => p.kind), ["next", "next", "stub"]);
+}
+
+// The shape of a real PR: Step Functions → Lambdas → AWS data and external services, one Lambda calling 6 things.
+const sync = {
+  groups: [{ id: "flow", label: "Orchestration", kind: "Step Functions" }, { id: "work", label: "Workers", kind: "Lambdas" },
+    { id: "store", label: "Cloud data & security", kind: "AWS" }, { id: "ext", label: "External services", kind: "SaaS" }],
+  nodes: [
+    { id: "sm", group: "flow", label: "Nightly sync state machine", description: "Runs the stages once a night.", type: "service", status: "changed" },
+    { id: "retry", group: "flow", label: "Retry state machine", description: "Re-runs failed stages.", type: "service", status: "unchanged" },
+    { id: "fetch", group: "work", label: "Fetch worker", description: "Pulls repositories.", type: "component", status: "unchanged" },
+    { id: "stages", group: "work", label: "Stages index, rank, lookup, tickets, mirror", description: "One handler per stage of the sync.", type: "component", status: "new" },
+    { id: "notify", group: "work", label: "Notifier worker", description: "Posts results.", type: "component", status: "changed" },
+    { id: "table", group: "store", label: "Jobs table", type: "data", status: "unchanged" },
+    { id: "bucket", group: "store", label: "Raw bucket", type: "data", status: "unchanged" },
+    { id: "vault", group: "store", label: "Secrets vault", type: "data", status: "unchanged" },
+    { id: "host", group: "ext", label: "Code host API", type: "api", status: "unchanged" },
+    { id: "search", group: "ext", label: "Search API", type: "api", status: "unchanged" },
+    { id: "model", group: "ext", label: "Model API", type: "api", status: "unchanged" },
+    { id: "mirror", group: "ext", label: "Mirror host", type: "api", status: "new" }],
+  edges: [
+    { from: "sm", to: "fetch", label: "invokes" }, { from: "sm", to: "stages", label: "invokes per stage", status: "new" }, { from: "retry", to: "notify", label: "invokes on failure" },
+    { from: "stages", to: "host", label: "lists tickets", status: "new" }, { from: "stages", to: "search", label: "queries", status: "new" },
+    { from: "stages", to: "model", label: "ranks candidates", status: "new" }, { from: "stages", to: "mirror", label: "pushes the mirror", status: "new" },
+    { from: "fetch", to: "host", label: "fetches repositories" }, { from: "notify", to: "host", label: "posts a comment", status: "changed" },
+    { from: "stages", to: "table", label: "writes candidates", status: "new" }, { from: "stages", to: "vault", label: "reads the token", status: "new" },
+    { from: "fetch", to: "bucket", label: "stores raw data" }, { from: "notify", to: "table", label: "reads results" },
+    { from: "sm", to: "vault", label: "reads the config" }] };
+{
+  const L = archLayout(sync), g = (id) => L.groups.find((x) => x.id === id);
+  sane(L, "sync");
+  assert.equal(L.paths.length, 14);
+  // Groups by depth: three columns, the AWS group and the external services stacked in the third.
+  assert.deepEqual(["flow", "work", "store", "ext"].map((id) => g(id).cols[0]), [0, 1, 2, 2]);
+  assert.equal(new Set(L.groups.map((x) => x.x)).size, 3);
+  const [top, low] = [g("store"), g("ext")].sort((a, b) => a.y - b.y);
+  assert.ok(low.y >= top.y + top.h);
+  // Nothing below the lowest card.
+  const bottom = Math.max(...L.nodes.map((n) => n.y + n.h));
+  assert.ok(L.paths.every((p) => p.segments.every((s) => Math.max(s.y1, s.y2) <= bottom + 8)));
+  assert.ok(L.height <= bottom + ARCH.PAD + 1);
+  // The call that skips the Lambdas: a stub with its chip.
+  const skip = L.paths.find((p) => p.label === "reads the config");
+  assert.equal(skip.kind, "stub");
+  assert.equal(skip.chip.text, "→ Secrets vault ⑭");
+  // Fan-out: the four calls from the stages into the external services share one trunk into the group's frame.
+  const fan = L.paths.filter((p) => p.from[0] === "stages" && L.nodes.find((n) => n.id === p.to).group === "ext");
+  assert.equal(fan.length, 4);
+  assert.equal(new Set(fan.map((p) => p.trunk)).size, 1);
+  assert.equal(L.trunks.length, 1);
+  const ext = g("ext"), entering = new Set(fan.flatMap((p) => p.segments).filter((s) => s.y1 === s.y2 && Math.min(s.x1, s.x2) < ext.x && Math.max(s.x1, s.x2) > ext.x).map((s) => JSON.stringify(s)));
+  assert.equal(entering.size, 1, "one line enters the group's frame");
+  const spineX = fan[0].segments.at(-1).x1;
+  assert.ok(fan.every((p) => p.segments.at(-1).x1 === spineX && spineX > ext.x && spineX < p.arrow.x), "branches leave one spine inside the frame's left inset");
+  assert.equal(new Set(fan.map((p) => p.num)).size, 4); // the legend lists each call
+  // Focus on the stages: its six calls and the call into it stay, with the cards at their other ends.
+  const F = archFocus(L, "stages"), num = (label) => L.paths.find((p) => p.label === label).num;
+  assert.deepEqual([...F.nodes].sort(), ["host", "mirror", "model", "search", "sm", "stages", "table", "vault"]);
+  assert.deepEqual([...F.paths].sort((a, b) => a - b), ["invokes per stage", "lists tickets", "queries", "ranks candidates", "pushes the mirror", "writes candidates", "reads the token"].map(num).sort((a, b) => a - b));
+  assert.deepEqual(L.nodes.filter((n) => !F.nodes.has(n.id)).map((n) => n.id).sort(), ["bucket", "fetch", "notify", "retry"]);
+  assert.equal(archFocus(L, null), null);
+  assert.equal(archFocus(archLayout(sync, "before"), "mirror"), null); // not in this view: no focus
+}
+
+// An orchestrator's states: a lane in the card, top to bottom; each state's call leaves the card at its row (an
+// edge the analysis gave, or one made from the state).
+{
+  const arch = { groups: [{ id: "flow", label: "Step Functions" }, { id: "work", label: "Lambdas" }],
+    nodes: [{ id: "sm", group: "flow", label: "Sync state machine", type: "orchestration", states: [{ name: "Index", type: "task", calls: "w1" }, { name: "Has work?", type: "choice" }, { name: "Rank", type: "task", calls: "w2" }, { name: "Done", type: "succeed" }] },
+      { id: "w1", group: "work", label: "Indexer" }, { id: "w2", group: "work", label: "Ranker" }],
+    edges: [{ from: "sm", to: "w1", label: "invokes the indexer" }] };
+  const L = archLayout(arch), sm = L.nodes.find((n) => n.id === "sm");
+  sane(L, "states");
+  assert.equal(L.paths.length, 2);
+  const row = (k) => sm.y + sm.stateTop + k * ARCH.ROW + ARCH.ROW / 2;
+  const [p1, p2] = L.paths;
+  assert.deepEqual([p1.label, p2.label], ["invokes the indexer", "Rank"]);
+  assert.equal(p1.segments[0].y1, row(0)); // leaves at "Index"
+  assert.equal(p2.segments[0].y1, row(2)); // leaves at "Rank", below
+  assert.ok(sm.y + sm.stateTop + 4 * ARCH.ROW <= sm.y + sm.h - 24, "the states fit above the card's footer");
+  assert.ok(archLayout({ ...arch, nodes: arch.nodes.map((n) => ({ ...n, states: undefined })) }).nodes[0].stateTop === null); // old analyses: no lane
 }
 
 // The blast radius: each context file's relation is its own path (no merged lanes), titles wrap to two lines.
@@ -101,6 +209,50 @@ function sane(L, what) {
   const u1 = L.nodes.find((n) => n.id === "u:u1");
   assert.equal(u1.titleLines, 2);
   assert.equal(u1.title, "GrpcServerRunner (Shutdown hook and health)");
+}
+
+// State diagrams, top to bottom. A lifecycle that goes back (a return lane on the left) and stays (a self-loop):
+// no crossings, nothing through a card, the start dot on top and the end ring at the bottom, changed ones marked.
+{
+  const v = { kind: "state_machine", title: "Loan", nodes: [{ id: "open", label: "Open" }, { id: "rem", label: "Reminded", changed: true }, { id: "over", label: "Overdue" }, { id: "ret", label: "Returned" }],
+    transitions: [{ from: "open", to: "rem", event: "due soon", guard: "2 days left", action: "send reminder", changed: true }, { from: "rem", to: "ret", event: "return" },
+      { from: "rem", to: "over", event: "due date passed" }, { from: "over", to: "ret", event: "return", guard: "fee paid" },
+      { from: "over", to: "open", event: "extend", changed: true }, { from: "rem", to: "rem", event: "remind again", changed: true }, { from: "open", to: "ret", event: "return" }] };
+  const L = stateLayout(v), at = (id) => L.nodes.find((n) => n.id === id);
+  const lines = [...L.edges, ...L.backs];
+  assert.equal(crossings(lines).length, 0);
+  for (const e of lines) for (const sg of e.segments) for (const n of L.nodes.filter((x) => x.kind === "state")) assert.ok(!inside(sg, n), `${e.key} runs through ${n.id}`);
+  assert.ok(at("\0start").y < at("open").y && at("open").y < at("rem").y && at("rem").y < at("over").y && at("over").y < at("ret").y && at("ret").y < at("\0end").y);
+  for (const e of L.edges) for (const sg of e.segments) assert.ok(sg.y2 >= sg.y1, `${e.key} goes up`); // forward transitions only run down
+  assert.deepEqual(L.backs.map((b) => [b.from, b.to, b.text, b.changed]), [["over", "open", "extend", true]]);
+  assert.ok(L.backs[0].laneX < Math.min(...L.nodes.map((n) => n.x)), "the return lane is left of every card");
+  assert.deepEqual(L.loops.map((l) => [l.id, l.text, l.changed]), [["rem", "remind again", true]]);
+  const due = L.edges.find((e) => e.from === "open" && e.to === "rem");
+  assert.deepEqual([due.text, due.changed], ["due soon [2 days left] / send reminder", true]);
+  assert.deepEqual(L.edges.filter((e) => e.changed).map((e) => `${e.from}>${e.to}`), ["open>rem"]);
+  // The old shape (edges with labels) still lays out.
+  const old = stateLayout({ kind: "state_machine", nodes: v.nodes, edges: [{ from: "open", to: "rem", label: "remind" }, { from: "rem", to: "ret", label: "return", changed: true }] });
+  assert.deepEqual(old.edges.filter((e) => e.text).map((e) => [e.text, e.changed]), [["remind", false], ["return", true]]);
+}
+
+// Step Functions: a choice forks into columns below it, a Parallel's branches sit side by side in its block, Catch and
+// Retry are stubs to the right, the Fail state only reached by Catch is not a card.
+{
+  const v = { kind: "state_machine", nodes: [{ id: "load", label: "Load batch", type: "task" }, { id: "has", label: "Has items?", type: "choice" },
+    { id: "par", label: "Enrich", type: "parallel" }, { id: "a1", label: "Index", parent: "par", branch: 0 }, { id: "a2", label: "Rank", parent: "par", branch: 0 },
+    { id: "b1", label: "Lookup", parent: "par", branch: 1 }, { id: "skip", label: "Nothing to do", type: "pass" }, { id: "done", label: "Done", type: "succeed" }, { id: "fail", label: "Failed", type: "fail" }],
+    edges: [{ from: "load", to: "has" }, { from: "has", to: "par", label: "items > 0" }, { from: "has", to: "skip", label: "empty" }, { from: "a1", to: "a2" },
+      { from: "par", to: "done" }, { from: "skip", to: "done" }, { from: "par", to: "fail", error: "catch", label: "Catch" }, { from: "load", to: "load", error: "retry", label: "Retry ×3" }] };
+  const L = stateLayout(v), at = (id) => L.nodes.find((n) => n.id === id);
+  assert.equal(at("fail"), undefined);
+  assert.equal(at("par").y, at("skip").y); // the choice's two ways side by side, below it
+  assert.ok(at("par").y > at("has").y && at("par").x + at("par").w <= at("skip").x);
+  const kids = at("par").children, k = (id) => kids.find((c) => c.id === id);
+  assert.deepEqual([k("a1").branch, k("a2").branch, k("b1").branch], [0, 0, 1]);
+  assert.ok(k("a1").y < k("a2").y && k("a1").x === k("a2").x && k("b1").x > k("a1").x && k("b1").y === k("a1").y);
+  assert.deepEqual(L.stubs.map((x) => [x.from, x.text]), [["load", "Retry ×3"], ["par", "Catch → Failed"]]);
+  for (const x of L.stubs) for (const n of L.nodes) assert.ok(!boxOver(x.chip, n), `stub chip on ${n.id}`);
+  assert.equal(crossings([...L.edges, ...L.backs]).length, 0);
 }
 
 // Text clamping.

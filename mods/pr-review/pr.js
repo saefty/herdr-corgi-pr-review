@@ -199,6 +199,9 @@ const RULE_ORDER = ["fail", "pass", "n/a"];
 const OLD_SKIM = new Set(["docs", "tests", "rename", "format", "generated"]);
 const level = (x) => (RISKS.includes(x) ? x : "medium");
 
+// A layer's (or the whole PR's) pictures: `visuals`, or the older single `visual`; only ones with nodes.
+export const visualsOf = (x) => (Array.isArray(x?.visuals) ? x.visuals : x?.visual ? [x.visual] : []).filter((v) => v?.nodes?.length);
+
 // Row r shows line n of the new side (old: of the removed side).
 export const atLine = (r, n, old) => r.number === n && (old ? r.kind === "-" : r.kind === "+" || r.kind === " ");
 
@@ -210,7 +213,7 @@ export function mapReview(answer, hunks) {
   const ids = (list) => [...new Set((list ?? []).map((a) => byAlias.get(String(a).trim())?.id).filter(Boolean))];
   const steps = (answer.steps ?? []).map((s, n) => {
     const risk = OLD_SKIM.has(s.category) ? "skim" : level(s.risk);
-    return { title: s.title ?? "", why: s.why_it_matters ?? s.why ?? "", text: s.explanation ?? s.text ?? "", risk, skim: risk === "skim", isNew: Boolean(s.new), visual: s.visual?.nodes?.length ? s.visual : null,
+    return { title: s.title ?? "", why: s.why_it_matters ?? s.why ?? "", text: s.explanation ?? s.text ?? "", risk, skim: risk === "skim", isNew: Boolean(s.new), visuals: visualsOf(s),
       weight: risk === "high" ? "key" : risk === "skim" ? "skim" : "normal", order: Number(s.reading_order) || n + 1,
       questions: (s.check_questions ?? s.questions ?? []).filter(Boolean).slice(0, 3), hunks: ids(s.hunks), n,
       flows: (s.flows ?? []).slice(0, 3).map((f) => ({ function: f.function ?? "", at: f.at ?? "", inputs: f.inputs ?? [], output: f.output ?? null,
@@ -235,7 +238,7 @@ export function mapReview(answer, hunks) {
     effort: answer.effort?.score >= 1 ? { score: Math.min(5, Math.round(answer.effort.score)), why: answer.effort.why ?? "" } : null,
     rules: (answer.rule_checks ?? []).map((r) => ({ rule: r.rule ?? "", source: r.source ?? "", status: ["pass", "fail", "n/a"].includes(r.status) ? r.status : "n/a", where: r.where ?? null, why: r.why ?? "" }))
       .sort((a, b) => RULE_ORDER.indexOf(a.status) - RULE_ORDER.indexOf(b.status)),
-    arch: answer.architecture?.nodes?.length ? answer.architecture : null, blast: answer.blast_radius?.units?.length ? answer.blast_radius : null,
+    arch: answer.architecture?.nodes?.length ? answer.architecture : null, visuals: visualsOf(answer), blast: answer.blast_radius?.units?.length ? answer.blast_radius : null,
     asks: (answer.asks ?? []).map((a) => ({ text: a.text ?? "", coverage: ["seen", "partly", "absent", "extra"].includes(a.coverage) ? a.coverage : "absent", hunks: ids(a.hunks) })) };
 }
 

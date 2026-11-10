@@ -20,7 +20,7 @@ import { lookup, warm, contents, vscodeArgs, where, setTrusted } from "./defs.js
 import { diffRows, hunksOf, selection, uiLine, lineKey, rangeOf, MODELS, reviewRequest, mapReview, suspectComment, stepKey, fileRows, fileTree, atLine, splitPatch } from "./pr.js";
 import { ghTarget, lowValue, markReviewed, sinceBase, verifyCandidates, applyVerification, blastArch, preMergeChecks, mergeBlockers, triageOf } from "./pr.js";
 import { diffLines, inDiff, ghReview, lineThreads, suggestionBlock, buildReview, layoutPlan } from "./pr.js";
-import { archView, archModel, archLegend, visualCard, statCard, segBar, foldCard, chip, legend, SEVERITY_COLOR } from "./stack.js";
+import { archView, archModel, archLegend, visualsCard, statCard, segBar, foldCard, chip, legend, SEVERITY_COLOR } from "./stack.js";
 
 const LEVEL = { high: "ansi1", medium: "ansi3", low: "ansi4", skim: "muted" };
 const COVER = { seen: ["done", "ansi2"], partly: ["partly", "ansi3"], absent: ["missing", "ansi1"], extra: ["extra (not asked)", "ansi4"] };
@@ -1224,7 +1224,7 @@ export const ReviewMode = {
     else if (k === "shift-/" || e.key === "?") this.command("keys", cx);
     else if (k === "a" || k === "x") { const s = this.focusedSug(); if (s) (k === "a" ? this.takeSug(s, cx) : this.dropSug(s, cx)); }
     else if (k === "s" || k === "f") this.tab = k === "s" ? "steps" : "files";
-    else if (k === "escape") { if (this.finishOpen) this.finishOpen = false; else if (this.composing) this.closeComposer(cx); else if (this.defFile) this.defFile = null; else if (this.defAt) this.defAt = null; else leave(); }
+    else if (k === "escape") { if (this.finishOpen) this.finishOpen = false; else if (this.composing) this.closeComposer(cx); else if (this.defFile) this.defFile = null; else if (this.defAt) this.defAt = null; else if (this.archFocus || this.blastFocus) this.archFocus = this.blastFocus = null; else leave(); }
     else return;
     cx.stop_propagation(); cx.notify();
   },
@@ -1337,7 +1337,8 @@ export const ReviewMode = {
         .children(s.questions.map((q, k) => h_flex().id(`rv-q-${i}-${k}`).gap(8).items_start().text_size(13.5).line_height(1.5)
           .child(div().flex_none().text_color(t.accent).child("?"))
           .child(div().flex_1().min_w(0).child(TextView.markdown(`rv-q-${stepKey(s)}-${k}`, this.asked(s, q))))))))
-      .when(on && Boolean(s.visual), (e) => e.child(div().pl(26).child(visualCard(s.visual, t, `rv-vis-${i}`, (at, cx) => this.jumpTo(at, cx)))))
+      .when(on && s.visuals?.length > 0, (e) => e.child(div().pl(26).child(visualsCard(s.visuals, t, `rv-vis-${i}`, (at, cx) => this.jumpTo(at, cx),
+        this.visTab?.[i] ?? 0, (k, cx) => { this.visTab = { ...this.visTab, [i]: k }; cx.notify(); }))))
       .when(on, (e) => e.children((s.flows ?? []).map((f, k) => {
         const picked = this.flowOf()?.f === f;
         return div().pl(26).child(div().rounded(9).border_1().border_color(picked ? t.accent : t.chrome).child(flowCard(f, t, `rv-flow-${i}-${k}`,
@@ -1564,13 +1565,24 @@ export const ReviewMode = {
     });
   },
 
+  // The picture's highlight (hovered badge or legend row), focus (clicked card; Esc or a second click clears it) and
+  // hover (a lighter focus) for the architecture ("arch") or blast radius ("blast") page.
+  archOpts(k) {
+    const set = (name, v, cx) => { if (this[name] !== v) { this[name] = v; cx.notify(); } };
+    return { hl: this[`${k}Hl`], focus: this[`${k}Focus`] ?? null, hover: this[`${k}Hover`] ?? null,
+      onHl: (v, cx) => set(`${k}Hl`, v, cx), onHover: (v, cx) => set(`${k}Hover`, v, cx),
+      onFocus: (v, cx) => { this.fh.focus(); set(`${k}Focus`, v, cx); } };
+  },
+
   archPage(t) {
     const a = this.ai?.arch;
     const seg = (k, label) => div().id(`rv-av-${k}`).px(10).h(24).flex().items_center().rounded(5).cursor_pointer().text_size(12.5)
       .bg(this.archMode === k ? t.selected : t.chrome).text_color(this.archMode === k ? t.foreground : t.muted).on_click((_e, cx) => { this.archMode = k; cx.notify(); }).child(label);
-    if (!a) return div().text_size(13.5).text_color(t.muted).child(this.ai ? "This analysis has no architecture picture (older analysis, or the PR touches no architecture). Re-analyze for one." : "No analysis yet: Analyze in the left column.");
+    const more = () => visualsCard(this.ai.visuals, t, "rv-arch-vis", (at, cx) => this.jumpTo(at, cx), this.archVisTab ?? 0, (k, cx) => { this.archVisTab = k; cx.notify(); });
+    if (!a) return v_flex().gap(12).child(div().text_size(13.5).text_color(t.muted).child(this.ai ? "This analysis has no architecture picture (older analysis, or the PR touches no architecture). Re-analyze for one." : "No analysis yet: Analyze in the left column."))
+      .when(this.ai?.visuals?.length > 0, (e) => e.child(div().max_w(760).child(more())));
     const groups = new Set(a.nodes.map((n) => n.group)).size, L = archModel(a, this.archMode);
-    const opts = { hl: this.archHl, onHl: (k, cx) => { if (this.archHl !== k) { this.archHl = k; cx.notify(); } } };
+    const opts = this.archOpts("arch");
     return v_flex().gap(12)
       .child(div().text_size(20).font_semibold().child("Architecture impact"))
       .child(h_flex().w_full().gap(12).items_center().flex_wrap() // wraps onto two rows when narrow
@@ -1579,7 +1591,9 @@ export const ReviewMode = {
         .child(h_flex().flex_none().gap(2).p(2).rounded(7).border_1().border_color(t.border).child(seg("diff", "Structural diff")).child(seg("before", "Before")).child(seg("after", "After"))))
       .child(div().id("rv-arch-scroll").w_full().overflow_x_scroll().pb(8)
         .child(archView(L, t, "rv-arch", (n, _e, cx) => this.jumpTo(n.at, cx), null, opts)))
-      .child(archLegend(L, t, "rv-arch-edges", "Edges", opts));
+      .child(archLegend(L, t, "rv-arch-edges", "Edges", opts))
+      .when(this.ai?.visuals?.length > 0, (e) => e.child(div().pt(6).text_size(13).font_semibold().text_color(t.muted).child("More views"))
+        .child(div().max_w(760).child(more())));
   },
 
   blastPage(t) {
@@ -1594,7 +1608,7 @@ export const ReviewMode = {
     if (!blast) return v_flex().gap(12).child(header).child(div().text_size(13.5).text_color(t.muted).child(this.ai ? "No blast radius in this analysis and no security findings yet." : "No analysis yet: Analyze in the left column, or run the security review."));
     const b = blastArch(blast, sec.filter((f) => OPEN_ST.includes(this.fstatus(f))));
     const L = archModel(b, "diff", (n) => Math.min(2, n.findings?.length ?? 0));
-    const opts = { hl: this.blastHl, onHl: (k, cx) => { if (this.blastHl !== k) { this.blastHl = k; cx.notify(); } } };
+    const opts = this.archOpts("blast");
     const deco = (n) => (n.findings ?? []).slice(0, 2).map((f) => h_flex().gap(4).items_center().child(chip(t, f.severity, t[SEVERITY_COLOR[f.severity]] ?? t.muted, true))
       .child(div().flex_1().min_w(0).truncate().text_size(10.5).text_color(t.foreground).child(f.title)));
     const go = (n, _e, cx) => { const h = this.fileHunks?.get(n.file)?.[0]; if (h) this.jumpTo(`${n.file}:${h.rows.find((r) => r.n)?.n ?? ""}`, cx); else if (n.file) { this.note = `${n.file} is not in the diff (related context)`; cx.notify(); } };

@@ -46,18 +46,26 @@ FLOW = {"type": "object", "required": ["function", "at", "inputs", "output"], "p
     "side_effects": STRINGS, "calls": STRINGS,
     "trace": {"type": "array", "maxItems": 12, "items": {"type": "object", "required": ["path", "line", "values"], "properties": {
         "path": S, "line": {"type": "integer"}, "values": S}}}}}
-# A picture of one layer; the model picks the kind that explains it best (or leaves it out).
+# A picture of one layer (or of the whole PR); the model picks the kinds that explain it best (or leaves them out).
+# state_machine: nodes may carry a type (Step Functions state types), parent/branch (inside a Parallel or Map state);
+# transitions carry event [guard] / action, and error ("catch" | "retry") for error paths.
+STATE_TYPES = ["task", "choice", "parallel", "map", "wait", "pass", "fail", "succeed", "state"]
+TRANSITION = {"type": "object", "required": ["from", "to"], "properties": {
+    "from": S, "to": S, "label": S, "event": S, "guard": S, "action": S, "changed": {"type": "boolean"}, "error": {"enum": ["catch", "retry"]}}}
 VISUAL = {"type": "object", "required": ["kind", "title", "nodes", "edges"], "properties": {
     "kind": {"enum": ["architecture", "flow", "sequence", "state_machine", "steps"]}, "title": S,
-    "nodes": {"type": "array", "maxItems": 8, "items": {"type": "object", "required": ["id", "label"], "properties": {
-        "id": S, "label": S, "changed": {"type": "boolean"}, "note": S, "at": S}}},
-    "edges": {"type": "array", "maxItems": 12, "items": {"type": "object", "required": ["from", "to"], "properties": {
-        "from": S, "to": S, "label": S, "changed": {"type": "boolean"}}}}}}
+    "nodes": {"type": "array", "maxItems": 12, "items": {"type": "object", "required": ["id", "label"], "properties": {
+        "id": S, "label": S, "changed": {"type": "boolean"}, "note": S, "at": S, "type": {"enum": STATE_TYPES}, "parent": S, "branch": {"type": "integer"}}}},
+    "edges": {"type": "array", "maxItems": 16, "items": TRANSITION},
+    "transitions": {"type": "array", "maxItems": 16, "items": TRANSITION}}}
+VISUALS = {"type": "array", "maxItems": 3, "items": VISUAL}
 STATUS = {"enum": ["new", "changed", "unchanged", "removed"]}
 ARCHITECTURE = {"type": "object", "required": ["groups", "nodes", "edges"], "properties": {
     "groups": {"type": "array", "maxItems": 5, "items": {"type": "object", "required": ["id", "label", "kind"], "properties": {"id": S, "label": S, "kind": S}}},
     "nodes": {"type": "array", "maxItems": 12, "items": {"type": "object", "required": ["id", "group", "label", "description", "type", "status"], "properties": {
-        "id": S, "group": S, "label": S, "description": S, "type": S, "status": STATUS, "at": S}}},
+        "id": S, "group": S, "label": S, "description": S, "type": S, "status": STATUS, "at": S,
+        "states": {"type": "array", "maxItems": 10, "items": {"type": "object", "required": ["name", "type"], "properties": {
+            "name": S, "type": {"enum": STATE_TYPES}, "calls": S, "status": STATUS}}}}}},
     "edges": {"type": "array", "maxItems": 16, "items": {"type": "object", "required": ["from", "to", "label"], "properties": {
         "from": S, "to": S, "label": S, "status": STATUS}}}}}
 BLAST = {"type": "object", "required": ["units", "context"], "properties": {
@@ -71,7 +79,7 @@ SCHEMA = {"type": "object", "required": ["title", "summary", "behavior", "merge_
     "effort": {"type": "object", "required": ["score", "why"], "properties": {"score": {"type": "integer", "minimum": 1, "maximum": 5}, "why": S}},
     "rule_checks": {"type": "array", "maxItems": 20, "items": {"type": "object", "required": ["rule", "source", "status", "why"], "properties": {
         "rule": S, "source": S, "status": {"enum": ["pass", "fail", "n/a"]}, "where": S, "why": S}}},
-    "architecture": ARCHITECTURE, "blast_radius": BLAST,
+    "architecture": ARCHITECTURE, "blast_radius": BLAST, "visuals": VISUALS,
     "asks": {"type": "array", "items": {"type": "object", "required": ["text", "coverage", "hunks"], "properties": {
         "text": S, "coverage": {"enum": ["seen", "partly", "absent", "extra"]}, "hunks": STRINGS}}},
     "steps": {"type": "array", "items": {"type": "object", "required": ["title", "risk", "why_it_matters", "explanation", "reading_order", "hunks", "check_questions"], "properties": {
@@ -79,7 +87,7 @@ SCHEMA = {"type": "object", "required": ["title", "summary", "behavior", "merge_
         "hunks": STRINGS, "check_questions": {**STRINGS, "maxItems": 3},
         "suggestions": {"type": "array", "items": {"type": "object", "required": ["hunk", "line", "side", "severity", "text"], "properties": {
             "hunk": S, "line": {"type": "integer"}, "side": {"enum": ["new", "old"]}, "severity": {"enum": LEVELS}, "text": S}}},
-        "flows": {"type": "array", "maxItems": 3, "items": FLOW}, "visual": VISUAL}}}}}
+        "flows": {"type": "array", "maxItems": 3, "items": FLOW}, "visuals": VISUALS}}}}}
 
 
 def jira_key(title, branch, body):
@@ -252,18 +260,30 @@ def prompt(hunks, cut, task_text, tools, rules="", candidates=(), previous=None,
             "examples concrete and realistic, derived from the code (types, structs, JSON bodies, DTOs, SQL rows, events), at most "
             "12 lines, invent nothing; trace: ONE example input followed through the function like in a debugger: per line path, "
             "line (new side, only lines in the diff), values (\"name = value, name2 = value2\": what parameters, locals and the "
-            "return value hold there for the example), at most 12 lines); visual (optional, only when a picture explains more than "
-            "text: pick the fitting form, kind architecture (components and what changes between them), flow (data/control flow, "
-            "edges with payload), sequence (who calls whom in which order; edges in order), state_machine (states and transitions, "
-            "changed ones marked) or steps (an ordered procedure); at most 8 nodes (id, label, changed, note: what changes at this "
-            "node, at: file:line in the new version), edges (from, to, label, changed)). The steps are layers: group by intent "
+            "return value hold there for the example), at most 12 lines); visuals (optional, only when pictures explain more than "
+            "text: pick every view that explains something the others don't, usually 1-3, never the same kind twice for the same "
+            "thing: kind architecture (components and what changes between them), flow (data/control flow, edges with payload), "
+            "sequence (who calls whom in which order; edges in order), state_machine or steps (an ordered procedure); at most 12 "
+            "nodes (id, label, changed, note: what changes at this node, at: file:line in the new version), edges (from, to, label, "
+            "changed)). state_machine is drawn top to bottom and covers two cases. A state diagram: pick it when the PR changes "
+            "how an entity's status or state field evolves (enum statuses, status columns, workflow states); title names the "
+            "entity (e.g. \"Loan\"); nodes are its states, transitions (from, to, event, guard, action, changed) are what moves it "
+            "between them, back edges and self-transitions allowed; mark the transitions the PR adds or changes. An orchestration: "
+            "pick it for a Step Functions or workflow definition; nodes are its states with type (task, choice, parallel, map, "
+            "wait, pass, fail, succeed), states inside a Parallel or Map state have parent (its id) and branch (0, 1, …); "
+            "transitions in execution order, a choice's ways labelled with their condition, Catch and Retry as transitions with "
+            "error catch or retry (label e.g. \"Retry ×3\"). The steps are layers: group by intent "
             "(e.g. data model, API, emails, UI), reading_order with the foundation first.\n\ntitle/summary: the PR in one line and "
             "in 2-3 sentences. behavior: 2-3 sentences on how the application's behavior changes, also for users (no code). "
             "merge_risk: level (minimal, low, medium, high, critical) and why (one sentence). effort: score 1-5 (1: minutes, 5: hours "
             "of focused work) and why. architecture: the picture of the whole PR: groups (systems, e.g. label \"Web application\", "
             "kind \"Client\"), nodes (id, group, label, description in 1-2 lines, type such as component, api·service, data, "
-            "service, status new/changed/unchanged/removed, at: file:line), edges (from, to, label: what happens, e.g. \"Creates "
-            "invitation\"); at most 12 nodes, empty lists when the PR touches no architecture. blast_radius: units (the changed "
+            "service, orchestration, status new/changed/unchanged/removed, at: file:line; an orchestrator such as a Step Functions "
+            "state machine may list its states in order (name, type task/choice/parallel/map/wait/pass/fail/succeed, calls: the id "
+            "of the node a task state invokes, status), each call is then drawn from that state's row), edges (from, to, label: "
+            "what happens, e.g. \"Creates invitation\"; draw them in call direction, caller to callee); at most 12 nodes, empty "
+            "lists when the PR touches no architecture. visuals (optional, at most 3): pictures of the whole PR the architecture "
+            "doesn't show, same form as a layer's (e.g. the state diagram of an entity whose lifecycle changed). blast_radius: units (the changed "
             "units: id, label, type, status added/changed/removed, files, spots = number of changed places) and context (unchanged "
             "files that call the change (upstream) or are called by it (downstream): file as an existing path, relation one "
             "sentence, links_to the unit's id); only checked paths, at most 8.")
