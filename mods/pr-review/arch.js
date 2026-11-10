@@ -43,6 +43,25 @@ const circled = (n) => (n >= 1 && n <= 20 ? String.fromCharCode(0x2460 + n - 1) 
 const norm = (s) => String(s ?? "").trim().toLowerCase();
 const avg = (xs) => xs.reduce((s, x) => s + x, 0) / xs.length;
 
+// The order with the lowest cost: every permutation for up to 4 items (24 tries), else adjacent swaps from the given
+// order until nothing improves. ponytail: a full search of 6 items (720 layouts) timed the render out.
+export function bestOrder(items, cost, start = items) {
+  if (items.length <= 4) {
+    let best = null, bestCost = Infinity;
+    for (const p of permutations(items)) { const k = cost(p); if (k < bestCost) { best = p; bestCost = k; } if (k === 0) break; }
+    return best;
+  }
+  let order = [...start], cur = cost(order);
+  for (let improved = true, rounds = 0; improved && cur > 0 && rounds < items.length; rounds++) {
+    improved = false;
+    for (let i = 0; i + 1 < order.length; i++) {
+      const next = [...order]; [next[i], next[i + 1]] = [next[i + 1], next[i]];
+      const k = cost(next);
+      if (k < cur) { order = next; cur = k; improved = true; }
+    }
+  }
+  return order;
+}
 export function permutations(list) {
   if (list.length <= 1) return [list];
   return list.flatMap((x, i) => permutations([...list.slice(0, i), ...list.slice(i + 1)]).map((p) => [x, ...p]));
@@ -193,9 +212,7 @@ export function archLayout(arch, view = "diff", extra = () => 0) {
     const block = colIds(c).filter((id) => gOf(id) === g);
     if (block.length < 2 || block.length > 6) continue;
     const slots = block.map((id) => pos.get(id)).sort((a, b) => a - b), set = (order) => order.forEach((id, k) => pos.set(id, slots[k]));
-    let best = block, bestCost = swapped();
-    for (const p of permutations(block)) { set(p); const k = swapped(); if (k < bestCost) { best = p; bestCost = k; } }
-    set(best);
+    set(bestOrder(block, (p) => { set(p); return swapped(); }));
   }
 
   // 3. Paths: stubs; fans (one source, three or more calls into one group, not from a state row); buses (same target, same
@@ -325,16 +342,10 @@ export function archLayout(arch, view = "diff", extra = () => 0) {
     const items = [...paths.filter((p) => p.kind === "next" && srcCol(p) === c), ...trunks.filter((tr) => srcCol(tr) === c)];
     if (!items.length) continue;
     const left = colX[c] + cw[c] + zone[c] + 14;
-    const cands = items.length <= 6 ? permutations(items) : [items, [...items].sort((a, b) => Math.min(...ysOf(a)) - Math.min(...ysOf(b))),
-      [...items].sort((a, b) => Math.max(...ysOf(b)) - Math.max(...ysOf(a))), [...items].sort((a, b) => (Math.max(...ysOf(a)) - Math.min(...ysOf(a))) - (Math.max(...ysOf(b)) - Math.min(...ysOf(b))))];
-    let best = null;
-    for (const order of cands) {
-      const trial = new Map(order.map((p, k) => [p.key, left + k * LANE]));
-      const n = crossings(order.map((p) => ({ key: p.key, segments: build(p, trial).segs }))).length;
-      if (!best || n < best.n) best = { n, trial };
-      if (n === 0) break;
-    }
-    for (const [k, v] of best.trial) lane.set(k, v);
+    const trialOf = (order) => new Map(order.map((p, k) => [p.key, left + k * LANE]));
+    const cost = (order) => { const trial = trialOf(order); return crossings(order.map((p) => ({ key: p.key, segments: build(p, trial).segs }))).length; };
+    const start = [...items].sort((a, b) => Math.min(...ysOf(a)) - Math.min(...ysOf(b)));
+    for (const [k, v] of trialOf(bestOrder(items, cost, start))) lane.set(k, v);
   }
 
   for (const p of paths.filter((q) => q.kind === "next")) { const b = build(p, lane); p.segments = b.segs; p.arrow = b.arrow; }
