@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1 (2026-11-10)
+
+### Fixes
+
+- review: bound the diagram layout search so big pictures render in time
+
 ## 0.2.0 (2026-11-10)
 
 ### Features
