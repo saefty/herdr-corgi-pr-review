@@ -1,6 +1,6 @@
 # Corgi · PR review for Herdr
 
-<h3 align="center">AI-guided pull request review for Herdr. A walkthrough takes you through the PR risk first, with an architecture map of the change, its security blast radius and a GitHub-style diff you comment on and submit from.</h3>
+<h3 align="center">AI-guided pull request review for Herdr: the change as a story, risk first, with an architecture map, a blast radius and debugger-style sample values in the diff.</h3>
 
 <p align="center"><img src="preview.png" width="88%" alt="The review layout's overview of a demo PR" /></p>
 
@@ -27,6 +27,29 @@ review (Comment, Approve or Request changes) or sends it to the agent session.
 | ![Commenting: the comment box under a line, a pending comment and Finish your review](docs/screenshots/commenting.png) | |
 
 The screenshots show an invented demo project (`demo/`), not a real repository.
+
+## Highlights
+
+**The changeset, visualized.** The PR is grouped into layers by intent (data model, API, UI, tests) and ordered by
+risk or by reading order. Each layer says why it matters, which files it touches and what to check, with a small
+diagram of its flow, sequence or state machine.
+
+![Layers: the change grouped by intent, with a picture per layer](docs/screenshots/layers.png)
+
+**Architecture impact.** A map of the components the PR adds, changes or removes and how they connect, with a
+Before / After toggle. Connections get their own lanes and numbered labels, so you can follow them.
+
+![Architecture impact: components as cards with New, Changed and Unchanged, numbered connections and a legend](docs/screenshots/architecture-impact.png)
+
+**Sample values in the diff, like a debugger.** Next to the changed lines you see example inputs and results:
+what a function gets, what it returns, which branch runs. You read the behavior instead of guessing it.
+
+![The diff with sample values next to the changed lines, an AI suggestion and a finding](docs/screenshots/diff-inline-values.png)
+
+**Security blast radius.** The changed parts in the middle, the existing code that calls into them on the left and
+what they call on the right, each with the reason it matters.
+
+![Security blast radius: callers, changed parts and callees, with numbered relations](docs/screenshots/security-blast-radius.png)
 
 ## Use cases
 

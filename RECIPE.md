@@ -1,6 +1,6 @@
 # Corgi · PR review
 
-AI-guided pull request review for Herdr. A walkthrough takes you through the PR risk first, with an architecture map of the change, its security blast radius and a GitHub-style diff you comment on and submit from.
+AI-guided pull request review for Herdr. Instead of a wall of files, you get the change as a story: grouped into layers by intent and ordered risk first, an architecture map of which components changed and how they connect, and a security blast radius of what calls into the change. In the diff, debugger-style sample values sit next to the changed lines, so you see what flows in and out of a function without running it. Comment on lines like on GitHub and submit one review, or send the findings to the agent that wrote the code.
 
 On the right of the window, a panel shows the diff of the focused space's
 branch against its PR base (or any PR you pick) with comments on lines that go to the agent who wrote the code.
