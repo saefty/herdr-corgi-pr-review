@@ -109,7 +109,7 @@ Claude setup the same review runs as a plain prompt.
 </tr>
 </table>
 
-Or tell your agent: add herdr.dev/mods/saefty/herdr-corgi-pr-review
+Or tell your agent: `Read ~/.config/herdr-app/AGENTS.md, then add this mod: https://github.com/saefty/herdr-corgi-pr-review/tree/main`
 
 By hand, step by step: copy `mods/pr-review` to `~/.config/herdr-app/mods/`, then run
 `herdr-app check ~/.config/herdr-app/mods/pr-review`.
