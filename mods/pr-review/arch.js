@@ -126,8 +126,11 @@ export function archFocus(L, id) {
 // mark, kind: "next" | "fan" | "stub", from: [ids], to, label, edges: [indexes], segments: [{x1, y1, x2, y2}],
 // arrow: {x, y, left}, badge: {x, y} (null for a stub), chip: {x, y, w, h, text} (stubs), trunk (fans: the trunk's
 // key; the trunk's segments are part of each of its paths), dashed, status}. trunks: [{key, segments}] for hops.
-export function archLayout(arch, view = "diff", extra = () => 0) {
-  const { W, PAD, HEAD, GAP_Y, GAP_G, LANE, GAP_MIN, BADGE, PORT, STUB, CHIP_H, CHIP_GAP, CH, FAN, ROW, TITLE_CH, DESC_CH } = ARCH;
+// fit: narrow cards (160 px, two lines of description) for a picture that is much wider than the view.
+export const FIT = { W: 160, TITLE_CH: 19, DESC_CH: 25, DESC_LINES: 2 };
+export function archLayout(arch, view = "diff", extra = () => 0, fit = false) {
+  const { PAD, HEAD, GAP_Y, GAP_G, LANE, GAP_MIN, BADGE, PORT, STUB, CHIP_H, CHIP_GAP, CH, FAN, ROW } = ARCH;
+  const { W, TITLE_CH, DESC_CH } = fit ? FIT : ARCH, DESC_LINES = fit ? FIT.DESC_LINES : 3;
   const hide = view === "before" ? "new" : view === "after" ? "removed" : null;
   const nodes0 = (arch?.nodes ?? []).filter((n) => n.status !== hide);
   const known = new Set((arch?.groups ?? []).map((g) => g.id));
@@ -278,7 +281,7 @@ export function archLayout(arch, view = "diff", extra = () => 0) {
   // 5. Card sizes from their text and states, at least room for their ports (a side with stubs: room for chips).
   const size = new Map();
   for (const id of ids0) {
-    const n = byId.get(id), title = clampText(n.label ?? n.id, TITLE_CH, 2), desc = clampText(n.description ?? "", DESC_CH, 3);
+    const n = byId.get(id), title = clampText(n.label ?? n.id, TITLE_CH, 2), desc = clampText(n.description ?? "", DESC_CH, DESC_LINES);
     const stateTop = 8 + title.lines * 17 + 3 + (desc.lines ? desc.lines * 15 + 3 : 0) + (extra(n) ?? 0) * 18 + 4;
     const content = n.states.length ? stateTop + n.states.length * ROW + 6 + 16 + 8 : 8 + title.lines * 17 + (desc.lines ? 4 + desc.lines * 15 : 0) + (extra(n) ?? 0) * 18 + 6 + 16 + 8;
     const need = (s) => { const items = ports.get(`${id}:${s}`) ?? []; return (items.length + 1) * (items.some((it) => it.stub) ? CHIP_GAP : PORT); };

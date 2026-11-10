@@ -21,7 +21,7 @@ import { diffRows, hunksOf, selection, uiLine, lineKey, rangeOf, MODELS, reviewR
 import { ghTarget, lowValue, markReviewed, sinceBase, verifyCandidates, applyVerification, blastArch, preMergeChecks, mergeBlockers, triageOf } from "./pr.js";
 import { diffLines, inDiff, ghReview, lineThreads, suggestionBlock, buildReview, layoutPlan, specElements, diagramsState } from "./pr.js";
 import { archView, archModel, archLegend, visualsCard, statCard, segBar, foldCard, chip, legend, specTag, sourceLegend, SEVERITY_COLOR } from "./stack.js";
-import { hasSources } from "./arch.js";
+import { hasSources, archLayout } from "./arch.js";
 import * as TH from "./threads.js";
 import { leftWidth, rowClick, CHIP_W, ASK_W, keyRoute, pictureOf, scopeOf, scopeFiles, hunksFor, mapAnswer, threadAdd, threadOf, history, highlightOf, rangeLabel, pinAnchor, pinAdd, pinDrop, pinsOf, pinsOn, codePins } from "./explore.js";
 
@@ -2158,8 +2158,12 @@ export const ReviewMode = {
     const more = () => visualsCard(this.ai.visuals, t, "rv-arch-vis", (at, cx) => this.jumpTo(at, cx), this.archVisTab ?? 0, (k, cx) => { this.archVisTab = k; cx.notify(); });
     if (!a) return v_flex().gap(12).child(this.diagramsBar(t, "rv-dia-arch", "Refresh diagrams")).child(div().text_size(13.5).text_color(t.muted).child(this.ai ? "This analysis has no architecture picture (older analysis, or the PR touches no architecture). Re-analyze for one." : "No analysis yet: Analyze in the left column."))
       .when(this.ai?.visuals?.length > 0, (e) => e.child(div().max_w(760).child(more())));
-    const groups = new Set(a.nodes.map((n) => n.group)).size, L = archModel(a, this.archMode);
+    const groups = new Set(a.nodes.map((n) => n.group)).size, L = this.archL(), fit = this.archFitOn();
     const opts = this.archOpts("arch");
+    // The canvas scrolls sideways by itself (archWheel, a bar under it, drag to pan): clipped at its own box, 40 px of
+    // room after the last column.
+    const viewW = this.archViewW ?? 800, contentW = L.width + 4 + 40, maxX = Math.max(0, contentW - viewW), x = Math.min(this.archX ?? 0, maxX);
+    this.archGeom = { maxX, contentW, viewW };
     return v_flex().gap(12)
       .child(h_flex().gap(12).items_center().flex_wrap().child(div().text_size(20).font_semibold().child("Architecture impact")).child(this.diagramsBar(t, "rv-dia-arch", "Refresh diagrams"))
         .when(this.drawerState() !== "open", (e) => e.child(pill("rv-ask-open", t, "Ask", (_e, cx) => this.setDrawer("open", cx, null)))))
@@ -2167,12 +2171,47 @@ export const ReviewMode = {
         .child(div().flex_none().text_size(13).text_color(t.muted).child(`${groups} ${groups === 1 ? "system" : "systems"} | ${(a.edges ?? []).length} edges`))
         .child(div().flex_none().child(legend(t)))
         .when(hasSources(a) || (this.ai.visuals ?? []).some(hasSources), (e) => e.child(div().flex_none().child(sourceLegend(t))))
-        .child(h_flex().flex_none().gap(2).p(2).rounded(7).border_1().border_color(t.border).child(seg("diff", "Structural diff")).child(seg("before", "Before")).child(seg("after", "After"))))
-      .child(div().id("rv-arch-scroll").w_full().overflow_x_scroll().pb(8)
-        .child(div().relative().flex_none().w(L.width + 4).h(L.height + 4).child(archView(L, t, "rv-arch", (n, _e, cx) => this.jumpTo(n.at, cx), null, opts)).children(this.pinNotes(t, L))))
+        .child(h_flex().flex_none().gap(2).p(2).rounded(7).border_1().border_color(t.border).child(seg("diff", "Structural diff")).child(seg("before", "Before")).child(seg("after", "After")))
+        .child(div().id("rv-av-fit").flex_none().px(10).h(28).flex().items_center().rounded(7).border_1().border_color(fit ? t.accent : t.border).cursor_pointer().text_size(12.5)
+          .text_color(fit ? t.foreground : t.muted).tooltip("Narrow cards, so a wide picture fits the view").on_click((_e, cx) => { this.archFit = !fit; this.archX = 0; cx.notify(); }).child("Fit")))
+      .child(div().id("rv-arch-canvas").w_full().h(L.height + 4).relative().overflow_hidden().when(maxX > 0, (e) => e.cursor_grab())
+        .on_size_change((size, cx) => { if (Math.abs((this.archViewW ?? 0) - size.width) > 2) { this.archViewW = size.width; cx.notify(); } })
+        .on_scroll_wheel((e, cx) => this.archWheel(e, cx))
+        .on_mouse_down("left", (e) => { if (maxX > 0) this.archPan = { x0: e.position.x, from: x }; })
+        .child(div().absolute().top(0).left(-x).w(contentW).h(L.height + 4).child(archView(L, t, "rv-arch", (n, _e, cx) => this.jumpTo(n.at, cx), null, opts)).children(this.pinNotes(t, L))))
+      .when(maxX > 0, (e) => e.child(div().id("rv-arch-hbar").w_full().h(10).relative().rounded(5).bg(t.raised)
+        .child(div().id("rv-arch-thumb").absolute().top(1).left(Math.round((x / contentW) * viewW)).w(Math.max(30, Math.round((viewW * viewW) / contentW))).h(8).rounded(4).bg(t.muted).cursor_pointer()
+          .on_mouse_down("left", (ev, cx) => { this.archThumb = { x0: ev.position.x, from: x }; cx.stop_propagation(); }))))
       .child(archLegend(L, t, "rv-arch-edges", "Edges", opts))
       .when(this.ai?.visuals?.length > 0, (e) => e.child(div().pt(6).text_size(13).font_semibold().text_color(t.muted).child("More views"))
         .child(div().max_w(760).child(more())));
+  },
+
+  // The picture shown: its layout with normal or narrow cards (Fit), memoized like stack.js archModel.
+  archFitOn() {
+    if (this.archFit !== undefined) return this.archFit;
+    const a = this.ai?.arch;
+    return Boolean(a) && archModel(a, this.archMode).width > 1.3 * (this.archViewW ?? 1e9); // auto: much wider than the view
+  },
+  archL() {
+    const a = this.ai?.arch;
+    if (!a || !this.archFitOn()) return a ? archModel(a, this.archMode) : null;
+    const key = `${this.archMode}|${JSON.stringify(a)}`;
+    if (this.fitMemo?.key !== key) this.fitMemo = { key, L: archLayout(a, this.archMode, () => 0, true) };
+    return this.fitMemo.L;
+  },
+  // Wheel and trackpad over the picture: each gesture keeps the axis it starts with (mostly sideways: only the canvas
+  // moves, the page stays; mostly down: the page scrolls). A gesture ends after 150 ms without a wheel event.
+  archWheel(e, cx) {
+    const g = this.archGeom, now = Date.now(), dx = e.delta?.x ?? 0, dy = e.delta?.y ?? 0;
+    if (!g || g.maxX <= 0) return;
+    if (e.touch_phase === "started" || now - (this.wheelAt ?? 0) > 150) this.wheelAxis = null;
+    this.wheelAt = now;
+    if (!this.wheelAxis && (dx || dy)) this.wheelAxis = Math.abs(dx) > Math.abs(dy) || e.modifiers?.shift ? "x" : "y";
+    if (this.wheelAxis !== "x") return;
+    const d = dx || (e.modifiers?.shift ? dy : 0);
+    this.archX = Math.max(0, Math.min(g.maxX, (this.archX ?? 0) - d));
+    cx.stop_propagation(); cx.notify();
   },
 
   // The two deep looks, side by side on a fresh review: the analysis (understanding) and the code review (findings).
@@ -2245,7 +2284,7 @@ export const ReviewMode = {
   // The answer's highlights on the Architecture page: its first node focused, its first edge's badge lit.
   showAnswer(a) {
     if (!this.ai?.arch) return;
-    const h = highlightOf(archModel(this.ai.arch, this.archMode), a);
+    const h = highlightOf(this.archL(), a);
     if (h.focus) this.archFocus = h.focus;
     this.askHl = h.hl;
   },
@@ -2291,7 +2330,7 @@ export const ReviewMode = {
     const chipBtn = (cid, label, color, click) => div().id(cid).flex_none().px(6).py(1).rounded(5).border_1().border_color(color).text_size(11.5).text_color(color)
       .cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => { click(cx); cx.stop_propagation(); cx.notify(); }).child(label);
     const name = new Map((ai?.arch?.nodes ?? []).map((n) => [n.id, n.label ?? n.id])), edges = pictureOf(ai?.arch).edges;
-    const L = ai?.arch ? archModel(ai.arch, this.archMode) : null, off = new Set(pinsOn(pins, L).off.map((p) => p.id));
+    const L = ai?.arch ? this.archL() : null, off = new Set(pinsOn(pins, L).off.map((p) => p.id));
     const answer = (tu, k) => v_flex().id(`${id}-t${k}`).gap(6).pt(8).border_t(1).border_color(t.border)
       .child(h_flex().gap(6).items_start().child(div().flex_1().min_w(0).text_size(13).font_semibold().whitespace_normal().child(tu.q))
         .child(div().flex_none().max_w(130).truncate().text_size(11).text_color(t.muted).child(tu.about ?? "")))
@@ -2299,7 +2338,7 @@ export const ReviewMode = {
       .when((tu.a.highlights.nodes.length + tu.a.highlights.edges.length) > 0, (e) => e.child(h_flex().flex_wrap().gap(4)
         .children(tu.a.highlights.nodes.map((n) => chipBtn(`${id}-hn${k}-${n}`, name.get(n) ?? n, t.accent, () => { this.page = "arch"; this.tab = "steps"; this.archFocus = n; })))
         .children(tu.a.highlights.edges.map((x) => { const e = edges.find((y) => y.id === x); return chipBtn(`${id}-he${k}-${x}`, e ? `${name.get(e.from) ?? e.from} → ${name.get(e.to) ?? e.to}` : x, t.accent,
-          () => { this.page = "arch"; this.tab = "steps"; this.archFocus = null; this.askHl = highlightOf(archModel(ai.arch, this.archMode), { highlights: { nodes: [], edges: [x] } }).hl; }); }))))
+          () => { this.page = "arch"; this.tab = "steps"; this.archFocus = null; this.askHl = highlightOf(this.archL(), { highlights: { nodes: [], edges: [x] } }).hl; }); }))))
       .when(tu.a.evidence.length > 0, (e) => e.child(v_flex().gap(2).children(tu.a.evidence.map((ev, j) => h_flex().id(`${id}-ev${k}-${j}`).gap(6).text_size(12).cursor_pointer()
         .on_click((_e, cx) => { this.jumpTo(ev.at, cx); cx.stop_propagation(); })
         .child(div().flex_none().text_color(t.accent).child(`${ev.at.split("/").pop()} ↗`)).child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(ev.why))))))
@@ -2722,8 +2761,12 @@ export const ReviewMode = {
       .on_size_change((size, cx) => { if (Math.abs((this.winW ?? 0) - size.width) > 8) { this.winW = size.width; cx.notify(); } })
       // Dragging the divider: the column follows the pointer; the width is kept (shared "review.leftWidth") on release.
       // ponytail: a release outside the window keeps dragging until the next release here.
-      .on_mouse_move((e, cx) => { if (this.drag) { this.dragW = leftWidth(e.local_position?.x ?? e.position.x, this.winW); cx.notify(); } })
-      .on_mouse_up("left", (_e, cx) => { if (this.drag) { this.drag = false; if (this.dragW !== null && this.dragW !== undefined) setShared("review.leftWidth", this.dragW); this.dragW = null; cx.notify(); } })
+      .on_mouse_move((e, cx) => {
+        if (this.drag) { this.dragW = leftWidth(e.local_position?.x ?? e.position.x, this.winW); cx.notify(); }
+        const g = this.archGeom, p = this.archPan ?? this.archThumb;
+        if (g && p) { const d = e.position.x - p.x0; this.archX = Math.max(0, Math.min(g.maxX, this.archThumb ? p.from + (d * g.contentW) / g.viewW : p.from - d)); cx.notify(); }
+      })
+      .on_mouse_up("left", (_e, cx) => { this.archPan = null; this.archThumb = null; if (this.drag) { this.drag = false; if (this.dragW !== null && this.dragW !== undefined) setShared("review.leftWidth", this.dragW); this.dragW = null; cx.notify(); } })
       .track_focus(this.fh).on_key_down((e, cx) => this.onReviewKey(e, cx));
     if (!target || other) {
       return root.items_center().justify_center().gap(12).text_color(t.muted)

@@ -237,6 +237,16 @@ const sync = {
   assert.ok(L.paths.every((p) => p.segments.every((s) => Math.max(s.y1, s.y2) <= bottom + 8)), "no line runs below the picture");
 }
 
+// Fit: the same picture with narrow cards is narrower, its cards 160 px with at most two lines of description.
+{
+  const arch = { groups: [{ id: "a", label: "A" }], nodes: ["x", "y", "z"].map((id) => ({ id, group: "a", label: `Node ${id}`, description: "A long description that needs several lines in a card of any width at all, really" })),
+    edges: [{ from: "x", to: "y", label: "1" }, { from: "y", to: "z", label: "2" }] };
+  const wide = archLayout(arch), fit = archLayout(arch, "diff", () => 0, true);
+  sane(fit, "fit");
+  assert.ok(fit.width < wide.width * 0.8, "narrower");
+  assert.ok(fit.nodes.every((n) => n.w === 160 && n.descLines <= 2));
+}
+
 // The blast radius: each context file's relation is its own path (no merged lanes), titles wrap to two lines.
 {
   const b = blastArch({ units: [{ id: "u1", label: "GrpcServerRunner (Shutdown hook and health)", status: "changed", files: ["a.java"] }, { id: "u2", label: "GrpcProperties and application config", status: "changed", files: ["b.java"] }],
