@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.0 (2026-11-10)
+
+### Features
+
+- review: readable architecture impact for many edges
+- review: tell spec from implemented, refresh diagrams on demand
+
+### Other
+
+- docs: refresh the architecture impact screenshot and describe the new pictures
+
 ## 0.1.1 (2026-11-10)
 
 ### Fixes
