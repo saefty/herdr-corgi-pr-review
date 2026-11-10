@@ -1,1 +1,4 @@
-{ "place": "right", "size": 380 }
+{
+  "place": "none",
+  "size": 380
+}
