@@ -123,3 +123,16 @@ assert.equal(X.scopeLine({ files: 1, detailed: 1, skimmed: 0, passes: 1 }), "Rea
 assert.equal(X.scopeLine({ files: 90, detailed: 80, skimmed: 10, passes: 4 }), "Read 80 of 90 files in detail, 10 skimmed · 4 passes");
 assert.equal(X.scopeLine(null), "");
 console.log("explore ok");
+// ---- Explore's trust: no remote, a foreign host, your github.com repo
+assert.equal(X.repoOfRemote("https://github.com/Saefty/x.git"), "Saefty/x");
+assert.equal(X.repoOfRemote("git@github.com:Saefty/x.git"), "Saefty/x");
+assert.equal(X.repoOfRemote("https://evil.example/saefty/x"), null, "only github.com names a repo");
+assert.equal(X.repoOfRemote("https://github.com.evil.example/saefty/x"), null);
+assert.equal(X.repoOfRemote(""), null);
+assert.equal(X.exploreTrust({ repo: null, root: "/tmp/archive", login: "saefty" }), false, "a folder without a remote: untrusted");
+assert.equal(X.exploreTrust({ repo: null, root: "/tmp/archive", trustedRoots: ["/tmp/archive"] }), true, "unless you trusted the folder");
+assert.equal(X.exploreTrust({ repo: X.repoOfRemote("https://evil.example/saefty/x"), root: "/r", login: "saefty" }), false, "a foreign host with your name: untrusted");
+assert.equal(X.exploreTrust({ repo: X.repoOfRemote("git@github.com:SaeFty/x"), root: "/r", login: "saefty" }), true, "your github.com repo, any case");
+assert.equal(X.exploreTrust({ repo: "acme/x", root: "/r", login: "saefty" }), false);
+assert.equal(X.exploreTrust({ repo: "acme/x", root: "/r", login: "saefty", trustedRepos: ["acme/x"] }), true);
+console.log("explore trust ok");

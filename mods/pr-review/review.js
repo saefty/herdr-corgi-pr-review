@@ -23,7 +23,7 @@ import { diffLines, inDiff, ghReview, lineThreads, suggestionBlock, buildReview,
 import { archView, archModel, archLegend, visualsCard, visualCard, statCard, segBar, foldCard, chip, legend, specTag, sourceLegend, SEVERITY_COLOR } from "./stack.js";
 import { hasSources, archLayout } from "./arch.js";
 import * as TH from "./threads.js";
-import { leftWidth, rowClick, CHIP_W, ASK_W, keyRoute, scopeLine, pictureOf, scopeOf, scopeFiles, hunksFor, mapAnswer, threadAdd, threadOf, history, highlightOf, rangeLabel, pinAnchor, pinAdd, pinDrop, pinsOf, pinsOn, codePins, drillPush, drillTo, crumbs, drillKey, cachePut, mapDrill, exploreId, exploreIndex, exploreAi, pathOf, lineOf } from "./explore.js";
+import { leftWidth, rowClick, CHIP_W, ASK_W, keyRoute, scopeLine, pictureOf, scopeOf, scopeFiles, hunksFor, mapAnswer, threadAdd, threadOf, history, highlightOf, rangeLabel, pinAnchor, pinAdd, pinDrop, pinsOf, pinsOn, codePins, drillPush, drillTo, crumbs, drillKey, cachePut, mapDrill, exploreId, exploreIndex, exploreAi, pathOf, lineOf, repoOfRemote, exploreTrust } from "./explore.js";
 
 const LEVEL = { high: "ansi1", medium: "ansi3", low: "ansi4", skim: "muted" };
 const COVER = { seen: ["done", "ansi2"], partly: ["partly", "ansi3"], absent: ["missing", "ansi1"], extra: ["extra (not asked)", "ansi4"] };
@@ -295,7 +295,11 @@ export const ReviewMode = {
     else if (name === "fix-target") this.fixTarget(arg); // sub | main, in the open preview
     else if (name === "explore") startExplore(arg || null);
     else if (name === "explore-open") this.openExploration(arg, cx);
-    else if (name === "trust-repo") { const r = this.ex?.repo; if (r) setShared("pr-review.trustedRepos", [r, ...(shared("pr-review.trustedRepos") ?? []).filter((x) => x !== r)].slice(0, 200)); this.applyExploreTrust(); }
+    else if (name === "trust-repo") { // the explored repo, or the folder when it has no github.com remote
+      const key = this.ex?.repo ? "pr-review.trustedRepos" : "pr-review.trustedRoots", v = this.ex?.repo ?? this.ex?.root;
+      if (v) setShared(key, [v, ...(shared(key) ?? []).filter((x) => x !== v)].slice(0, 200));
+      this.applyExploreTrust();
+    }
     else if (name === "copy-link") copyText(this.prSel?.url ?? "");
     else if (name === "open-gh") { if (this.prSel?.url) openUrl(this.prSel.url); }
     else if (name === "model") { if (MODELS[arg]) setShared("review.model", arg); }
@@ -2435,15 +2439,13 @@ export const ReviewMode = {
     const r = dir ? await exec("git", ["-C", dir, "rev-parse", "--show-toplevel"]).catch(() => null) : null;
     const root = r?.code === 0 ? r.stdout.trim() : dir;
     const remote = root ? await exec("git", ["-C", root, "remote", "get-url", "origin"]).catch(() => null) : null;
-    const repo = /github\.com[:/]([^/]+\/[^/.]+)/.exec(remote?.stdout ?? "")?.[1] ?? null;
+    const repo = repoOfRemote(remote?.code === 0 ? remote.stdout : ""); // only a github.com remote names a repo
     return { root, repo };
   },
-  // Your own repos are trusted (owner = your gh login, a repo you trusted, or one without a GitHub remote); others keep
-  // the language servers in Restricted Mode, as PRs by someone else do.
+  // Your own repos are trusted (a github.com repo whose owner is your gh login, or a repo or folder you trusted); a
+  // folder without a github.com remote starts in Restricted Mode, as PRs by someone else do.
   exploreTrusted(ex = this.ex) {
-    if (!ex?.root) return false;
-    if (!ex.repo) return true;
-    return ex.repo.split("/")[0] === shared("gh.login") || (shared("pr-review.trustedRepos") ?? []).includes(ex.repo);
+    return exploreTrust({ repo: ex?.repo ?? null, root: ex?.root ?? null, login: shared("gh.login"), trustedRepos: shared("pr-review.trustedRepos") ?? [], trustedRoots: shared("pr-review.trustedRoots") ?? [] });
   },
   applyExploreTrust() { if (this.ex?.root) setTrusted(this.ex.root, this.exploreTrusted()); },
   enterExplore(ex, cx) {
@@ -2522,12 +2524,13 @@ export const ReviewMode = {
 
   // The bar in Explore: back, the topic, the repo, Restricted Mode, a new topic.
   renderExploreBar(ex) {
-    const t = theme(), title = ex.topic ? `Explore: ${ex.topic}` : "Explore a topic", trusted = !ex.repo || ex.repo.split("/")[0] === shared("gh.login") || (shared("pr-review.trustedRepos") ?? []).includes(ex.repo);
+    const t = theme(), title = ex.topic ? `Explore: ${ex.topic}` : "Explore a topic", trusted = this.exploreTrusted(ex);
     return h_flex().id("rv-bar").size_full().pl(84).pr(14).gap(10).items_center().bg(t.chrome).text_color(t.foreground).text_size(13.5)
       .child(pill("rv-back", t, "← Back", () => { setShared("review.explore", null); if (!shared("review.target")) leave(); }).flex_none())
       .child(div().id("rv-title").flex_1().min_w(0).truncate().font_semibold().text_size(14).tooltip(title).child(title))
       .when(Boolean(ex.repo), (e) => e.child(div().flex_none().text_size(12).text_color(t.muted).child(ex.repo)))
-      .when(Boolean(ex.id) && !trusted, (e) => e.child(pill("rv-ex-trust", t, "Restricted Mode · Trust", () => run("pr-review.trust-repo"), false, t.ansi3).flex_none()))
+      .when(Boolean(ex.id) && !trusted, (e) => e.child(div().id("rv-ex-trust-wrap").flex_none().tooltip("Restricted Mode: language servers run nothing from this code, so go-to-definition may find less. Trust it only if it is yours.")
+        .child(pill("rv-ex-trust", t, ex.repo ? `Restricted Mode · Trust ${ex.repo}` : "Restricted Mode · Trust folder", () => run("pr-review.trust-repo"), false, t.ansi3))))
       .when(Boolean(ex.id), (e) => e.child(pill("rv-ex-new", t, "New topic", () => setShared("review.explore", { start: true, root: ex.root, at: Date.now() })).flex_none()));
   },
 

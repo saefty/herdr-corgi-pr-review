@@ -249,3 +249,21 @@ export function scopeLine(scope) {
   const passes = scope.passes > 1 ? ` · ${scope.passes} passes` : "";
   return `Read ${scope.detailed} of ${scope.files} ${scope.files === 1 ? "file" : "files"} in detail${scope.skimmed ? `, ${scope.skimmed} skimmed${scope.why ? ` (${scope.why})` : ""}` : ""}${passes}`;
 }
+
+// ---- Explore's trust (Restricted Mode for language servers): only a github.com remote names a repo; a folder without
+// one is trusted only when you trusted that folder, a repo when it is yours (owner = your gh login) or you trusted it.
+export function repoOfRemote(url) {
+  const u = String(url ?? "").trim(), scp = /^git@github\.com:([^/\s]+)\/([^/\s]+?)(\.git)?$/.exec(u);
+  if (scp) return `${scp[1]}/${scp[2]}`;
+  try {
+    const p = new URL(u);
+    if (p.hostname !== "github.com" || !["https:", "ssh:"].includes(p.protocol)) return null;
+    const [owner, name] = p.pathname.replace(/^\//, "").replace(/\.git$/, "").split("/");
+    return owner && name ? `${owner}/${name}` : null;
+  } catch { return null; }
+}
+export function exploreTrust({ repo, root, login, trustedRepos = [], trustedRoots = [] }) {
+  if (!root) return false;
+  if (!repo) return trustedRoots.includes(root);
+  return (Boolean(login) && repo.split("/")[0].toLowerCase() === String(login).toLowerCase()) || trustedRepos.includes(repo) || trustedRoots.includes(root);
+}
