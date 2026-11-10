@@ -16,7 +16,7 @@ PATTERNS = [
     re.compile(r"/home/[a-z]"),
     re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
     re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}"),
-    re.compile(r"sk-[A-Za-z0-9-]{20,}"),
+    re.compile(r"(?<![A-Za-z0-9])sk-[A-Za-z0-9-]{20,}")  # not inside words like "task-…",
 ]
 EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}")
 SSH_REMOTE = re.compile(r"git@[A-Za-z0-9.-]+:")  # git@host:owner/repo is a remote, not an e-mail
