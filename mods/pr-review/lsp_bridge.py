@@ -242,6 +242,10 @@ class Server:
         self.lock, self.next_id = threading.Lock(), 0
         self.ready = threading.Event()
         self.state, self.message, self.error = "starting", f"{LABEL[lang]} server is starting…", None
+        if safe and lang == "rust":  # rust-toolchain.toml, .cargo/config.toml wrappers and rust-analyzer.toml can all
+            # make rust-analyzer run the repo's programs; options and env vars don't cover every path. Off until trusted.
+            raise RuntimeError("Rust go-to-definition is off for someone else's code (rust-analyzer would run the repo's build "
+                               "tooling). Use \"Trust code\" in the review header to turn it on.")
         cmd = list(SERVERS[lang])
         if lang == "typescript" and (safe or not os.path.isfile(os.path.join(root, "node_modules", "typescript", "lib", "tsserver.js"))):
             cmd = ["tsc", "--lsp", "--stdio"]  # no project TypeScript: the global TypeScript 7 (native) has its own LSP
@@ -276,7 +280,7 @@ class Server:
             # The background index writes <db dir>/.cache/clangd: only in a throwaway review worktree.
             cmd.append(f"--background-index={'true' if throwaway(root) else 'false'}")
             self.options = {"fallbackFlags": ["-xc++", "-std=c++20"]}
-        env = {**os.environ, "GOFLAGS": "-mod=readonly", "GOPROXY": "off", "GOTOOLCHAIN": "local"} if safe else None
+        env = {**os.environ, "GOFLAGS": "-mod=readonly", "GOPROXY": "off", "GOTOOLCHAIN": "local", "CGO_ENABLED": "0"} if safe else None
         self.proc = subprocess.Popen(cmd, cwd=root, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                      start_new_session=True, env=env)
         CappedLog(os.path.join(DATA, f"lsp-{lang}.log")).pump(self.proc.stderr)

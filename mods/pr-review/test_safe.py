@@ -19,9 +19,12 @@ root = tempfile.mkdtemp()
 os.makedirs(os.path.join(root, "node_modules", "typescript", "lib"))
 open(os.path.join(root, "node_modules", "typescript", "lib", "tsserver.js"), "w").close()
 
-safe, trusted = b.Server(root, "rust", safe=True), b.Server(root, "rust", safe=False)
-assert safe.options["cargo"]["buildScripts"] == {"enable": False} and safe.options["procMacro"] == {"enable": False}
-assert trusted.options["cargo"]["buildScripts"] == {"enable": True}
+try:  # rust-analyzer never starts on untrusted code
+    b.Server(root, "rust", safe=True)
+    raise AssertionError("rust-analyzer started in safe mode")
+except RuntimeError as e:
+    assert "Trust code" in str(e)
+assert b.Server(root, "rust", safe=False).options["cargo"]["buildScripts"] == {"enable": True}
 
 java = b.Server(root, "java", safe=True).options["settings"]["java"]
 assert java["import"]["gradle"] == {"enabled": False} and java["import"]["maven"] == {"enabled": False}
@@ -30,6 +33,6 @@ assert java["autobuild"] == {"enabled": False}
 b.Server(root, "typescript", safe=True)
 assert started[-1][0][:2] == ["/bin/tsc", "--lsp"], started[-1][0]  # never the checkout's own TypeScript
 b.Server(root, "go", safe=True)
-assert started[-1][1]["env"]["GOPROXY"] == "off" and started[-1][1]["env"]["GOFLAGS"] == "-mod=readonly"
+assert started[-1][1]["env"]["GOPROXY"] == "off" and started[-1][1]["env"]["GOFLAGS"] == "-mod=readonly" and started[-1][1]["env"]["CGO_ENABLED"] == "0"
 assert b.Server(root, "go", safe=False) and started[-1][1]["env"] is None
 print("ok")
