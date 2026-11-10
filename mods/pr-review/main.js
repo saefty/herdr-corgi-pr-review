@@ -22,7 +22,7 @@ import * as C from "./context.js";
 import { setupBanner, renderSetup, loadSetup, runSetup, openUrl, readConfig } from "./setup-view.js";
 import { chip } from "./stack.js";
 import { panelState, bodyTab, capped, IN_PROGRESS_MAX } from "./views.js";
-import { ReviewMode, startReview, saveKey, flowCard, modelPills, renderReviews, renderAgentBar, renderKeys, renderCardMenu } from "./review.js";
+import { ReviewMode, startReview, startExplore, saveKey, flowCard, modelPills, renderReviews, renderAgentBar, renderKeys, renderCardMenu } from "./review.js";
 import { highlightRows, langOf, colors, renderLine, editorSyntax } from "./syntax.js";
 
 // Same mapping as the shipped files panel.
@@ -126,6 +126,7 @@ export default class PrReview extends View {
         else if (c === "setup") { this.view = "setup"; runSetup(this, cx, false); }
         else if (c === "walkthrough") this.openWalk(cx, false);
         else if (c === "review" && this.pr?.url) startReview(this.prSel ?? this.branchTarget());
+        else if (name === "explore") startExplore(arg || null); // pr-review.explore[:<folder>]: a topic in existing code, no PR
         cx.notify();
       }
     });
@@ -149,7 +150,7 @@ export default class PrReview extends View {
 
   key() { return this.prSel?.url ?? JSON.stringify(location()); }
   // Whose diff this is: the picked PR's context, else the focused space's.
-  ctxId() { return this.prSel ? prCtx(this.prSel) : spaceCtx(location().space); }
+  ctxId() { return this.exMode && this.ex?.ctx ? this.ex.ctx : this.prSel ? prCtx(this.prSel) : spaceCtx(location().space); }
   // What a Python script gets for this context: {id, env, tickets}.
   ctxReq(id = this.ctxId()) { return { ...C.contextReq(ctxDoc(), id), tickets: C.infoOf(ctxDoc(), id).tickets ?? true }; }
   // The command prefix that runs a program in a context (its env vars).
@@ -898,6 +899,7 @@ export default class PrReview extends View {
         .when(Boolean(this.pr), (e) => e.child(pill("pr-web", t, "GitHub ↗", () => openUrl(this.pr.url))))
       : h_flex().h(42).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
         .child(div().flex_1().min_w(0).truncate().font_semibold().child(state === "setup" ? "Setup" : "Pull requests"))
+        .when(state === "picking", (e) => e.child(pill(`pr-explore-${this.uid}`, t, "Explore a topic…", () => startExplore(location().cwd ?? null))))
         .when(state === "picking" && Boolean(this.prSel ?? this.branchPicked), (e) => e.child(pill(`pr-pick-done-${this.uid}`, t, `Back to ${chosen} →`, (_e, cx) => { this.picking = false; cx.notify(); })));
     // The selected PR's tabs: Diff | Walkthrough, its size; a branch diff also offers its files as they are now.
     const seg = (k, label, click) => div().id(`pr-tab-${k}-${this.uid}`).px(10).h(22).flex().items_center().rounded(5).cursor_pointer().text_size(12)

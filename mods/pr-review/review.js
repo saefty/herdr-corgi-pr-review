@@ -11,7 +11,7 @@
 // submit popover: one GitHub review (gh api) or, for a PR with an agent session, the prompt to that session.
 import { div } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, TextView, v_virtual_list, VirtualListScrollHandle, Textarea, TextareaState, Input, InputState } from "gpui-base";
-import { exec, hc, run, spaces, agents, focused, theme, settings, readTextFile, writeTextFile, shared, setShared, appHome, nextCommand, watchFolder, openOverlay, closeOverlay, props, home } from "herdr";
+import { exec, hc, run, spaces, agents, focused, pickFolder, theme, settings, readTextFile, writeTextFile, shared, setShared, appHome, nextCommand, watchFolder, openOverlay, closeOverlay, props, home } from "herdr";
 import { parseReports, findingStatus, fixPrompt, hash, touchReview, expireReviews, resumeFields, itemKeys, expandTabs, tokenAt } from "./pr.js";
 import * as C from "./context.js";
 import { hasTool, copyText, openUrl, loadSetup, readConfig } from "./setup-view.js";
@@ -23,7 +23,7 @@ import { diffLines, inDiff, ghReview, lineThreads, suggestionBlock, buildReview,
 import { archView, archModel, archLegend, visualsCard, visualCard, statCard, segBar, foldCard, chip, legend, specTag, sourceLegend, SEVERITY_COLOR } from "./stack.js";
 import { hasSources, archLayout } from "./arch.js";
 import * as TH from "./threads.js";
-import { leftWidth, rowClick, CHIP_W, ASK_W, keyRoute, scopeLine, pictureOf, scopeOf, scopeFiles, hunksFor, mapAnswer, threadAdd, threadOf, history, highlightOf, rangeLabel, pinAnchor, pinAdd, pinDrop, pinsOf, pinsOn, codePins, drillPush, drillTo, crumbs, drillKey, cachePut, mapDrill } from "./explore.js";
+import { leftWidth, rowClick, CHIP_W, ASK_W, keyRoute, scopeLine, pictureOf, scopeOf, scopeFiles, hunksFor, mapAnswer, threadAdd, threadOf, history, highlightOf, rangeLabel, pinAnchor, pinAdd, pinDrop, pinsOf, pinsOn, codePins, drillPush, drillTo, crumbs, drillKey, cachePut, mapDrill, exploreId, exploreIndex, exploreAi, pathOf, lineOf } from "./explore.js";
 
 const LEVEL = { high: "ansi1", medium: "ansi3", low: "ansi4", skim: "muted" };
 const COVER = { seen: ["done", "ansi2"], partly: ["partly", "ansi3"], absent: ["missing", "ansi1"], extra: ["extra (not asked)", "ansi4"] };
@@ -55,6 +55,7 @@ const CAP = { haiku: 1, sonnet: 3, opus: 10 }; // review.py BUDGET
 const findDir = () => `${appHome()}/pr-data/findings`;
 const threadsFile = () => `${appHome()}/pr-data/threads.json`; // sent and posted comments as threads (threads.js bounds it)
 const repliesDir = () => `${appHome()}/pr-data/replies`; // the agent's answers, <pr hash>.jsonl
+const exploreDir = () => `${appHome()}/pr-data/explore`; // explorations: <id>.json and index.json (the newest 20)
 const deepFile = () => `${appHome()}/pr-data/deep.json`; // Ask threads per PR and drill-downs per node (explore.js bounds both)
 const ctxDoc = () => shared(C.CONTEXTS_KEY);
 const prCtx = (pr) => C.prContext(ctxDoc(), pr, home());
@@ -145,7 +146,24 @@ export async function startReview(target) {
   const back = shared("layout");
   if (back && back !== plan.name) setShared("review.back", back);
   setShared("review.layout", plan.name);
+  setShared("review.explore", null);
   setShared("review.target", target);
+  run("layout.switch", { name: plan.name });
+}
+
+// Opens Explore in the review layout (pr-review.explore, the panel's "Explore a topic…", the review's ⋯ menu): a topic
+// walked through in existing code, no PR. root: the repo to explore (default: the active space's repo, chosen there).
+export async function startExplore(root = null) {
+  const dir = `${appHome()}/layouts`, read = (name) => readTextFile(`${dir}/${name}.json`).catch(() => null);
+  const plan = layoutPlan(await read("review"), await read("pr-review"));
+  if (plan.write) {
+    await exec("mkdir", ["-p", dir]).catch(() => null);
+    await writeTextFile(`${dir}/${plan.name}.json`, await readTextFile(`${appHome()}/mods/pr-review/review-layout.json`), null).catch(() => null);
+  }
+  const back = shared("layout");
+  if (back && back !== plan.name) setShared("review.back", back);
+  setShared("review.layout", plan.name);
+  setShared("review.explore", { start: true, root, space: focused()?.space ?? null, at: Date.now() });
   run("layout.switch", { name: plan.name });
 }
 const leave = () => run("layout.switch", { name: shared("review.back") || "main" });
@@ -218,6 +236,8 @@ export const ReviewMode = {
     this.itemEdit = TextareaState.new({ placeholder: "Comment text" });
     this.sendText = TextareaState.new({ placeholder: "What the agent gets" });
     this.replyIn = InputState.new({ placeholder: "Reply in this thread… (Enter: preview)" });
+    this.exTopic = InputState.new({ placeholder: "How does the reminder job get scheduled and sent? (Enter)" });
+    this.exTopic.on("submit", (_e, cx) => this.runExplore(cx));
     this.replyIn.on("submit", (_e, cx) => this.followup(cx));
     cx.spawn(async (cx) => {
       await exec("mkdir", ["-p", repliesDir()]).catch(() => null);
@@ -273,6 +293,9 @@ export const ReviewMode = {
     else if (name === "route") this.route = arg; // github | agent: where Submit and single comments go
     else if (name === "fix") this.fixComments(arg ? arg.split(",") : this.selected(), cx); // fix:<comment id>[,<id>…], else the selected ones (the preview opens)
     else if (name === "fix-target") this.fixTarget(arg); // sub | main, in the open preview
+    else if (name === "explore") startExplore(arg || null);
+    else if (name === "explore-open") this.openExploration(arg, cx);
+    else if (name === "trust-repo") { const r = this.ex?.repo; if (r) setShared("pr-review.trustedRepos", [r, ...(shared("pr-review.trustedRepos") ?? []).filter((x) => x !== r)].slice(0, 200)); this.applyExploreTrust(); }
     else if (name === "copy-link") copyText(this.prSel?.url ?? "");
     else if (name === "open-gh") { if (this.prSel?.url) openUrl(this.prSel.url); }
     else if (name === "model") { if (MODELS[arg]) setShared("review.model", arg); }
@@ -807,7 +830,7 @@ export const ReviewMode = {
 
   // ---- definitions (defs.js: language servers through lsp_bridge.py, on the PR head checkout)
 
-  lspRoot() { return this.worktree?.path ?? (this.prSel?.space ? this.root : null); },
+  lspRoot() { return this.exMode ? this.ex?.root ?? null : this.worktree?.path ?? (this.prSel?.space ? this.root : null); },
 
   define(it, r, cx) {
     const spans = this.spanMap?.get(it.src)?.spans?.[it.ri] ?? [];
@@ -835,6 +858,19 @@ export const ReviewMode = {
       setShared("pr.defs.last", { ...q, name: tok.name, status: d.res.status, message: d.res.message, def: d.res.definitions?.[0] ? where(d.res.definitions[0]) : null, at: new Date().toISOString() });
       if (this.defAt === d) cx.notify();
     });
+    cx.notify();
+  },
+
+  // ⌘-click a name in the file view: its definition (the language servers of the repo; Restricted Mode as for PRs).
+  defViewClick(i, cx) {
+    const f = this.defFile, line = f?.lines[i];
+    if (!f || line === undefined || !this.press.cmd) return;
+    const row = { text: line, number: f.from + i + 1, n: f.from + i + 1, kind: " " }, tok = tokenAt(row, f.spans[i] ?? [], this.press.x, 56, this.charW ?? 7.8);
+    if (!tok) { this.note = "⌘-click a name for its definition"; return cx.notify(); }
+    const q = { root: this.lspRoot(), rev: this.exMode ? "" : this.worktree?.head ?? this.head ?? "", path: f.path, line: tok.line, character: tok.character, side: "+" };
+    const d = { key: `view:${f.path}:${tok.line}`, name: tok.name, res: null, inView: true };
+    this.defAt = d;
+    cx.spawn(async (cx) => { d.res = await lookup(q).catch((e) => ({ status: "error", message: String(e), definitions: [] })); if (this.defAt === d) cx.notify(); });
     cx.notify();
   },
 
@@ -885,15 +921,21 @@ export const ReviewMode = {
     const f = this.defFile, c = colors(t), mono = settings().font_family ?? "JetBrains Mono";
     return v_flex().flex_1().min_h(0)
       .child(h_flex().flex_none().h(40).px(12).gap(10).items_center().bg(t.raised).border_b(1).border_color(t.border).text_size(13)
-        .child(pill("rv-def-back", t, "← Back to the diff", (_e, cx) => { this.defFile = null; cx.notify(); }))
+        .child(pill("rv-def-back", t, this.exMode ? "← Back" : "← Back to the diff", (_e, cx) => { this.defFile = null; this.defAt = null; cx.notify(); }))
         .child(div().flex_1().min_w(0).truncate().font_family(mono).font_semibold().child(`${f.path}:${f.line}`)))
+      .when(Boolean(this.defAt?.inView), (e) => { const d = this.defAt, def = d.res?.definitions?.[0];
+        return e.child(h_flex().flex_none().px(12).py(6).gap(8).items_center().border_b(1).border_color(t.border).bg(t.surface).text_size(12.5)
+          .child(div().flex_1().min_w(0).truncate().child(!d.res ? `Looking up ${d.name}…` : def ? `${d.name} → ${where(def)}` : `${d.name}: ${this.defMessage(d.res)}`))
+          .when(Boolean(def), (x) => x.child(pill("rv-defv-go", t, "Go to definition", (_e, cx) => this.goDef(def, cx), false, t.foreground)))
+          .child(pill("rv-defv-x", t, "✕", (_e, cx) => { this.defAt = null; cx.notify(); }))); })
       .child(div().flex_1().min_h(0).relative()
+        .on_mouse_down("left", (e) => { this.press = { x: e.local_position?.x ?? 0, w: e.bounds?.width ?? 0, shift: e.modifiers.shift, cmd: e.modifiers.platform }; })
         .child(v_virtual_list("rv-def-list", f.lines.length, ROW, (i) => String(i), (range) => f.lines.slice(range.start, range.end).map((l, k) => {
           const i = range.start + k;
           return h_flex().h(ROW).w_full().font_family(mono).text_size(13).when(f.from + i + 1 === f.line, (e) => e.bg(t.accent + "26"))
             .child(div().w(56).flex_none().pr(10).text_right().text_color(t.muted).child(String(f.from + i + 1)))
             .child(h_flex().flex_1().min_w(0).overflow_hidden().children(renderLine(div, l, f.spans[i] ?? [], c)));
-        })).track_scroll(this.lists.def).size_full())
+        })).track_scroll(this.lists.def).on_item_click((key, cx) => this.defViewClick(Number(key), cx)).size_full())
         .child(Scrollbar.vertical("rv-def-list").absolute().inset_0()));
   },
 
@@ -913,6 +955,7 @@ export const ReviewMode = {
 
   // A flow's "path:line" to the hunk that holds it (in the AI list, else the Files view).
   jumpTo(at, cx) {
+    if (this.exMode) return this.openExploreFile(pathOf(at), lineOf(at) ?? 1, cx); // no diff: the file itself
     const [, path, line] = /^(.*?):(\d+)/.exec(at ?? "") ?? [];
     const h = (this.hunks ?? []).find((x) => path && (x.path === path || x.path.endsWith(`/${path}`)) && x.rows.some((r) => r.n === Number(line)))
       ?? (this.hunks ?? []).find((x) => path && (x.path === path || x.path.endsWith(`/${path}`)));
@@ -1903,6 +1946,7 @@ export const ReviewMode = {
   // context; on the right only actions: Fix selected (while some are), Run review, Finish your review. The rest (risk,
   // effort, checks, model, values, help, ⋯) is row 2 at the top of the review (metaRow).
   renderBar() {
+    if (shared("review.explore")) return this.renderExploreBar(shared("review.explore"));
     const t = theme(), pr = shared("review.target"), meta = shared("review.meta") ?? {};
     const pending = meta.url === pr?.url ? meta.pending ?? 0 : 0, selected = meta.url === pr?.url ? meta.selected ?? 0 : 0;
     const title = pr ? `#${pr.number} ${pr.title ?? ""}` : "Review";
@@ -1953,7 +1997,7 @@ export const ReviewMode = {
       .child(sep())
       .child(link("rv-values", div().text_color(valuesOn() ? t.foreground : t.muted).child(`Values ${valuesOn() ? "on" : "off"}`), () => setShared("review.values", !valuesOn())))
       .child(link("rv-keys", div().child("?"), () => openOverlay({ mod: "pr-review", props: { part: "keys" }, kind: "popup", ...KEYS_POP })).tooltip("Keyboard shortcuts"))
-      .child(link("rv-more", div().child("⋯"), menu("more", [["Mark done", false, "done"], ["Copy link", false, "copy-link"], ...(this.prSel?.url?.startsWith("https://github.com") ? [["Open on GitHub", false, "open-gh"]] : [])])));
+      .child(link("rv-more", div().child("⋯"), menu("more", [["Explore a topic…", false, "explore"], ["Mark done", false, "done"], ["Copy link", false, "copy-link"], ...(this.prSel?.url?.startsWith("https://github.com") ? [["Open on GitHub", false, "open-gh"]] : [])])));
   },
 
   // ---- render: the left column
@@ -2304,7 +2348,7 @@ export const ReviewMode = {
   // ---- Ask about this (review.py main_ask, "Review: architecture question"): a question on the picture, a node or a
   // layer; the answer lights its nodes and edges (the focus mechanism) and links its evidence. One thread per PR.
 
-  deepKey() { return this.prSel?.url ?? null; },
+  deepKey() { return this.exMode ? (this.ex?.id ? `explore:${this.ex.id}` : null) : this.prSel?.url ?? null; },
   // What a question is about: on the Architecture page the focused card (else the whole picture); else what was picked
   // to ask about (a layer), else the selected lines in the diff.
   askFocus() {
@@ -2342,7 +2386,7 @@ export const ReviewMode = {
     const files = [...new Set([...(top.files ?? []), ...scopeFiles(scope)])];
     const req = { drill: { label: top.label, path: crumbs(d.stack, root).map((c) => c.label), subject }, model: model(), context: this.ctxReq(), root: this.lspRoot(), explore: Boolean(ai.explore),
       analysis: { title: ai.title, summary: ai.summary, layers: ai.steps.filter((x) => !x.pseudo).map((x) => ({ title: plain(x.title), why: plain(x.why) })) },
-      picture: pictureOf(ai.arch), scope, hunks: hunksFor(files, this.hunks, top.hunks ?? []) };
+      picture: pictureOf(ai.arch), scope, hunks: hunksFor(files, this.exMode ? [] : this.hunks, top.hunks ?? []) };
     this.drillBusy = ck; this.drillErr = null;
     cx.spawn(async (cx) => {
       const r = await exec("python3", [`${appHome()}/mods/pr-review/review.py`, JSON.stringify(req)], { timeout: 600000 }).catch((e) => ({ code: 1, stderr: String(e) }));
@@ -2378,6 +2422,213 @@ export const ReviewMode = {
           .children(res.visual.nodes.map((n) => pill(`rv-drill-n-${from}-${n.id}`, t, n.label, (_e, cx) => this.showDetails({ id: `${top.id}/${n.id}`, label: n.label, at: n.at, kind: "sub", note: n.note }, from, cx)))))));
   },
 
+  // ---- Explore: a topic walked through in existing code (explore.py, "Explore: walkthrough"), shown like an analysis
+  // without a diff: Overview, Layers, Architecture; Files lists the places it cites (the read-only file view, with
+  // go-to-definition). Ask and Show details work as for a PR. Explorations are kept per repo and topic (the newest 20).
+
+  async loadExploreIndex(cx) {
+    const doc = JSON.parse(await readTextFile(`${exploreDir()}/index.json`).catch(() => null) ?? "[]");
+    this.exIndex = Array.isArray(doc) ? doc : []; cx.notify();
+  },
+  // The repo a new exploration starts in: the one chosen, else the active space's (its git root).
+  async exploreRoot(dir) {
+    const r = dir ? await exec("git", ["-C", dir, "rev-parse", "--show-toplevel"]).catch(() => null) : null;
+    const root = r?.code === 0 ? r.stdout.trim() : dir;
+    const remote = root ? await exec("git", ["-C", root, "remote", "get-url", "origin"]).catch(() => null) : null;
+    const repo = /github\.com[:/]([^/]+\/[^/.]+)/.exec(remote?.stdout ?? "")?.[1] ?? null;
+    return { root, repo };
+  },
+  // Your own repos are trusted (owner = your gh login, a repo you trusted, or one without a GitHub remote); others keep
+  // the language servers in Restricted Mode, as PRs by someone else do.
+  exploreTrusted(ex = this.ex) {
+    if (!ex?.root) return false;
+    if (!ex.repo) return true;
+    return ex.repo.split("/")[0] === shared("gh.login") || (shared("pr-review.trustedRepos") ?? []).includes(ex.repo);
+  },
+  applyExploreTrust() { if (this.ex?.root) setTrusted(this.ex.root, this.exploreTrusted()); },
+  enterExplore(ex, cx) {
+    if (!this.exMode) { this.prAiSaved = this.ai; this.exMode = true; }
+    this.exStart = ex; this.ai = this.exAi ?? null;
+    if (!this.exIndex) { this.exIndex = []; cx.timer.after(0, (cx) => this.loadExploreIndex(cx)); }
+    if (ex.start && !this.exRoot) {
+      cx.timer.after(0, (cx) => cx.spawn(async (cx) => {
+        const dir = ex.root ?? spaces().find((x) => x.id === ex.space)?.folder ?? spaces().find((x) => x.active)?.folder ?? null;
+        this.exRoot = await this.exploreRoot(dir); cx.notify();
+      }));
+    }
+  },
+  leaveExplore() { if (this.exMode) { this.exMode = false; this.ai = this.prAiSaved ?? null; this.defFile = null; this.drill = null; } },
+  chooseExploreRepo(cx) {
+    cx.spawn(async (cx) => { const dir = await pickFolder({ prompt: "Repository to explore" }); if (dir) { this.exRoot = await this.exploreRoot(dir); cx.notify(); } });
+  },
+  runExplore(cx) {
+    const topic = this.exTopic.value().trim(), r = this.exRoot, m = model();
+    if (!topic || !r?.root || this.exBusy) return;
+    const id = exploreId(r.root, topic), out = `${exploreDir()}/${id}.json`, status = `${out}.status`;
+    const ctx = C.spaceContext(ctxDoc(), this.exStart?.space ?? focused()?.space);
+    const req = { root: r.root, repo: r.repo, topic, model: m, context: this.ctxReq(ctx), out, status };
+    this.exBusy = { id, topic, model: m, started: Date.now(), status, out, ctx }; this.exErr = null;
+    cx.spawn(async (cx) => {
+      await exec("mkdir", ["-p", exploreDir()]).catch(() => null);
+      const reqFile = `${out}.req.json`, before = await readTextFile(reqFile).catch(() => null);
+      await writeTextFile(reqFile, JSON.stringify(req), before).catch(() => null);
+      await exec("sh", ["-c", 'nohup python3 "$0" "$1" >/dev/null 2>&1 &', `${appHome()}/mods/pr-review/explore.py`, `@${reqFile}`]).catch((e) => { this.exErr = String(e); this.exBusy = null; });
+      this.pollExplore(cx); cx.notify();
+    });
+    cx.notify();
+  },
+  pollExplore(cx) {
+    cx.timer.after(5000, (cx) => cx.spawn(async (cx) => {
+      const b = this.exBusy;
+      if (!b) return;
+      const st = JSON.parse(await readTextFile(b.status).catch(() => null) ?? "null");
+      if (!st || st.busy) { cx.notify(); return this.pollExplore(cx); }
+      this.exBusy = null;
+      if (st.error) { this.exErr = st.error; return cx.notify(); }
+      const entry = { id: b.id, topic: b.topic, root: this.exRoot.root, repo: this.exRoot.repo, model: b.model, ctx: b.ctx, at: Date.now() };
+      const before = await readTextFile(`${exploreDir()}/index.json`).catch(() => null), next = exploreIndex(before ? JSON.parse(before) : [], entry);
+      await writeTextFile(`${exploreDir()}/index.json`, JSON.stringify(next.list, null, 1), before).catch(() => null);
+      for (const old of next.dropped) exec("rm", ["-f", `${exploreDir()}/${old}.json`, `${exploreDir()}/${old}.json.status`, `${exploreDir()}/${old}.json.req.json`]).catch(() => null);
+      this.exIndex = next.list;
+      this.openExploration(b.id, cx);
+    }));
+  },
+  openExploration(id, cx) {
+    cx.spawn(async (cx) => {
+      const text = await readTextFile(`${exploreDir()}/${id}.json`).catch(() => null);
+      if (!text) { this.exErr = "That exploration is gone"; return cx.notify(); }
+      const entry = (this.exIndex ?? []).find((x) => x.id === id) ?? {};
+      this.exAi = exploreAi(JSON.parse(text));
+      this.ex = { id, root: this.exAi.root, repo: this.exAi.repo, topic: this.exAi.topic, ctx: entry.ctx ?? null };
+      this.ai = this.exAi; this.page = "overview"; this.tab = "steps"; this.defFile = null; this.drill = null; this.archFocus = null;
+      this.applyExploreTrust();
+      setShared("review.explore", { id, topic: this.ex.topic, repo: this.ex.repo, root: this.ex.root, at: Date.now() });
+      cx.notify();
+    });
+  },
+  // A cited file in the read-only view at a line (go-to-definition works there: the repo is local).
+  openExploreFile(path, line, cx) {
+    const root = this.ex?.root;
+    if (!root || !path) return;
+    cx.spawn(async (cx) => {
+      const text = await readTextFile(`${root}/${path}`).catch(() => null);
+      if (text === null) { this.note = `Could not open ${path}`; return cx.notify(); }
+      const all = text.replace(/\n$/, "").split("\n"), from = Math.max(0, line - 3000), lines = all.slice(from, from + 6000).map(expandTabs);
+      this.defFile = { path, line, from, lines, spans: highlightLines(lines, langOf(path), `explore:${root}:${path}:${from}`) };
+      this.lists.def.scroll_to_item(Math.max(0, line - from - 6), "top");
+      cx.notify();
+    });
+  },
+
+  // The bar in Explore: back, the topic, the repo, Restricted Mode, a new topic.
+  renderExploreBar(ex) {
+    const t = theme(), title = ex.topic ? `Explore: ${ex.topic}` : "Explore a topic", trusted = !ex.repo || ex.repo.split("/")[0] === shared("gh.login") || (shared("pr-review.trustedRepos") ?? []).includes(ex.repo);
+    return h_flex().id("rv-bar").size_full().pl(84).pr(14).gap(10).items_center().bg(t.chrome).text_color(t.foreground).text_size(13.5)
+      .child(pill("rv-back", t, "← Back", () => { setShared("review.explore", null); if (!shared("review.target")) leave(); }).flex_none())
+      .child(div().id("rv-title").flex_1().min_w(0).truncate().font_semibold().text_size(14).tooltip(title).child(title))
+      .when(Boolean(ex.repo), (e) => e.child(div().flex_none().text_size(12).text_color(t.muted).child(ex.repo)))
+      .when(Boolean(ex.id) && !trusted, (e) => e.child(pill("rv-ex-trust", t, "Restricted Mode · Trust", () => run("pr-review.trust-repo"), false, t.ansi3).flex_none()))
+      .when(Boolean(ex.id), (e) => e.child(pill("rv-ex-new", t, "New topic", () => setShared("review.explore", { start: true, root: ex.root, at: Date.now() })).flex_none()));
+  },
+
+  renderExplore(cx, ex, root) {
+    const t = theme();
+    if (!ex.id || ex.start) return root.child(this.exploreStart(t));
+    if (!this.exAi || this.ex?.id !== ex.id) { if (this.exOpening !== ex.id) { this.exOpening = ex.id; cx.timer.after(0, (cx) => this.openExploration(ex.id, cx)); } return root.child(div().p(20).text_color(t.muted).child("Opening…")); }
+    const ai = this.exAi, files = ai.files ?? [], tab = this.tab === "files" ? "files" : "steps";
+    const tabBtn = (id, label) => div().id(`rv-tab-${id}`).flex_1().h(32).flex().items_center().justify_center().rounded(7).text_size(13.5).cursor_pointer()
+      .bg(tab === id ? t.selected : t.chrome).text_color(tab === id ? t.foreground : t.muted).on_click((_e, cx) => { this.tab = id; cx.notify(); }).child(label);
+    const nav = (k, label) => h_flex().id(`rv-exnav-${k}`).flex_none().h(30).px(10).items_center().rounded(7).cursor_pointer().when(this.page === k, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover))
+      .on_click((_e, cx) => { this.page = k; this.defFile = null; cx.notify(); }).child(div().text_size(13.5).font_semibold().text_color(this.page === k ? t.foreground : t.muted).child(label));
+    const left = tab === "files"
+      ? v_flex().id("rv-exfiles").flex_1().min_h(0).overflow_y_scroll().p(8).gap(2).child(div().px(6).pb(4).text_size(12).text_color(t.muted).child(`${files.length} files the walkthrough cites`))
+        .children(files.map((f) => h_flex().id(`rv-exf-${f.path}`).gap(8).px(8).h(28).items_center().rounded(6).cursor_pointer().when(this.defFile?.path === f.path, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover))
+          .on_click((_e, cx) => this.openExploreFile(f.path, f.lines[0] ?? 1, cx))
+          .child(div().flex_1().min_w(0).truncate().text_size(13).child(f.path)).child(div().flex_none().text_size(11.5).text_color(t.muted).child(f.lines.slice(0, 3).map((l) => `:${l}`).join(" ")))))
+      : v_flex().id("rv-exlayers").flex_1().min_h(0).overflow_y_scroll().p(8).gap(4)
+        .child(nav("overview", "Overview")).child(nav("arch", "Architecture"))
+        .child(div().pt(8).px(10).text_size(11.5).font_semibold().text_color(t.muted).child("LAYERS"))
+        .children(ai.steps.map((s, i) => v_flex().id(`rv-exl-${i}`).px(10).py(8).gap(2).rounded(8).cursor_pointer().when(this.page === `layer:${i}`, (e) => e.bg(t.selected)).hover((x) => x.bg(t.hover))
+          .on_click((_e, cx) => { this.page = `layer:${i}`; this.cur = i; this.defFile = null; cx.notify(); })
+          .child(h_flex().gap(8).child(div().w(18).flex_none().text_color(t.muted).child(String(i + 1))).child(div().flex_1().min_w(0).truncate().text_size(14).font_semibold().child(plain(s.title))))
+          .child(div().pl(26).text_size(12.5).text_color(t.muted).truncate().child(plain(s.why)))));
+    const page = this.defFile ? this.defView(t) : div().flex_1().min_h(0).relative()
+      .child(v_flex().id(`rv-expage-${this.page}`).absolute().inset_0().overflow_y_scroll().px(24).py(18).gap(14)
+        .child(this.page === "arch" ? this.archPage(t) : this.page?.startsWith("layer:") ? this.exploreLayer(t, Number(this.page.slice(6))) : this.exploreOverview(t)))
+      .child(Scrollbar.vertical(`rv-expage-${this.page}`).absolute().inset_0());
+    return root
+      .child(h_flex().flex_1().min_h(0)
+        .child(v_flex().w(this.leftW()).flex_none().h_full().bg(t.chrome)
+          .child(h_flex().flex_none().p(8).gap(6).border_b(1).border_color(t.border).child(tabBtn("files", `Files · ${files.length}`)).child(tabBtn("steps", `Layers · ${ai.steps.length}`)))
+          .child(left))
+        .child(this.splitter(t))
+        .child(v_flex().flex_1().min_w(0).h_full().relative()
+          .child(div().id("rv-probe").absolute().top(-100).font_family(settings().font_family ?? "JetBrains Mono").text_size(13).whitespace_nowrap()
+            .on_size_change((size, cx) => { const w = size.width / PROBE.length; if (w > 0 && Math.abs((this.charW ?? 0) - w) > 0.01) { this.charW = w; cx.notify(); } }).child(PROBE))
+          .child(page)
+          .when(Boolean(this.note), (e) => e.child(div().flex_none().px(14).py(8).border_t(1).border_color(t.border).text_size(12.5).text_color(t.muted).child(this.note)))
+          .when(this.drawerState() === "open", (e) => e.child(div().absolute().top(0).right(0).bottom(0).child(this.askDrawer(t))))
+          .when(this.drawerState() === "collapsed", (e) => e.child(div().absolute().top(0).right(0).bottom(0).child(this.drawerStrip(t))))));
+  },
+
+  exploreOverview(t) {
+    const ai = this.exAi;
+    return v_flex().gap(14).max_w(1000)
+      .child(div().text_size(12).text_color(t.muted).child(`${MODELS[ai.model]?.label ?? ai.model ?? ""}${ai.cost != null ? ` · $${Number(ai.cost).toFixed(3)}` : ""}${ai.budget ? ` of $${ai.budget} cap` : ""} · ${ago(ai.generated)} · ${ai.repo ?? ai.root}`))
+      .child(div().text_size(22).font_semibold().line_height(1.3).whitespace_normal().child(ai.title || ai.topic))
+      .child(div().text_size(14).line_height(1.5).whitespace_normal().child(TextView.markdown(`rv-exs-${ai.generated}`, ai.summary || "")))
+      .child(h_flex().gap(8).child(pill("rv-ex-ask", t, "Ask about this", (_e, cx) => this.setDrawer("open", cx, null))).child(pill("rv-ex-arch", t, "Architecture", (_e, cx) => { this.page = "arch"; cx.notify(); })))
+      .when(ai.intent?.length > 0, (e) => e.child(v_flex().gap(4).child(div().text_size(12).font_semibold().text_color(t.muted).child("QUESTION")).child(this.statements(t, ai.intent, "rv-exq"))))
+      .when(ai.behaviorPoints?.length > 0, (e) => e.child(v_flex().gap(4).child(div().text_size(12).font_semibold().text_color(t.muted).child("HOW IT WORKS")).child(this.statements(t, ai.behaviorPoints, "rv-exh"))))
+      .child(v_flex().gap(4).child(div().text_size(12).font_semibold().text_color(t.muted).child("LAYERS, IN READING ORDER"))
+        .children(ai.steps.map((s, i) => h_flex().id(`rv-exo-${i}`).gap(8).p(6).rounded(6).cursor_pointer().hover((x) => x.bg(t.hover)).on_click((_e, cx) => { this.page = `layer:${i}`; cx.notify(); })
+          .child(div().w(18).flex_none().text_color(t.muted).child(String(i + 1))).child(div().flex_1().min_w(0).whitespace_normal().text_size(13.5).child(`${plain(s.title)}: ${plain(s.why)}`)))));
+  },
+
+  exploreLayer(t, i) {
+    const s = this.exAi.steps[i];
+    if (!s) return div();
+    return v_flex().gap(12).max_w(1000)
+      .child(div().text_size(20).font_semibold().whitespace_normal().child(`${i + 1}. ${plain(s.title)}`))
+      .child(div().text_size(14).text_color(t.muted).whitespace_normal().child(plain(s.why)))
+      .child(div().text_size(14).line_height(1.5).child(TextView.markdown(`rv-exl-${this.exAi.generated}-${i}`, s.text || "")))
+      .when((s.evidence ?? []).length > 0, (e) => e.child(h_flex().flex_wrap().gap(6).children(s.evidence.map((ev, k) => pill(`rv-exev-${i}-${k}`, t, `${ev.split("/").pop()} ↗`, (_e, cx) => this.jumpTo(ev, cx))))))
+      .child(h_flex().gap(6).child(pill(`rv-exask-${i}`, t, "Ask about this layer", (_e, cx) => this.setDrawer("open", cx, { layer: this.exAi.steps.indexOf(s) })))
+        .child(pill(`rv-exdrill-${i}`, t, "Show details", (_e, cx) => this.showDetails({ id: `layer:${i}`, label: plain(s.title), kind: "layer", why: plain(s.why), text: s.text, files: (s.evidence ?? []).map(pathOf), evidence: s.evidence ?? [] }, `exlayer:${i}`, cx))))
+      .child(this.drillPanel(t, `exlayer:${i}`))
+      .when(s.visuals?.length > 0, (e) => e.child(div().max_w(760).child(visualsCard(s.visuals, t, `rv-exvis-${i}`, (at, cx) => this.jumpTo(at, cx), this.visTab?.[`x${i}`] ?? 0, (k, cx) => { this.visTab = { ...this.visTab, [`x${i}`]: k }; cx.notify(); }))))
+      .children((s.flows ?? []).map((f, k) => div().max_w(760).child(flowCard(f, t, `rv-exflow-${i}-${k}`, (_e, cx) => { this.jumpTo(f.at, cx); cx.stop_propagation(); }))));
+  },
+
+  // Start: the repo (the active space's, or any folder), the topic, the model with its cap, the explorations so far.
+  exploreStart(t) {
+    const r = this.exRoot, m = model(), busy = this.exBusy;
+    return v_flex().id("rv-exstart").flex_1().min_h(0).overflow_y_scroll().items_center().py(40)
+      .child(v_flex().w(640).gap(14)
+        .child(div().text_size(22).font_semibold().child("Explore a topic"))
+        .child(div().text_size(13.5).text_color(t.muted).whitespace_normal().child("For code you don't know: ask how something works and get a walkthrough of the existing code, like a PR analysis without a diff: the question, how it works, layers in reading order, the architecture, pictures and sample values, each with file:line."))
+        .child(h_flex().gap(8).items_center().text_size(13)
+          .child(div().flex_none().text_color(t.muted).child("Repository"))
+          .child(div().flex_1().min_w(0).truncate().font_semibold().child(r?.root ? `${r.repo ?? r.root.split("/").pop()} · ${r.root.replace(home(), "~")}` : "Finding the active space's repo…"))
+          .child(pill("rv-ex-pick", t, "Choose folder…", (_e, cx) => this.chooseExploreRepo(cx))))
+        .child(div().id("rv-ex-topic").h(36).px(10).flex().items_center().rounded(8).border_1().border_color(t.accent).bg(t.background).cursor_text()
+          .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Input.new(this.exTopic).h_full().text_size(14).text_color(t.foreground)))
+        .child(h_flex().gap(10).items_center()
+          .child(modelPills(t, "rv-ex-m"))
+          .child(div().text_size(12).text_color(t.muted).child(`cap $${CAP[m]}`))
+          .child(div().flex_1())
+          .child(div().id("rv-ex-go").px(14).h(32).flex().items_center().rounded(8).text_size(13.5).font_semibold().bg(busy ? t.raised : t.solid).text_color(busy ? t.muted : t.solid_foreground)
+            .cursor_pointer().on_click((_e, cx) => this.runExplore(cx)).child(busy ? "Exploring…" : "Explore")))
+        .when(Boolean(busy), (e) => e.child(h_flex().gap(8).items_center().text_size(13).text_color(t.muted).child(div().child(SPIN[0]).frames(SPIN, 90))
+          .child(`${MODELS[busy.model]?.label} is reading the code · ${clock(Date.now() - busy.started)} · cap $${CAP[busy.model]}`)))
+        .when(Boolean(this.exErr), (e) => e.child(div().text_size(12.5).text_color(t.ansi1).whitespace_normal().child(this.exErr)))
+        .when((this.exIndex ?? []).length > 0, (e) => e.child(div().pt(10).text_size(11.5).font_semibold().text_color(t.muted).child(`EXPLORATIONS · ${this.exIndex.length}`))
+          .children(this.exIndex.map((x) => h_flex().id(`rv-exi-${x.id}`).gap(8).px(8).h(32).items_center().rounded(6).cursor_pointer().hover((s) => s.bg(t.hover))
+            .on_click((_e, cx) => this.openExploration(x.id, cx))
+            .child(div().flex_1().min_w(0).truncate().text_size(13.5).child(x.topic))
+            .child(div().flex_none().text_size(12).text_color(t.muted).child(`${x.repo ?? String(x.root).split("/").pop()} · ${ago(new Date(x.at).toISOString())}`))))));
+  },
+
   // ---- the Ask drawer, one for every view: open (380 px at the right), folded to a 28 px strip, or closed; kept per
   // review. Over the Architecture page it lies on top (the picture keeps its width); beside the diff it squeezes the
   // diff when there is room (from 1100 px), else it lies on top too.
@@ -2398,7 +2649,7 @@ export const ReviewMode = {
     const scope = scopeOf(ai, this.askFocus()), layer = scope.kind === "layer" ? this.ai.steps.find((s) => plain(s.title) === plain(scope.layer.title)) : null;
     const req = { ask: q, model: model(), context: this.ctxReq(), root: this.lspRoot(), explore: Boolean(ai.explore),
       analysis: { title: ai.title, summary: ai.summary, layers: ai.steps.filter((s) => !s.pseudo).map((s) => ({ title: plain(s.title), why: plain(s.why) })) },
-      picture: pictureOf(ai.arch), scope, hunks: hunksFor(scopeFiles(scope), this.hunks, layer?.hunks ?? []), history: history(threadOf(this.deep.threads, key)) };
+      picture: pictureOf(ai.arch), scope, hunks: hunksFor(scopeFiles(scope), this.exMode ? [] : this.hunks, layer?.hunks ?? []), history: history(threadOf(this.deep.threads, key)) };
     const about = this.askLabel(scope);
     this.askBusy = { q, label: about, started: Date.now() }; this.askErr = null;
     cx.spawn(async (cx) => {
@@ -2883,7 +3134,17 @@ export const ReviewMode = {
   },
 
   renderReview(cx) {
-    const t = theme(), target = shared("review.target") ?? null;
+    const t = theme(), target = shared("review.target") ?? null, ex = shared("review.explore");
+    if (ex) {
+      if (this.exStart !== ex) { if (ex.start && this.exStart?.at !== ex.at) this.exRoot = null; this.enterExplore(ex, cx); }
+      const root = v_flex().id("rv-root").size_full().bg(t.background).text_color(t.foreground).text_size(13.5)
+        .on_size_change((size, cx) => { if (Math.abs((this.winW ?? 0) - size.width) > 8) { this.winW = size.width; cx.notify(); } })
+        .on_mouse_move((e, cx) => { if (this.drag) { this.dragW = leftWidth(e.local_position?.x ?? e.position.x, this.winW); cx.notify(); } const g = this.archGeom, p = this.archPan ?? this.archThumb; if (g && p) { const d = e.position.x - p.x0; this.archX = Math.max(0, Math.min(g.maxX, this.archThumb ? p.from + (d * g.contentW) / g.viewW : p.from - d)); cx.notify(); } })
+        .on_mouse_up("left", (_e, cx) => { this.archPan = null; this.archThumb = null; if (this.drag) { this.drag = false; if (this.dragW !== null && this.dragW !== undefined) setShared("review.leftWidth", this.dragW); this.dragW = null; cx.notify(); } })
+        .track_focus(this.fh).on_key_down((e, cx) => this.onReviewKey(e, cx));
+      return this.renderExplore(cx, ex, root);
+    }
+    this.leaveExplore();
     if (target?.url !== this.prSel?.url) { this.prSel = target; this.resetReview(); }
     // After a refresh for the previous target ended; queued, since refresh() notifies and render may not.
     if (!this.refreshQueued && this.prSel && this.key() !== this.context) {
