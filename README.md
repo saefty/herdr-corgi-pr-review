@@ -88,3 +88,12 @@ older than 3 minutes (↻). The commands `pr-review.page:arch`, `pr-review.step:
 
 `cd mods/pr-review && for f in test_*.mjs; do node $f; done && for f in test_*.py; do python3 $f; done`
 (no network; `LIVE=1 node test_defs.mjs` also asks pyright).
+
+## Security: other people's code
+
+Language servers can run code from the repository they index (Gradle/Maven build scripts, Rust build scripts and
+proc macros, a project-local TypeScript). pr-review therefore treats a PR as **untrusted** unless it is your own
+branch, a PR from your own sessions, or authored by your GitHub login. For untrusted PRs the language servers start
+in **safe mode** (no build-script import, no proc macros, the global TypeScript only, Go without module downloads)
+and are not warmed up; go-to-definition may find less. The review header shows **Safe mode · Trust code** to opt a
+PR into full mode.
