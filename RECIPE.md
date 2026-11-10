@@ -1,4 +1,4 @@
-# PR review
+# Corgi · PR review
 
 AI-guided pull request review for Herdr. A walkthrough takes you through the PR risk first, with an architecture map of the change, its security blast radius and a GitHub-style diff you comment on and submit from.
 
