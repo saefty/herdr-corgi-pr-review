@@ -68,7 +68,8 @@ setShared("pr-review.contexts", {
 
 When the Go to mod is installed (`goto.api`), PR links there become "Review PR #n" and reviews in progress are
 findable: pr-review registers the provider `review`, writes `goto.handlers.review` and `goto.items.review`, and
-takes a handed-over PR from `pr.goto` (`{url}`). Without Go to these keys are simply unused.
+takes a handed-over PR from `pr.goto` (`{url}`). Without Go to these keys are simply unused. When pr-review's last copy
+closes (removed, quit), it sets both to `null`, so Go to offers no row that nobody would take.
 
 ## 4. Chat bar (optional)
 

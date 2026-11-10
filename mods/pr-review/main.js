@@ -91,6 +91,7 @@ export default class PrReview extends View {
     this.part = props()?.part ?? null;
     this.uid = Math.random().toString(36).slice(2, 8);
     if (this.part === "bar" || this.part === "reviews" || this.part === "agentbar" || this.part === "keys") return;
+    this.announces = true; // Go to's keys: published while this copy runs, cleared in close()
     this.files = []; this.rows = []; this.sel = null; this.selEnd = null; this.from = 0; this.question = "";
     // this.uid: list/scroll ids must not collide between copies
     this.fh = cx.focus_handle();
@@ -822,7 +823,19 @@ export default class PrReview extends View {
       context: this.ctxId(), session: null, cwd: this.root, space: location().space, headSha: this.pr.headRefOid ?? null };
   }
 
+  // Removed or closed: Go to stops offering "Review PR" (a stale handler would hand PRs to nobody). Another copy
+  // that still runs announces them again on its next render.
+  async close() {
+    if (!this.announces) return;
+    setShared("goto.handlers.review", null);
+    setShared("goto.items.review", null);
+  }
+
   render(cx) {
+    if (this.announces && !shared("goto.handlers.review") && !this.announceQueued) {
+      this.announceQueued = true;
+      cx.timer.after(0, () => { this.announceQueued = false; this.publishGoto(); });
+    }
     if (this.part === "bar") return this.renderBar(cx);
     if (this.part === "reviews") return renderReviews();
     if (this.part === "agentbar") return renderAgentBar();
