@@ -89,14 +89,15 @@ older than 3 minutes (↻). The commands `pr-review.page:arch`, `pr-review.step:
 `cd mods/pr-review && for f in test_*.mjs; do node $f; done && for f in test_*.py; do python3 $f; done`
 (no network; `LIVE=1 node test_defs.mjs` also asks pyright).
 
-## Security: other people's code (Restricted Mode)
+## Restricted Mode
 
-Language servers can run code from the repository they index (Gradle/Maven build scripts, Rust build scripts, proc
-macros and toolchain/cargo config, a project-local TypeScript). Like VS Code's Workspace Trust, pr-review treats a PR
-as **untrusted** unless it is your own branch, a PR from your own sessions, or authored by your GitHub login.
+Language servers can run code from the repo they index: Gradle and Maven build scripts, Rust build scripts and proc
+macros, a toolchain or cargo config, a TypeScript copy in node_modules. pr-review trusts your own branches, PRs from
+your sessions and PRs you authored. For anyone else's PR it asks first, as VS Code does when you open a folder:
 
-The first time you open an untrusted PR, a banner asks: **Trust this PR**, **Trust all PRs in owner/repo**, or **Stay
-in Restricted Mode**. In Restricted Mode the language servers don't run anything from the repository (Java without
-build import, the global TypeScript only, Go without module downloads or cgo, no rust-analyzer) and aren't warmed up,
-so go-to-definition may find less. The diff, reviewers and the AI analysis work the same either way. While restricted,
-the review header shows **Restricted Mode · Trust**.
+- **Trust this PR** or **Trust all PRs in owner/repo**: language servers run as usual.
+- **Stay in Restricted Mode**: Java skips the build import, TypeScript uses your global install, Go downloads nothing
+  and skips cgo, and rust-analyzer doesn't start. Go-to-definition finds less. The diff, the reviewers and the AI
+  analysis work the same.
+
+The header shows **Restricted Mode · Trust** until you trust the PR.
