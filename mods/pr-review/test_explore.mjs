@@ -25,6 +25,7 @@ assert.equal(rc({ k: "+17", shift: true, sel, rangeOk: true, composing: true, ed
 assert.equal(rc({ k: "+17", shift: true, sel: { ...sel, path: "b.py" }, rangeOk: false }).open, false, "another file: a new selection");
 assert.deepEqual(rc({ x: 900, sel: { path: "a.py", a: "+3", b: "+10" } }), { sel: { path: "a.py", a: "+3", b: "+10" }, open: true }, "the chip on the selection's last row");
 assert.equal(rc({ x: 900, k: "+11", sel }).open, false, "no chip on other rows");
+assert.deepEqual(rc({ x: 840, sel }), { sel, ask: true }, "the Ask chip left of it asks about the selection");
 assert.deepEqual(rc({ composing: true, sel }), { sel, focus: true }, "the open composer keeps its line");
 
 // ---- keys: shortcuts only while the review itself has the keyboard

@@ -23,7 +23,7 @@ import { diffLines, inDiff, ghReview, lineThreads, suggestionBlock, buildReview,
 import { archView, archModel, archLegend, visualsCard, statCard, segBar, foldCard, chip, legend, specTag, sourceLegend, SEVERITY_COLOR } from "./stack.js";
 import { hasSources } from "./arch.js";
 import * as TH from "./threads.js";
-import { leftWidth, rowClick, CHIP_W, keyRoute, pictureOf, scopeOf, scopeFiles, hunksFor, mapAnswer, threadAdd, threadOf, history, highlightOf } from "./explore.js";
+import { leftWidth, rowClick, CHIP_W, ASK_W, keyRoute, pictureOf, scopeOf, scopeFiles, hunksFor, mapAnswer, threadAdd, threadOf, history, highlightOf, rangeLabel, pinAnchor, pinAdd, pinDrop, pinsOf, pinsOn, codePins } from "./explore.js";
 
 const LEVEL = { high: "ansi1", medium: "ansi3", low: "ansi4", skim: "muted" };
 const COVER = { seen: ["done", "ansi2"], partly: ["partly", "ansi3"], absent: ["missing", "ansi1"], extra: ["extra (not asked)", "ansi4"] };
@@ -221,8 +221,8 @@ export const ReviewMode = {
     // Ask about this: one input (the Architecture page's or the shown layer's), threads and drill-downs from deep.json.
     this.askIn = InputState.new({ placeholder: "Ask about this… (Enter)" });
     this.askIn.on("submit", (_e, cx) => this.askNow(cx));
-    this.deep = { threads: {}, drills: {} }; this.askBusy = null; this.askErr = null;
-    cx.spawn(async (cx) => { const d = JSON.parse(await readTextFile(deepFile()).catch(() => null) ?? "null"); if (d) this.deep = { threads: d.threads ?? {}, drills: d.drills ?? {} }; cx.notify(); });
+    this.deep = { threads: {}, drills: {}, pins: {}, drawer: {} }; this.askBusy = null; this.askErr = null; this.askAbout = null;
+    cx.spawn(async (cx) => { const d = JSON.parse(await readTextFile(deepFile()).catch(() => null) ?? "null"); if (d) this.deep = { threads: d.threads ?? {}, drills: d.drills ?? {}, pins: d.pins ?? {}, drawer: d.drawer ?? {} }; cx.notify(); });
     this.refresh(cx);
     this.fh.focus();
     cx.timer.after(400, () => this.fh.focus());
@@ -261,6 +261,7 @@ export const ReviewMode = {
     else if (name === "route") this.route = arg; // github | agent: where Submit and single comments go
     else if (name === "fix") this.fixComments(arg ? arg.split(",") : this.selected(), cx); // fix:<comment id>[,<id>…], else the selected ones (the preview opens)
     else if (name === "fix-target") this.fixTarget(arg); // sub | main, in the open preview
+    else if (name === "ask") this.setDrawer(arg === "close" ? null : arg === "fold" ? "collapsed" : "open", cx); // the Ask drawer: open | fold | close
     else if (name === "apply") { const j = this.fixes().find((f) => f.id === arg) ?? this.fixes().filter((f) => f.state === "running").at(-1); if (j) this.applyFix(j, cx); }
     else if (name === "open") {
       cx.spawn(async () => {
@@ -931,7 +932,7 @@ export const ReviewMode = {
     const sugs = this.openSugs(path), cms = this.comments.filter((c) => c.file === path), used = new Set();
     const finds = this.find.list.filter((f) => f.file === path && ["open", "progress", "recheck"].includes(this.fstatus(f)));
     const own = this.ghOwn(), gh = this.gh.filter((g) => g.path === path && !own(g)), f = this.fsel, range = this.composing && f?.path === path && rangeOf(rows, f.a, f.b);
-    const ths = this.threads().filter((x) => x.file === path);
+    const ths = this.threads().filter((x) => x.file === path), notes = codePins(this.pins(), path);
     const thread = { gh, editId: this.composing ? this.editing?.id ?? null : null, composeKey: range && at.compose === undefined ? lineKey(rows[range[1]]) : null };
     rows.forEach((r, ri) => {
       if (r.kind === "gap") { items.push({ t: "gap", path, r }); return; }
@@ -948,6 +949,7 @@ export const ReviewMode = {
         items.push(it);
       }
       for (const th of ths) if (atLine(r, th.end, th.old)) { items.push({ t: "thread", th }); if (!this.threadOfView(th).collapsed) items.push({ t: "tact", th }); }
+      for (const pin of notes) if (atLine(r, pin.anchor.end, pin.anchor.old)) { items.push({ t: "pinnote", pin }); if (this.openNotes?.has(pin.id)) items.push({ t: "pinact", pin }); }
       if (r.kind !== "-") for (const f of finds) if (f.line === r.number) items.push({ t: "find", f }, { t: "fact", f });
     });
     return cms.filter((c) => !used.has(c));
@@ -1016,11 +1018,17 @@ export const ReviewMode = {
       const d = rowClick({ x, w: this.press.w, shift, gutterW: GUTTER, composing: this.composing, editing: Boolean(this.editing), sel: f, path: it.path, k,
         rangeOk: Boolean(f && f.path === it.path && rangeOf(this.rowsFor(it.path), f.a, k)) });
       if (d.focus) return this.draft.focus(); // the open composer keeps its line
+      if (d.ask) { this.setDrawer("open", cx, null); return cx.notify(); }
       this.fsel = d.sel; this.sug = null;
       if (d.open) this.openComposer(cx);
     } else if (it.t === "sug") { this.sug = this.sug === it.s.key ? null : it.s.key; this.visit(it.s.hunk, cx); }
     else if (it.t === "comment" && x >= GUTTER && x < GUTTER + 36) this.toggleSel(TH.commentId(it.c), cx);
     else if (it.t === "comment") this.openComposer(cx, it.c);
+    else if (it.t === "pinnote") { this.openNotes ??= new Set(); if (this.openNotes.has(it.pin.id)) this.openNotes.delete(it.pin.id); else this.openNotes.add(it.pin.id); }
+    else if (it.t === "pinact") {
+      const b = x - GUTTER - 12, k = Math.floor(b / (BTN + BTN_GAP)), inside = b >= 0 && b % (BTN + BTN_GAP) < BTN;
+      if (inside && k === 0) this.noteToComment(it.pin, cx); else if (inside && k === 1) this.unpin(it.pin.id, cx); else if (inside && k === 2) this.openNotes.delete(it.pin.id);
+    }
     else if (it.t === "thread" && x >= GUTTER && x < GUTTER + 36 && !this.threadOfView(it.th).collapsed) this.toggleSel(it.th.id, cx);
     else if (it.t === "thread") { if (this.openThreads.has(it.th.id)) this.openThreads.delete(it.th.id); else this.openThreads.add(it.th.id); }
     else if (it.t === "tact") {
@@ -1572,7 +1580,7 @@ export const ReviewMode = {
     else if (k === "shift-/" || e.key === "?") this.command("keys", cx);
     else if (k === "a" || k === "x") { const s = this.focusedSug(); if (s) (k === "a" ? this.takeSug(s, cx) : this.dropSug(s, cx)); }
     else if (k === "s" || k === "f") this.tab = k === "s" ? "steps" : "files";
-    else if (k === "escape") { if (this.sendP) this.sendP = null; else if (this.replyTo) this.replyTo = null; else if (this.finishOpen) this.finishOpen = false; else if (this.composing) this.closeComposer(cx); else if (this.defFile) this.defFile = null; else if (this.defAt) this.defAt = null; else if (this.archFocus || this.blastFocus || this.askHl) this.archFocus = this.blastFocus = this.askHl = null; else leave(); }
+    else if (k === "escape") { if (this.sendP) this.sendP = null; else if (this.replyTo) this.replyTo = null; else if (this.finishOpen) this.finishOpen = false; else if (this.composing) this.closeComposer(cx); else if (this.defFile) this.defFile = null; else if (this.defAt) this.defAt = null; else if (this.drawerState() === "open") this.setDrawer(null, cx); else if (this.archFocus || this.blastFocus || this.askHl) this.archFocus = this.blastFocus = this.askHl = null; else leave(); }
     else return;
     cx.stop_propagation(); cx.notify();
   },
@@ -1755,7 +1763,8 @@ export const ReviewMode = {
           .child(div().flex_1().min_w(0).child(TextView.markdown(`rv-q-${stepKey(s)}-${k}`, this.asked(s, q))))))))
       .when(on && s.visuals?.length > 0, (e) => e.child(div().pl(26).child(this.diagramsBar(t, `rv-dia-${i}`, "Refresh this view"))).child(div().pl(26).child(visualsCard(s.visuals, t, `rv-vis-${i}`, (at, cx) => this.jumpTo(at, cx),
         this.visTab?.[i] ?? 0, (k, cx) => { this.visTab = { ...this.visTab, [i]: k }; cx.notify(); }))))
-      .when(on && !s.pseudo && Boolean(this.ai), (e) => e.child(div().pl(26).child(this.askPanel(t, `rv-ask-l${i}`))))
+      .when(on && !s.pseudo && Boolean(this.ai), (e) => e.child(h_flex().pl(26).gap(6).child(pill(`rv-ask-l${i}`, t, "Ask about this layer", (_e, cx) => {
+        const k = (this.ai?.steps ?? []).indexOf(s); this.setDrawer("open", cx, k >= 0 ? { layer: k } : null); cx.stop_propagation(); }))))
       .when(on, (e) => e.children((s.flows ?? []).map((f, k) => {
         const picked = this.flowOf()?.f === f;
         return div().pl(26).child(div().rounded(9).border_1().border_color(picked ? t.accent : t.chrome).child(flowCard(f, t, `rv-flow-${i}-${k}`,
@@ -1990,7 +1999,7 @@ export const ReviewMode = {
     const set = (name, v, cx) => { if (this[name] !== v) { this[name] = v; cx.notify(); } };
     return { hl: this[`${k}Hl`] ?? (k === "arch" ? this.askHl : null), focus: this[`${k}Focus`] ?? null, hover: this[`${k}Hover`] ?? null,
       onHl: (v, cx) => set(`${k}Hl`, v, cx), onHover: (v, cx) => set(`${k}Hover`, v, cx),
-      onFocus: (v, cx) => { this.fh.focus(); set(`${k}Focus`, v, cx); }, onJump: (at, cx) => this.jumpTo(at, cx) };
+      onFocus: (v, cx) => { this.fh.focus(); set(`${k}Focus`, v, cx); if (k === "arch" && v && this.drawerState() !== "open") this.setDrawer("open", cx); }, onJump: (at, cx) => this.jumpTo(at, cx) };
   },
 
   archPage(t) {
@@ -2001,22 +2010,17 @@ export const ReviewMode = {
     if (!a) return v_flex().gap(12).child(this.diagramsBar(t, "rv-dia-arch", "Refresh diagrams")).child(div().text_size(13.5).text_color(t.muted).child(this.ai ? "This analysis has no architecture picture (older analysis, or the PR touches no architecture). Re-analyze for one." : "No analysis yet: Analyze in the left column."))
       .when(this.ai?.visuals?.length > 0, (e) => e.child(div().max_w(760).child(more())));
     const groups = new Set(a.nodes.map((n) => n.group)).size, L = archModel(a, this.archMode);
-    const askOpen = Boolean(this.askOpen || this.archFocus || this.askBusy || threadOf(this.deep.threads, this.deepKey()).length);
     const opts = this.archOpts("arch");
     return v_flex().gap(12)
-      .child(h_flex().gap(12).items_center().flex_wrap().child(div().text_size(20).font_semibold().child("Architecture impact")).child(this.diagramsBar(t, "rv-dia-arch", "Refresh diagrams")))
+      .child(h_flex().gap(12).items_center().flex_wrap().child(div().text_size(20).font_semibold().child("Architecture impact")).child(this.diagramsBar(t, "rv-dia-arch", "Refresh diagrams"))
+        .when(this.drawerState() !== "open", (e) => e.child(pill("rv-ask-open", t, "Ask", (_e, cx) => this.setDrawer("open", cx, null)))))
       .child(h_flex().w_full().gap(12).items_center().flex_wrap() // wraps onto two rows when narrow
         .child(div().flex_none().text_size(13).text_color(t.muted).child(`${groups} ${groups === 1 ? "system" : "systems"} | ${(a.edges ?? []).length} edges`))
         .child(div().flex_none().child(legend(t)))
         .when(hasSources(a) || (this.ai.visuals ?? []).some(hasSources), (e) => e.child(div().flex_none().child(sourceLegend(t))))
         .child(h_flex().flex_none().gap(2).p(2).rounded(7).border_1().border_color(t.border).child(seg("diff", "Structural diff")).child(seg("before", "Before")).child(seg("after", "After"))))
       .child(div().id("rv-arch-scroll").w_full().overflow_x_scroll().pb(8)
-        .child(archView(L, t, "rv-arch", (n, _e, cx) => this.jumpTo(n.at, cx), null, opts)))
-      // Ask: one line until a card is clicked (or asked about before); then the panel, below the picture.
-      .child(askOpen ? div().max_w(760).child(this.askPanel(t, "rv-ask-arch"))
-        : h_flex().gap(8).items_center().text_size(12.5).text_color(t.muted)
-          .child(pill("rv-ask-open", t, "Ask about the architecture…", (_e, cx) => { this.askOpen = true; cx.timer.after(0, () => this.askIn.focus()); cx.notify(); }))
-          .child(div().child("or click a card to ask about it")))
+        .child(div().relative().flex_none().w(L.width + 4).h(L.height + 4).child(archView(L, t, "rv-arch", (n, _e, cx) => this.jumpTo(n.at, cx), null, opts)).children(this.pinNotes(t, L))))
       .child(archLegend(L, t, "rv-arch-edges", "Edges", opts))
       .when(this.ai?.visuals?.length > 0, (e) => e.child(div().pt(6).text_size(13).font_semibold().text_color(t.muted).child("More views"))
         .child(div().max_w(760).child(more())));
@@ -2038,23 +2042,41 @@ export const ReviewMode = {
   // layer; the answer lights its nodes and edges (the focus mechanism) and links its evidence. One thread per PR.
 
   deepKey() { return this.prSel?.url ?? null; },
-  // The thread on screen and what a question is about: on the Architecture page the focused card (or the whole
-  // picture), on a layer that layer.
+  // What a question is about: on the Architecture page the focused card (else the whole picture); else what was picked
+  // to ask about (a layer), else the selected lines in the diff.
   askFocus() {
-    if (this.page === "arch") return this.archFocus ? { node: this.archFocus } : null;
-    const s = this.steps()[this.cur], k = s ? (this.ai?.steps ?? []).indexOf(s) : -1;
-    return k >= 0 ? { layer: k } : null;
+    if (this.tab === "steps" && this.page === "arch") return this.archFocus ? { node: this.archFocus } : null;
+    if (this.askAbout) return this.askAbout;
+    const a = this.fsel && this.selAnchor();
+    return a ? { range: { file: this.fsel.path, start: a.start, end: a.end, old: a.old } } : null;
   },
-  askLabel(scope) { return scope.kind === "node" ? scope.node.label ?? scope.node.id : scope.kind === "layer" ? plain(scope.layer.title) : "the architecture"; },
+  askLabel(scope) {
+    return scope.kind === "node" ? scope.node.label ?? scope.node.id : scope.kind === "layer" ? plain(scope.layer.title) : scope.kind === "range" ? rangeLabel(scope.range) : "the architecture";
+  },
+
+  // ---- the Ask drawer, one for every view: open (380 px at the right), folded to a 28 px strip, or closed; kept per
+  // review. Over the Architecture page it lies on top (the picture keeps its width); beside the diff it squeezes the
+  // diff when there is room (from 1100 px), else it lies on top too.
+  drawerState() { return this.deep.drawer?.[this.deepKey()] ?? null; },
+  setDrawer(state, cx, about) {
+    const key = this.deepKey();
+    if (about !== undefined) this.askAbout = about;
+    if (state === "open") { this.askUnseen = false; cx.timer.after(0, () => this.askIn.focus()); }
+    this.updateDeep(cx, (d) => ({ ...d, drawer: { ...d.drawer, [key]: state } }));
+    cx.notify();
+  },
+  drawerSqueezes() { return this.drawerState() === "open" && !(this.tab === "steps" && this.page) && (this.winW ?? 0) - this.leftW() - SPLIT >= 1100; },
 
   askNow(cx) {
     const q = this.askIn.value().trim(), ai = this.ai, key = this.deepKey();
+    if (!ai && q) { this.askErr = "Analyze first: answers build on the analysis"; return cx.notify(); }
     if (!q || !ai || !key || this.askBusy) return;
     const scope = scopeOf(ai, this.askFocus()), layer = scope.kind === "layer" ? this.ai.steps.find((s) => plain(s.title) === plain(scope.layer.title)) : null;
     const req = { ask: q, model: model(), context: this.ctxReq(), root: this.lspRoot(), explore: Boolean(ai.explore),
       analysis: { title: ai.title, summary: ai.summary, layers: ai.steps.filter((s) => !s.pseudo).map((s) => ({ title: plain(s.title), why: plain(s.why) })) },
       picture: pictureOf(ai.arch), scope, hunks: hunksFor(scopeFiles(scope), this.hunks, layer?.hunks ?? []), history: history(threadOf(this.deep.threads, key)) };
-    this.askBusy = { q, label: this.askLabel(scope), started: Date.now() }; this.askErr = null;
+    const about = this.askLabel(scope);
+    this.askBusy = { q, label: about, started: Date.now() }; this.askErr = null;
     cx.spawn(async (cx) => {
       const r = await exec("python3", [`${appHome()}/mods/pr-review/review.py`, JSON.stringify(req)], { timeout: 600000 }).catch((e) => ({ code: 1, stderr: String(e) }));
       this.askBusy = null;
@@ -2062,7 +2084,9 @@ export const ReviewMode = {
       if (r.code !== 0) { this.askErr = `Could not ask: ${(r.stderr || r.stdout).trim().slice(0, 200)}`; return cx.notify(); }
       const out = JSON.parse(r.stdout), a = mapAnswer(out.answer, ai.arch);
       this.askIn.set_value("");
-      this.updateDeep(cx, (d) => ({ ...d, threads: threadAdd(d.threads, key, { q, about: this.askBusy?.label ?? this.askLabel(scope), a, cost: out.cost }) }));
+      const sc = scope.kind === "node" ? { kind: "node", node: { id: scope.node.id } } : scope.kind === "range" ? scope : { kind: scope.kind };
+      this.updateDeep(cx, (d) => ({ ...d, threads: threadAdd(d.threads, key, { q, about, a, scope: sc, cost: out.cost }) }));
+      if (this.drawerState() !== "open") this.askUnseen = true;
       this.showAnswer(a);
       cx.notify();
     });
@@ -2084,40 +2108,91 @@ export const ReviewMode = {
       await exec("mkdir", ["-p", `${appHome()}/pr-data`]).catch(() => null);
       for (let attempt = 0; attempt < 3; attempt++) {
         const before = await readTextFile(deepFile()).catch(() => null), doc = before ? JSON.parse(before) : {};
-        try { await writeTextFile(deepFile(), JSON.stringify(fn({ threads: doc.threads ?? {}, drills: doc.drills ?? {} })), before); return; } catch { /* written meanwhile: again */ }
+        try { await writeTextFile(deepFile(), JSON.stringify(fn({ ...doc, threads: doc.threads ?? {}, drills: doc.drills ?? {}, pins: doc.pins ?? {}, drawer: doc.drawer ?? {} })), before); return; } catch { /* written meanwhile: again */ }
       }
     });
   },
 
-  // The input, the answer being written, and the thread (newest first: the latest whole, earlier ones folded).
-  askPanel(t, id) {
-    const ai = this.ai, scope = scopeOf(ai, this.askFocus()), turns = threadOf(this.deep.threads, this.deepKey()).slice().reverse();
+  pins() { return pinsOf(this.deep.pins, this.deepKey()); },
+  pin(turn, cx) { const key = this.deepKey(); this.updateDeep(cx, (d) => ({ ...d, pins: pinAdd(d.pins, key, turn) })); },
+  unpin(id, cx) { const key = this.deepKey(); this.updateDeep(cx, (d) => ({ ...d, pins: pinDrop(d.pins, key, id) })); },
+  // A code note: still on a line of the diff, else outdated (kept, shown in the drawer).
+  pinOutdated(pin) { const a = pin.anchor; return Boolean(a?.file) && !this.rowsFor(a.file, true).some((r) => atLine(r, a.end, a.old)); },
+  // A note (pinned answer) as a turn into a pending comment: the usual flow from there (pending, preview).
+  noteToComment(pin, cx) {
+    const a = pin.anchor, rows = a?.file ? this.rowsFor(a.file, true) : [], i = rows.findIndex((r) => atLine(r, a.end, a.old));
+    if (i < 0) { this.note = "Not turned into a comment: its lines are no longer in the diff"; return cx.notify(); }
+    const anchor = selection(rows, Math.max(0, rows.findIndex((r) => atLine(r, a.start, a.old))), i);
+    this.comments = [...this.comments, { id: Date.now().toString(36), file: a.file, ...anchor, text: pin.text }]; this.persist(cx);
+    this.note = "The note is a pending comment now: it goes out with your review"; cx.notify();
+  },
+
+  // The strip a folded drawer leaves: "Ask" down the edge, a dot when an answer came in meanwhile.
+  drawerStrip(t) {
+    return v_flex().id("rv-drawer-strip").w(28).h_full().flex_none().items_center().pt(12).gap(2).border_l(1).border_color(t.border).bg(t.chrome).cursor_pointer()
+      .hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.setDrawer("open", cx))
+      .children(["A", "s", "k"].map((c) => div().text_size(12).font_semibold().text_color(t.muted).child(c)))
+      .when(Boolean(this.askUnseen || this.askBusy), (e) => e.child(div().mt(6).w(8).h(8).rounded_full().bg(this.askBusy ? t.ansi3 : t.accent)));
+  },
+
+  // The drawer: what it is about, the input, the notes pinned in this review, the thread (newest first).
+  askDrawer(t) {
+    const ai = this.ai, scope = scopeOf(ai, this.askFocus()), turns = threadOf(this.deep.threads, this.deepKey()).slice().reverse(), id = "rv-drawer";
+    const pins = this.pins(), pinned = new Set(pins.map((p) => p.id));
     const chipBtn = (cid, label, color, click) => div().id(cid).flex_none().px(6).py(1).rounded(5).border_1().border_color(color).text_size(11.5).text_color(color)
       .cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => { click(cx); cx.stop_propagation(); cx.notify(); }).child(label);
     const name = new Map((ai?.arch?.nodes ?? []).map((n) => [n.id, n.label ?? n.id])), edges = pictureOf(ai?.arch).edges;
-    const answer = (tu, k, full) => v_flex().id(`${id}-t${k}`).gap(6).pt(8).border_t(1).border_color(t.border)
+    const L = ai?.arch ? archModel(ai.arch, this.archMode) : null, off = new Set(pinsOn(pins, L).off.map((p) => p.id));
+    const answer = (tu, k) => v_flex().id(`${id}-t${k}`).gap(6).pt(8).border_t(1).border_color(t.border)
       .child(h_flex().gap(6).items_start().child(div().flex_1().min_w(0).text_size(13).font_semibold().whitespace_normal().child(tu.q))
-        .child(div().flex_none().text_size(11).text_color(t.muted).child(tu.about ?? "")))
-      .child(full ? div().text_size(13).line_height(1.5).child(TextView.markdown(`${id}-a${tu.at}`, tu.a.text || "–"))
-        : div().text_size(12.5).text_color(t.muted).truncate().child(plain(tu.a.text)))
-      .when(full && (tu.a.highlights.nodes.length + tu.a.highlights.edges.length) > 0, (e) => e.child(h_flex().flex_wrap().gap(4)
+        .child(div().flex_none().max_w(130).truncate().text_size(11).text_color(t.muted).child(tu.about ?? "")))
+      .child(div().text_size(13).line_height(1.5).child(TextView.markdown(`${id}-a${tu.at}`, tu.a.text || "–")))
+      .when((tu.a.highlights.nodes.length + tu.a.highlights.edges.length) > 0, (e) => e.child(h_flex().flex_wrap().gap(4)
         .children(tu.a.highlights.nodes.map((n) => chipBtn(`${id}-hn${k}-${n}`, name.get(n) ?? n, t.accent, () => { this.page = "arch"; this.tab = "steps"; this.archFocus = n; })))
         .children(tu.a.highlights.edges.map((x) => { const e = edges.find((y) => y.id === x); return chipBtn(`${id}-he${k}-${x}`, e ? `${name.get(e.from) ?? e.from} → ${name.get(e.to) ?? e.to}` : x, t.accent,
           () => { this.page = "arch"; this.tab = "steps"; this.archFocus = null; this.askHl = highlightOf(archModel(ai.arch, this.archMode), { highlights: { nodes: [], edges: [x] } }).hl; }); }))))
-      .when(full && tu.a.evidence.length > 0, (e) => e.child(v_flex().gap(2).children(tu.a.evidence.map((ev, j) => h_flex().id(`${id}-ev${k}-${j}`).gap(6).text_size(12).cursor_pointer()
+      .when(tu.a.evidence.length > 0, (e) => e.child(v_flex().gap(2).children(tu.a.evidence.map((ev, j) => h_flex().id(`${id}-ev${k}-${j}`).gap(6).text_size(12).cursor_pointer()
         .on_click((_e, cx) => { this.jumpTo(ev.at, cx); cx.stop_propagation(); })
-        .child(div().flex_none().text_color(t.accent).child(`${ev.at.split("/").pop()} ↗`)).child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(ev.why))))));
-    return v_flex().id(id).flex_none().gap(8).p(10).rounded(10).border_1().border_color(t.border).bg(t.surface)
-      .child(h_flex().gap(8).items_center().child(div().flex_1().min_w(0).truncate().text_size(13).font_semibold().child(`Ask about ${this.askLabel(scope)}`))
-        .when(turns.length > 0, (e) => e.child(pill(`${id}-clear`, t, "Clear", (_e, cx) => { const key = this.deepKey(); this.updateDeep(cx, (d) => { const th = { ...d.threads }; delete th[key]; return { ...d, threads: th }; }); this.askHl = null; cx.notify(); }))))
-      .child(h_flex().gap(6).items_center()
-        .child(div().id(`${id}-in`).flex_1().min_w(0).h(30).px(8).flex().items_center().rounded(6).border_1().border_color(t.border).bg(t.background).cursor_text()
-          .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Input.new(this.askIn).h_full().text_size(13).text_color(t.foreground)))
-        .child(this.askBusy ? div().flex_none().child(SPIN[0]).frames(SPIN, 90) : pill(`${id}-go`, t, "Ask", (_e, cx) => this.askNow(cx), false, t.foreground)))
-      .child(div().text_size(11.5).text_color(t.muted).whitespace_normal().child(`One ${MODELS[model()].label} call with the analysis${this.hunks ? ", the diff" : ""} and this thread. Click a card first to ask about it.`))
-      .when(Boolean(this.askBusy), (e) => e.child(div().text_size(12.5).text_color(t.muted).whitespace_normal().child(`${this.askBusy.q} · reading…`)))
-      .when(Boolean(this.askErr), (e) => e.child(div().text_size(12.5).text_color(t.ansi1).whitespace_normal().child(this.askErr)))
-      .children(turns.map((tu, k) => answer(tu, k, k === 0)));
+        .child(div().flex_none().text_color(t.accent).child(`${ev.at.split("/").pop()} ↗`)).child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(ev.why))))))
+      .child(h_flex().gap(6).child(pinned.has(`p${tu.at}`) ? chipBtn(`${id}-unpin${k}`, "Pinned · unpin", t.ansi5, (cx) => this.unpin(`p${tu.at}`, cx))
+        : pinAnchor(tu) ? chipBtn(`${id}-pin${k}`, tu.scope?.kind === "range" ? "Pin to the code" : "Pin to diagram", t.muted, (cx) => this.pin(tu, cx)) : div()));
+    const note = (p) => v_flex().id(`${id}-pin-${p.id}`).gap(3).p(8).rounded(6).border_l(3).border_color(t.ansi5).bg(t.ansi5 + "12")
+      .child(h_flex().gap(6).items_center().text_size(11.5)
+        .child(div().flex_none().font_semibold().text_color(t.ansi5).child("Note · private"))
+        .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(p.anchor.file ? rangeLabel(p.anchor) : name.get(p.anchor.node) ?? p.anchor.node ?? p.anchor.edge))
+        .when(off.has(p.id) || this.pinOutdated(p), (e) => e.child(badge(t, off.has(p.id) ? "unattached" : "outdated", t.ansi3)))
+        .child(chipBtn(`${id}-pinx-${p.id}`, "✕", t.muted, (cx) => this.unpin(p.id, cx))))
+      .child(div().text_size(12.5).line_height(1.45).whitespace_normal().child(p.summary))
+      .when(Boolean(p.anchor.file), (e) => e.child(h_flex().child(chipBtn(`${id}-pinc-${p.id}`, "Turn into comment", t.foreground, (cx) => this.noteToComment(p, cx)))));
+    return v_flex().id(id).w(380).h_full().flex_none().border_l(1).border_color(t.border).bg(t.surface).shadow_lg()
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .child(v_flex().flex_none().p(10).gap(8).border_b(1).border_color(t.border)
+        .child(h_flex().gap(6).items_center().child(div().flex_1().min_w(0).truncate().text_size(13.5).font_semibold().child(`Ask about ${this.askLabel(scope)}`))
+          .child(pill(`${id}-fold`, t, "›", (_e, cx) => this.setDrawer("collapsed", cx)).tooltip("Fold to the edge"))
+          .child(pill(`${id}-x`, t, "✕", (_e, cx) => this.setDrawer(null, cx)).tooltip("Close (Esc); the thread stays")))
+        .child(h_flex().gap(6).items_center()
+          .child(div().id(`${id}-in`).flex_1().min_w(0).h(30).px(8).flex().items_center().rounded(6).border_1().border_color(t.border).bg(t.background).cursor_text()
+            .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Input.new(this.askIn).h_full().text_size(13).text_color(t.foreground)))
+          .child(this.askBusy ? div().flex_none().child(SPIN[0]).frames(SPIN, 90) : pill(`${id}-go`, t, "Ask", (_e, cx) => this.askNow(cx), false, t.foreground)))
+        .child(div().text_size(11.5).text_color(t.muted).whitespace_normal().child(`One ${MODELS[model()].label} call with the analysis${this.hunks ? ", the diff" : ""} and this thread. Click a card or select lines to ask about them.`)))
+      .child(div().flex_1().min_h(0).relative()
+        .child(v_flex().id(`${id}-scroll`).absolute().inset_0().overflow_y_scroll().p(10).gap(8)
+          .when(Boolean(this.askBusy), (e) => e.child(div().text_size(12.5).text_color(t.muted).whitespace_normal().child(`${this.askBusy.q} · reading…`)))
+          .when(Boolean(this.askErr), (e) => e.child(div().text_size(12.5).text_color(t.ansi1).whitespace_normal().child(this.askErr)))
+          .when(pins.length > 0, (e) => e.child(div().text_size(11.5).font_semibold().text_color(t.muted).child(`NOTES · ${pins.length}`)).children(pins.map(note)))
+          .when(turns.length > 0, (e) => e.child(h_flex().pt(4).items_center().child(div().flex_1().text_size(11.5).font_semibold().text_color(t.muted).child(`THREAD · ${turns.length}`))
+            .child(pill(`${id}-clear`, t, "Clear", (_e, cx) => { const key = this.deepKey(); this.updateDeep(cx, (d) => { const th = { ...d.threads }; delete th[key]; return { ...d, threads: th }; }); this.askHl = null; cx.notify(); }))))
+          .children(turns.map((tu, k) => answer(tu, k))))
+        .child(Scrollbar.vertical(`${id}-scroll`).absolute().inset_0()));
+  },
+
+  // Pinned answers on the picture: a note on the card or edge they are about (click: the drawer; ✕: unpin).
+  pinNotes(t, L) {
+    return pinsOn(this.pins(), L).on.map(({ pin, x, y, w }) => h_flex().id(`rv-pn-${pin.id}`).absolute().left(x).top(y).max_w(w).h(18).px(6).gap(4).items_center().rounded(9)
+      .border_1().border_color(t.ansi5).bg(t.background).text_size(10.5).text_color(t.foreground).cursor_pointer().tooltip(pin.text.slice(0, 600))
+      .on_click((_e, cx) => { this.setDrawer("open", cx); cx.stop_propagation(); })
+      .child(div().flex_none().text_color(t.ansi5).child("✎")).child(div().min_w(0).truncate().child(`${pin.summary}${pin.evidence ? ` · ${pin.evidence.split("/").pop()}` : ""}`))
+      .child(div().id(`rv-pnx-${pin.id}`).flex_none().text_color(t.muted).hover((s) => s.text_color(t.foreground)).child("✕").on_click((_e, cx) => { this.unpin(pin.id, cx); cx.stop_propagation(); })));
   },
 
   blastPage(t) {
@@ -2321,7 +2396,8 @@ export const ReviewMode = {
     if (it.t === "comment") return 44 + 21 * this.lines(it.c.text);
     if (it.t === "gh") return 44 + 21 * Math.min(6, this.lines(it.g.body));
     if (it.t === "thread") { const v = this.threadOfView(it.th); return v.collapsed ? 40 : 52 + 21 * this.lines(it.th.text) + v.entries.reduce((n, e) => n + 32 + 20 * Math.min(8, this.lines(e.text)), 0); }
-    if (it.t === "tact") return ACT;
+    if (it.t === "tact" || it.t === "pinact") return ACT;
+    if (it.t === "pinnote") return this.openNotes?.has(it.pin.id) ? 44 + 21 * this.lines(it.pin.text) : 40;
     if (it.t === "compose") return COMPOSE;
     if (it.t === "composeact") return ACT + 4;
     if (it.t === "sugact" || it.t === "cact" || it.t === "fact") return ACT;
@@ -2344,7 +2420,8 @@ export const ReviewMode = {
       const num = (n) => div().w(48).h_full().flex_none().pr(8).flex().items_center().justify_end().text_color(t.muted).child(n === undefined ? "" : String(n));
       return mono(h_flex()).h(ROW).w_full().text_size(13).cursor_pointer()
         .when(Boolean(tone), (e) => e.bg(tint(r.kind) + "1a")).when(on, (e) => e.bg(t.selection))
-        .child(div().w(4).h_full().flex_none().when(on, (e) => e.bg(t.accent)).when(!on && Boolean(focus), (e) => e.bg(t.accent + "55")))
+        .child(div().w(4).h_full().flex_none().when(on, (e) => e.bg(t.accent)).when(!on && Boolean(focus), (e) => e.bg(t.accent + "55"))
+          .when(!on && !focus && Boolean(this.pinMarks?.has(`${it.path}:${r.n}`)), (e) => e.bg(t.ansi5)))
         .child(h_flex().h_full().flex_none().relative().when(Boolean(tone), (e) => e.bg(tint(r.kind) + "40")).child(num(r.o)).child(num(r.n))
           // GitHub's "+" on hover: the line numbers are the comment button (onItem: x inside the gutter).
           .child(h_flex().absolute().inset_0().justify_end().items_center().text_color("#00000000").hover((s) => s.text_color(t.accent_foreground).bg(t.accent + "26"))
@@ -2354,6 +2431,8 @@ export const ReviewMode = {
         .when(Boolean(this.traces?.get(`${it.path}:${r.n}`)) && r.kind !== "-", (e) => e.child(div().flex_none().max_w(460).mr(12).px(8).h(18).flex().items_center()
           .rounded(9).bg(t.accent + "1f").italic().text_size(12).text_color(t.muted).truncate().child(this.traces.get(`${it.path}:${r.n}`))))
         // The selection's last row: "+ Comment (c)" at its right end (onItem places the click by x, rowClick).
+        .when(on && !this.composing && this.fsel?.b === lineKey(r), (e) => e.child(div().w(ASK_W).h(18).mr(8).flex_none().flex().items_center().justify_center()
+          .rounded(9).border_1().border_color(t.accent).text_size(12).text_color(t.accent).child("Ask")))
         .when(on && !this.composing && this.fsel?.b === lineKey(r), (e) => e.child(div().w(CHIP_W).h(18).mr(12).flex_none().flex().items_center().justify_center()
           .rounded(9).bg(t.accent).text_size(12).font_semibold().text_color(t.accent_foreground).child("+ Comment (c)")));
     }
@@ -2403,6 +2482,16 @@ export const ReviewMode = {
           .when(out, (e) => e.child(badge(t, "not in the diff: goes into the review body", t.muted)))
           .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(`${time}${c.from === "ki" ? " · from AI suggestion" : ""}${it.loose ? ` · ${uiLine(c)}, not shown` : ""}`)))
         .child(div().flex_1().min_h(0).overflow_hidden().line_height(1.55).whitespace_normal().text_color(t.foreground).child(c.text)));
+    }
+    if (it.t === "pinnote" || it.t === "pinact") {
+      // A pinned answer under its lines: private (never posted), its own colour, no reply or fix.
+      const pin = it.pin, open = this.openNotes?.has(pin.id), card = (e) => e.border_l(4).border_r(1).border_color(t.ansi5).bg(t.ansi5 + "10");
+      if (it.t === "pinact") return div().w_full().h(ACT).pl(GUTTER).pr(16).pb(6).child(card(h_flex()).size_full().px(12).gap(BTN_GAP).items_center().border_b(1)
+        .child(button(t, "To comment", t.border, t.foreground)).child(button(t, "Unpin", t.border, t.muted)).child(button(t, "Fold", t.border, t.muted)));
+      return div().w_full().h(this.sizeOf(it)).pl(GUTTER).pr(16).pt(6).child(card(v_flex()).size_full().px(12).pt(8).gap(4).border_t(1).when(!open, (e) => e.border_b(1)).text_size(13)
+        .child(h_flex().h(18).gap(8).items_center().text_size(12).child(div().font_semibold().text_color(t.ansi5).child("Note · private"))
+          .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(open ? pin.q : pin.summary)).child(div().flex_none().text_color(t.muted).child(open ? "▾" : "▸")))
+        .when(open, (e) => e.child(div().flex_1().min_h(0).overflow_hidden().line_height(1.55).whitespace_normal().child(plain(pin.text)))));
     }
     if (it.t === "thread" || it.t === "tact") {
       const th = it.th, v = this.threadOfView(th), c = t[THREAD_COLOR[v.status]] ?? t.border;
@@ -2531,7 +2620,9 @@ export const ReviewMode = {
       cx.timer.after(0, (cx) => { this.refreshQueued = false; this.refresh(cx); });
     }
     if (this.hunks && model() !== this.aiModel && !this.aiBusy) this.loadAi(cx, "cache");
-    if (this.winW) this.listW = this.winW - this.leftW() - SPLIT; // the diff column's width: card heights wrap to it
+    if (this.winW) this.listW = this.winW - this.leftW() - SPLIT - (this.drawerSqueezes() ? 380 : 0); // the diff column's width: card heights wrap to it
+    // Lines a pinned answer cites: marked in the diff's gutter (memoized on the pins).
+    if (this.pinMarksOf !== this.pins()) { this.pinMarksOf = this.pins(); this.pinMarks = new Set(this.pinMarksOf.flatMap((p) => (p.evidence ? [p.evidence.replace(/^(.*?):(\d+).*$/, "$1:$2")] : []))); }
     const other = target && !C.shown(ctxDoc(), prCtx(target), shared);
     const root = v_flex().id("rv-root").size_full().bg(t.background).text_color(t.foreground).text_size(13.5)
       .on_size_change((size, cx) => { if (Math.abs((this.winW ?? 0) - size.width) > 8) { this.winW = size.width; cx.notify(); } })
@@ -2611,6 +2702,9 @@ export const ReviewMode = {
             .child(pill("rv-handover", t, "Hand over…", (_e, cx) => this.handOverApply(this.applyBlocked, cx), false, t.foreground))
             .child(pill("rv-handover-x", t, "Later", (_e, cx) => { this.applyBlocked = null; cx.notify(); }))))
           .when(this.finishOpen && !this.sendP, (e) => e.child(this.finishPopover(t)))
-          .when(Boolean(this.sendP), (e) => e.child(this.sendPopover(t)))));
+          .when(Boolean(this.sendP), (e) => e.child(this.sendPopover(t)))
+          .when(!this.drawerSqueezes() && this.drawerState() === "open", (e) => e.child(div().absolute().top(0).right(0).bottom(0).child(this.askDrawer(t))))
+          .when(this.drawerState() === "collapsed", (e) => e.child(div().absolute().top(0).right(0).bottom(0).child(this.drawerStrip(t)))))
+        .when(this.drawerSqueezes(), (e) => e.child(this.askDrawer(t))));
   },
 };

@@ -221,6 +221,22 @@ const sync = {
   assert.deepEqual(L.paths.map((p) => p.to), ["read", "phase", "asm"], "numbered by their first row, top to bottom");
 }
 
+// External services called from the middle of a group that spans further right: their own column beside it, not a
+// frame stacked below with lines running down past the picture.
+{
+  const arch = { groups: [{ id: "aws", label: "AWS" }, { id: "ext", label: "External", kind: "SaaS" }],
+    nodes: [{ id: "sm", group: "aws", label: "State machine" }, { id: "phase", group: "aws", label: "Phase Lambdas" }, { id: "read", group: "aws", label: "Read Lambdas" },
+      { id: "hosted", group: "aws", label: "Lambda hosted" }, { id: "scan", group: "ext", label: "Scanner API" }, { id: "gh", group: "ext", label: "GitHub API" }, { id: "nvd", group: "ext", label: "NVD" }],
+    edges: [{ from: "sm", to: "phase", label: "a" }, { from: "sm", to: "read", label: "b" }, { from: "phase", to: "hosted", label: "c" },
+      { from: "phase", to: "scan", label: "d" }, { from: "phase", to: "gh", label: "e" }, { from: "read", to: "scan", label: "f" }, { from: "phase", to: "nvd", label: "g" }] };
+  const L = archLayout(arch), g = (id) => L.groups.find((x) => x.id === id);
+  sane(L, "external");
+  assert.ok(g("ext").x >= g("aws").x + g("aws").w, "the external services sit right of the AWS frame");
+  assert.ok(g("ext").y < g("aws").y + g("aws").h, "not stacked below it");
+  const bottom = Math.max(...L.nodes.map((n) => n.y + n.h));
+  assert.ok(L.paths.every((p) => p.segments.every((s) => Math.max(s.y1, s.y2) <= bottom + 8)), "no line runs below the picture");
+}
+
 // The blast radius: each context file's relation is its own path (no merged lanes), titles wrap to two lines.
 {
   const b = blastArch({ units: [{ id: "u1", label: "GrpcServerRunner (Shutdown hook and health)", status: "changed", files: ["a.java"] }, { id: "u2", label: "GrpcProperties and application config", status: "changed", files: ["b.java"] }],

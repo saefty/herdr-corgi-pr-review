@@ -163,10 +163,27 @@ export function archLayout(arch, view = "diff", extra = () => 0) {
   }
   const col = new Map(ids0.map((id) => [id, base.get(gOf(id)) + sub.get(id)]));
   const lastCol = (g) => Math.max(...ids0.filter((id) => gOf(id) === g).map((id) => col.get(id)));
-  for (const id of [...ids0].sort((a, b) => col.get(b) - col.get(a))) {
-    const out = edges.filter((e) => e.from === id && col.get(e.to) > col.get(id));
-    if (out.length) col.set(id, Math.max(col.get(id), Math.min(lastCol(gOf(id)), ...out.map((e) => col.get(e.to) - 1))));
+  const pullRight = () => {
+    for (const id of [...ids0].sort((a, b) => col.get(b) - col.get(a))) {
+      const out = edges.filter((e) => e.from === id && col.get(e.to) > col.get(id));
+      if (out.length) col.set(id, Math.max(col.get(id), Math.min(lastCol(gOf(id)), ...out.map((e) => col.get(e.to) - 1))));
+    }
+  };
+  pullRight();
+  // A group that only receives calls (external services) and starts inside the columns of a group calling it would be
+  // stacked below that whole frame, its lines running down past the picture: it gets its own column right of it.
+  const range = (g) => { const cs = ids0.filter((id) => gOf(id) === g).map((id) => col.get(id)); return [Math.min(...cs), Math.max(...cs)]; };
+  // ponytail: only plain services (no calls among themselves); a group with its own chain keeps stacking below.
+  const sink = (g) => !edges.some((e) => gOf(e.from) === g) && edges.some((e) => gOf(e.to) === g && gOf(e.from) !== g);
+  let moved = false;
+  for (const g of gIds.filter(sink)) {
+    const lo = range(g)[0], over = gIds.filter((h) => h !== g && !sink(h) && edges.some((e) => gOf(e.from) === h && gOf(e.to) === g)).map(range).filter(([a, b]) => a <= lo && lo <= b);
+    if (!over.length) continue;
+    const shift = Math.max(...over.map(([, b]) => b)) + 1 - lo;
+    for (const id of ids0) if (gOf(id) === g) col.set(id, col.get(id) + shift);
+    moved = true;
   }
+  if (moved) pullRight();
   const ncol = Math.max(0, ...col.values()) + 1;
   const kindOf = (e) => (col.get(e.to) - col.get(e.from) === 1 ? "next" : "stub");
   const nexts = edges.filter((e) => kindOf(e) === "next");
