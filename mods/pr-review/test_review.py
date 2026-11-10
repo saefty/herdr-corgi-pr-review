@@ -103,3 +103,27 @@ assert out["diagrams"]["head"] == "abc1234" and out["diagrams"]["cost"] == 0.12 
 assert json.loads((d / "latest.json").read_text())["diagrams"]["head"] == "abc1234"
 assert "diagrams" not in json.loads((d / "other.json").read_text())  # a newer analysis there: untouched
 print("ok diagrams")
+
+# Ask about this: one call ("Review: architecture question") with the picture, the focus, the hunks and the thread;
+# read-only tools only in an existing checkout.
+seen = {}
+def stub(feature, text, **kw):  # noqa: E302
+    seen.update(feature=feature, text=text, **{k: kw[k] for k in ("schema", "model", "budget", "tools", "context")})
+    kw["meta"].update(cost=0.05, ms=900, model_id="claude-y")
+    return {"text": "Weil …", "highlights": {"nodes": ["api"], "edges": ["e0"]}, "evidence": [{"at": "src/api.py:3", "why": "hier"}]}
+real, review.llm.claude = review.llm.claude, stub
+try:
+    r = review.main_ask({"ask": "Warum ruft die API den Worker?", "model": "haiku", "context": {"id": "work", "env": None}, "root": str(d / "missing"),
+                         "analysis": {"title": "T", "summary": "S", "layers": [{"title": "L1", "why": "w"}]},
+                         "picture": {"nodes": [{"id": "api", "label": "API"}], "edges": [{"id": "e0", "from": "api", "to": "w"}]},
+                         "scope": {"kind": "node", "node": {"id": "api"}}, "hunks": [{"path": "src/api.py", "lines": ["@@ -1 +1,2 @@", "+call()"]}],
+                         "history": [{"q": "Was ist das?", "a": "Ein Job."}]})
+finally:
+    review.llm.claude = real
+assert seen["feature"] == "Review: architecture question" and seen["schema"] is review.ASK_SCHEMA and seen["model"] == "haiku"
+assert seen["budget"] == review.BUDGET_ASK["haiku"] and seen["tools"] == "" and seen["context"]["id"] == "work"
+for part in ("Warum ruft die API den Worker?", '"e0"', "L1: w", "call()", "Q: Was ist das?", "A: Ein Job.", '"kind": "node"'):
+    assert part in seen["text"], part
+assert r["answer"]["highlights"]["edges"] == ["e0"] and r["cost"] == 0.05
+assert review.read_tools(str(d))["tools"] == "Read,Grep,Glob" and "Bash" in review.read_tools(str(d))["extra"]
+print("ok ask")

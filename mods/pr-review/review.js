@@ -10,7 +10,7 @@
 // composer under that line, pending comments show as threads there, and "Finish your review" in the bar opens the
 // submit popover: one GitHub review (gh api) or, for a PR with an agent session, the prompt to that session.
 import { div } from "gpui-kit";
-import { v_flex, h_flex, Scrollbar, TextView, v_virtual_list, VirtualListScrollHandle, Textarea, TextareaState } from "gpui-base";
+import { v_flex, h_flex, Scrollbar, TextView, v_virtual_list, VirtualListScrollHandle, Textarea, TextareaState, Input, InputState } from "gpui-base";
 import { exec, run, spaces, theme, settings, readTextFile, writeTextFile, shared, setShared, appHome, nextCommand, watchFolder, openOverlay, closeOverlay, props, home } from "herdr";
 import { parseReports, findingStatus, fixPrompt, hash, touchReview, expireReviews, resumeFields, itemKeys, expandTabs, tokenAt } from "./pr.js";
 import * as C from "./context.js";
@@ -22,7 +22,7 @@ import { ghTarget, lowValue, markReviewed, sinceBase, verifyCandidates, applyVer
 import { diffLines, inDiff, ghReview, lineThreads, suggestionBlock, buildReview, layoutPlan, specElements, diagramsState } from "./pr.js";
 import { archView, archModel, archLegend, visualsCard, statCard, segBar, foldCard, chip, legend, specTag, sourceLegend, SEVERITY_COLOR } from "./stack.js";
 import { hasSources } from "./arch.js";
-import { leftWidth, rowClick, CHIP_W, keyRoute } from "./explore.js";
+import { leftWidth, rowClick, CHIP_W, keyRoute, pictureOf, scopeOf, scopeFiles, hunksFor, mapAnswer, threadAdd, threadOf, history, highlightOf } from "./explore.js";
 
 const LEVEL = { high: "ansi1", medium: "ansi3", low: "ansi4", skim: "muted" };
 const COVER = { seen: ["done", "ansi2"], partly: ["partly", "ansi3"], absent: ["missing", "ansi1"], extra: ["extra (not asked)", "ansi4"] };
@@ -52,6 +52,7 @@ const valuesOn = () => shared("review.values") !== false; // inline example valu
 const clock = (ms) => `${Math.floor(ms / 60000)}:${String(Math.floor(ms / 1000) % 60).padStart(2, "0")}`;
 const CAP = { haiku: 1, sonnet: 3, opus: 10 }; // review.py BUDGET
 const findDir = () => `${appHome()}/pr-data/findings`;
+const deepFile = () => `${appHome()}/pr-data/deep.json`; // Ask threads per PR and drill-downs per node (explore.js bounds both)
 const ctxDoc = () => shared(C.CONTEXTS_KEY);
 const prCtx = (pr) => C.prContext(ctxDoc(), pr, home());
 const ALL_REVIEWERS = { claude: ["Claude code review", "ansi5"], security: ["Security review", "ansi1"], codex: ["Codex review", "ansi6"] };
@@ -202,6 +203,11 @@ export const ReviewMode = {
     }
     this.prSel = shared("review.target") ?? null;
     cx.spawn(async (cx) => { this.cfg = await readConfig(); await loadSetup(this, cx); });
+    // Ask about this: one input (the Architecture page's or the shown layer's), threads and drill-downs from deep.json.
+    this.askIn = InputState.new({ placeholder: "Ask about this… (Enter)" });
+    this.askIn.on("submit", (_e, cx) => this.askNow(cx));
+    this.deep = { threads: {}, drills: {} }; this.askBusy = null; this.askErr = null;
+    cx.spawn(async (cx) => { const d = JSON.parse(await readTextFile(deepFile()).catch(() => null) ?? "null"); if (d) this.deep = { threads: d.threads ?? {}, drills: d.drills ?? {} }; cx.notify(); });
     this.refresh(cx);
     this.fh.focus();
     cx.timer.after(400, () => this.fh.focus());
@@ -1274,7 +1280,7 @@ export const ReviewMode = {
     else if (k === "shift-/" || e.key === "?") this.command("keys", cx);
     else if (k === "a" || k === "x") { const s = this.focusedSug(); if (s) (k === "a" ? this.takeSug(s, cx) : this.dropSug(s, cx)); }
     else if (k === "s" || k === "f") this.tab = k === "s" ? "steps" : "files";
-    else if (k === "escape") { if (this.finishOpen) this.finishOpen = false; else if (this.composing) this.closeComposer(cx); else if (this.defFile) this.defFile = null; else if (this.defAt) this.defAt = null; else if (this.archFocus || this.blastFocus) this.archFocus = this.blastFocus = null; else leave(); }
+    else if (k === "escape") { if (this.finishOpen) this.finishOpen = false; else if (this.composing) this.closeComposer(cx); else if (this.defFile) this.defFile = null; else if (this.defAt) this.defAt = null; else if (this.archFocus || this.blastFocus || this.askHl) this.archFocus = this.blastFocus = this.askHl = null; else leave(); }
     else return;
     cx.stop_propagation(); cx.notify();
   },
@@ -1389,6 +1395,7 @@ export const ReviewMode = {
           .child(div().flex_1().min_w(0).child(TextView.markdown(`rv-q-${stepKey(s)}-${k}`, this.asked(s, q))))))))
       .when(on && s.visuals?.length > 0, (e) => e.child(div().pl(26).child(this.diagramsBar(t, `rv-dia-${i}`, "Refresh this view"))).child(div().pl(26).child(visualsCard(s.visuals, t, `rv-vis-${i}`, (at, cx) => this.jumpTo(at, cx),
         this.visTab?.[i] ?? 0, (k, cx) => { this.visTab = { ...this.visTab, [i]: k }; cx.notify(); }))))
+      .when(on && !s.pseudo && Boolean(this.ai), (e) => e.child(div().pl(26).child(this.askPanel(t, `rv-ask-l${i}`))))
       .when(on, (e) => e.children((s.flows ?? []).map((f, k) => {
         const picked = this.flowOf()?.f === f;
         return div().pl(26).child(div().rounded(9).border_1().border_color(picked ? t.accent : t.chrome).child(flowCard(f, t, `rv-flow-${i}-${k}`,
@@ -1620,7 +1627,7 @@ export const ReviewMode = {
   // hover (a lighter focus) for the architecture ("arch") or blast radius ("blast") page.
   archOpts(k) {
     const set = (name, v, cx) => { if (this[name] !== v) { this[name] = v; cx.notify(); } };
-    return { hl: this[`${k}Hl`], focus: this[`${k}Focus`] ?? null, hover: this[`${k}Hover`] ?? null,
+    return { hl: this[`${k}Hl`] ?? (k === "arch" ? this.askHl : null), focus: this[`${k}Focus`] ?? null, hover: this[`${k}Hover`] ?? null,
       onHl: (v, cx) => set(`${k}Hl`, v, cx), onHover: (v, cx) => set(`${k}Hover`, v, cx),
       onFocus: (v, cx) => { this.fh.focus(); set(`${k}Focus`, v, cx); }, onJump: (at, cx) => this.jumpTo(at, cx) };
   },
@@ -1632,7 +1639,7 @@ export const ReviewMode = {
     const more = () => visualsCard(this.ai.visuals, t, "rv-arch-vis", (at, cx) => this.jumpTo(at, cx), this.archVisTab ?? 0, (k, cx) => { this.archVisTab = k; cx.notify(); });
     if (!a) return v_flex().gap(12).child(this.diagramsBar(t, "rv-dia-arch", "Refresh diagrams")).child(div().text_size(13.5).text_color(t.muted).child(this.ai ? "This analysis has no architecture picture (older analysis, or the PR touches no architecture). Re-analyze for one." : "No analysis yet: Analyze in the left column."))
       .when(this.ai?.visuals?.length > 0, (e) => e.child(div().max_w(760).child(more())));
-    const groups = new Set(a.nodes.map((n) => n.group)).size, L = archModel(a, this.archMode);
+    const groups = new Set(a.nodes.map((n) => n.group)).size, L = archModel(a, this.archMode), wide = (this.listW ?? 900) >= 980;
     const opts = this.archOpts("arch");
     return v_flex().gap(12)
       .child(h_flex().gap(12).items_center().flex_wrap().child(div().text_size(20).font_semibold().child("Architecture impact")).child(this.diagramsBar(t, "rv-dia-arch", "Refresh diagrams")))
@@ -1641,11 +1648,99 @@ export const ReviewMode = {
         .child(div().flex_none().child(legend(t)))
         .when(hasSources(a) || (this.ai.visuals ?? []).some(hasSources), (e) => e.child(div().flex_none().child(sourceLegend(t))))
         .child(h_flex().flex_none().gap(2).p(2).rounded(7).border_1().border_color(t.border).child(seg("diff", "Structural diff")).child(seg("before", "Before")).child(seg("after", "After"))))
-      .child(div().id("rv-arch-scroll").w_full().overflow_x_scroll().pb(8)
-        .child(archView(L, t, "rv-arch", (n, _e, cx) => this.jumpTo(n.at, cx), null, opts)))
+      .child((wide ? h_flex().items_start() : v_flex()).w_full().gap(12)
+        .child(div().id("rv-arch-scroll").flex_1().min_w(0).w_full().overflow_x_scroll().pb(8)
+          .child(archView(L, t, "rv-arch", (n, _e, cx) => this.jumpTo(n.at, cx), null, opts)))
+        .child(div().when(wide, (e) => e.w(340).flex_none()).child(this.askPanel(t, "rv-ask-arch"))))
       .child(archLegend(L, t, "rv-arch-edges", "Edges", opts))
       .when(this.ai?.visuals?.length > 0, (e) => e.child(div().pt(6).text_size(13).font_semibold().text_color(t.muted).child("More views"))
         .child(div().max_w(760).child(more())));
+  },
+
+  // ---- Ask about this (review.py main_ask, "Review: architecture question"): a question on the picture, a node or a
+  // layer; the answer lights its nodes and edges (the focus mechanism) and links its evidence. One thread per PR.
+
+  deepKey() { return this.prSel?.url ?? null; },
+  // The thread on screen and what a question is about: on the Architecture page the focused card (or the whole
+  // picture), on a layer that layer.
+  askFocus() {
+    if (this.page === "arch") return this.archFocus ? { node: this.archFocus } : null;
+    const s = this.steps()[this.cur], k = s ? (this.ai?.steps ?? []).indexOf(s) : -1;
+    return k >= 0 ? { layer: k } : null;
+  },
+  askLabel(scope) { return scope.kind === "node" ? scope.node.label ?? scope.node.id : scope.kind === "layer" ? plain(scope.layer.title) : "the architecture"; },
+
+  askNow(cx) {
+    const q = this.askIn.value().trim(), ai = this.ai, key = this.deepKey();
+    if (!q || !ai || !key || this.askBusy) return;
+    const scope = scopeOf(ai, this.askFocus()), layer = scope.kind === "layer" ? this.ai.steps.find((s) => plain(s.title) === plain(scope.layer.title)) : null;
+    const req = { ask: q, model: model(), context: this.ctxReq(), root: this.lspRoot(), explore: Boolean(ai.explore),
+      analysis: { title: ai.title, summary: ai.summary, layers: ai.steps.filter((s) => !s.pseudo).map((s) => ({ title: plain(s.title), why: plain(s.why) })) },
+      picture: pictureOf(ai.arch), scope, hunks: hunksFor(scopeFiles(scope), this.hunks, layer?.hunks ?? []), history: history(threadOf(this.deep.threads, key)) };
+    this.askBusy = { q, label: this.askLabel(scope), started: Date.now() }; this.askErr = null;
+    cx.spawn(async (cx) => {
+      const r = await exec("python3", [`${appHome()}/mods/pr-review/review.py`, JSON.stringify(req)], { timeout: 600000 }).catch((e) => ({ code: 1, stderr: String(e) }));
+      this.askBusy = null;
+      if (this.deepKey() !== key) return;
+      if (r.code !== 0) { this.askErr = `Could not ask: ${(r.stderr || r.stdout).trim().slice(0, 200)}`; return cx.notify(); }
+      const out = JSON.parse(r.stdout), a = mapAnswer(out.answer, ai.arch);
+      this.askIn.set_value("");
+      this.updateDeep(cx, (d) => ({ ...d, threads: threadAdd(d.threads, key, { q, about: this.askBusy?.label ?? this.askLabel(scope), a, cost: out.cost }) }));
+      this.showAnswer(a);
+      cx.notify();
+    });
+    cx.notify();
+  },
+
+  // The answer's highlights on the Architecture page: its first node focused, its first edge's badge lit.
+  showAnswer(a) {
+    if (!this.ai?.arch) return;
+    const h = highlightOf(archModel(this.ai.arch, this.archMode), a);
+    if (h.focus) this.archFocus = h.focus;
+    this.askHl = h.hl;
+  },
+
+  // deep.json changed by fn, here and in the file (compare-and-swap: another copy may write it too).
+  updateDeep(cx, fn) {
+    this.deep = fn(this.deep);
+    cx.spawn(async () => {
+      await exec("mkdir", ["-p", `${appHome()}/pr-data`]).catch(() => null);
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const before = await readTextFile(deepFile()).catch(() => null), doc = before ? JSON.parse(before) : {};
+        try { await writeTextFile(deepFile(), JSON.stringify(fn({ threads: doc.threads ?? {}, drills: doc.drills ?? {} })), before); return; } catch { /* written meanwhile: again */ }
+      }
+    });
+  },
+
+  // The input, the answer being written, and the thread (newest first: the latest whole, earlier ones folded).
+  askPanel(t, id) {
+    const ai = this.ai, scope = scopeOf(ai, this.askFocus()), turns = threadOf(this.deep.threads, this.deepKey()).slice().reverse();
+    const chipBtn = (cid, label, color, click) => div().id(cid).flex_none().px(6).py(1).rounded(5).border_1().border_color(color).text_size(11.5).text_color(color)
+      .cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => { click(cx); cx.stop_propagation(); cx.notify(); }).child(label);
+    const name = new Map((ai?.arch?.nodes ?? []).map((n) => [n.id, n.label ?? n.id])), edges = pictureOf(ai?.arch).edges;
+    const answer = (tu, k, full) => v_flex().id(`${id}-t${k}`).gap(6).pt(8).border_t(1).border_color(t.border)
+      .child(h_flex().gap(6).items_start().child(div().flex_1().min_w(0).text_size(13).font_semibold().whitespace_normal().child(tu.q))
+        .child(div().flex_none().text_size(11).text_color(t.muted).child(tu.about ?? "")))
+      .child(full ? div().text_size(13).line_height(1.5).child(TextView.markdown(`${id}-a${tu.at}`, tu.a.text || "–"))
+        : div().text_size(12.5).text_color(t.muted).truncate().child(plain(tu.a.text)))
+      .when(full && (tu.a.highlights.nodes.length + tu.a.highlights.edges.length) > 0, (e) => e.child(h_flex().flex_wrap().gap(4)
+        .children(tu.a.highlights.nodes.map((n) => chipBtn(`${id}-hn${k}-${n}`, name.get(n) ?? n, t.accent, () => { this.page = "arch"; this.tab = "steps"; this.archFocus = n; })))
+        .children(tu.a.highlights.edges.map((x) => { const e = edges.find((y) => y.id === x); return chipBtn(`${id}-he${k}-${x}`, e ? `${name.get(e.from) ?? e.from} → ${name.get(e.to) ?? e.to}` : x, t.accent,
+          () => { this.page = "arch"; this.tab = "steps"; this.archFocus = null; this.askHl = highlightOf(archModel(ai.arch, this.archMode), { highlights: { nodes: [], edges: [x] } }).hl; }); }))))
+      .when(full && tu.a.evidence.length > 0, (e) => e.child(v_flex().gap(2).children(tu.a.evidence.map((ev, j) => h_flex().id(`${id}-ev${k}-${j}`).gap(6).text_size(12).cursor_pointer()
+        .on_click((_e, cx) => { this.jumpTo(ev.at, cx); cx.stop_propagation(); })
+        .child(div().flex_none().text_color(t.accent).child(`${ev.at.split("/").pop()} ↗`)).child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(ev.why))))));
+    return v_flex().id(id).flex_none().gap(8).p(10).rounded(10).border_1().border_color(t.border).bg(t.surface)
+      .child(h_flex().gap(8).items_center().child(div().flex_1().min_w(0).truncate().text_size(13).font_semibold().child(`Ask about ${this.askLabel(scope)}`))
+        .when(turns.length > 0, (e) => e.child(pill(`${id}-clear`, t, "Clear", (_e, cx) => { const key = this.deepKey(); this.updateDeep(cx, (d) => { const th = { ...d.threads }; delete th[key]; return { ...d, threads: th }; }); this.askHl = null; cx.notify(); }))))
+      .child(h_flex().gap(6).items_center()
+        .child(div().id(`${id}-in`).flex_1().min_w(0).h(30).px(8).flex().items_center().rounded(6).border_1().border_color(t.border).bg(t.background).cursor_text()
+          .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Input.new(this.askIn).h_full().text_size(13).text_color(t.foreground)))
+        .child(this.askBusy ? div().flex_none().child(SPIN[0]).frames(SPIN, 90) : pill(`${id}-go`, t, "Ask", (_e, cx) => this.askNow(cx), false, t.foreground)))
+      .child(div().text_size(11.5).text_color(t.muted).whitespace_normal().child(`One ${MODELS[model()].label} call with the analysis${this.hunks ? ", the diff" : ""} and this thread. Click a card first to ask about it.`))
+      .when(Boolean(this.askBusy), (e) => e.child(div().text_size(12.5).text_color(t.muted).whitespace_normal().child(`${this.askBusy.q} · reading…`)))
+      .when(Boolean(this.askErr), (e) => e.child(div().text_size(12.5).text_color(t.ansi1).whitespace_normal().child(this.askErr)))
+      .children(turns.map((tu, k) => answer(tu, k, k === 0)));
   },
 
   blastPage(t) {

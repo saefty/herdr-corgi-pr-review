@@ -448,6 +448,58 @@ def main_diagrams(req):
     return {"cost": meta.get("cost"), "ms": meta.get("ms"), "model_id": meta.get("model_id", model)}
 
 
+# ---- Ask about this: one question on the architecture (or a layer's pictures), with a short thread. The answer is text
+# plus the picture's node and edge ids it is about and the places that back it. Sync: prints the answer as JSON.
+
+FEATURE_ASK = "Review: architecture question"
+BUDGET_ASK = {"haiku": 0.3, "sonnet": 1.0, "opus": 3.0}
+ASK_SCHEMA = {"type": "object", "required": ["text", "highlights", "evidence"], "properties": {
+    "text": S, "highlights": {"type": "object", "required": ["nodes", "edges"], "properties": {"nodes": STRINGS, "edges": STRINGS}},
+    "evidence": {"type": "array", "maxItems": 8, "items": {"type": "object", "required": ["at"], "properties": {"at": S, "why": S}}}}}
+
+
+def deep_context(req):
+    """What the ask and drill calls share: the analysis in short, the picture (nodes, edges e0.. with evidence), the
+    focus (a node with its edges, a layer, or the whole picture) and the relevant diff hunks."""
+    a = req.get("analysis") or {}
+    layers = "\n".join(f"- {x.get('title', '')}: {x.get('why', '')}" for x in a.get("layers") or [])
+    hunks = "\n\n".join(f"### {h['path']}\n" + "\n".join(numbered(h["lines"])) for h in req.get("hunks") or [])
+    what = "the existing code (no PR)" if req.get("explore") else "a pull request"
+    return (f"This is about {what}.\nAnalysis: {a.get('title', '')}\n{a.get('summary', '')}\nLayers:\n{layers or '(none)'}\n\n"
+            f"Picture (architecture; edges by id):\n{json.dumps(req.get('picture') or {}, ensure_ascii=False)}\n\n"
+            f"Focus:\n{json.dumps(req.get('scope') or {'kind': 'picture'}, ensure_ascii=False)}"
+            + (f"\n\nDiff hunks (lines: prefix + new, - removed; then the line number):\n{hunks}" if hunks else ""))
+
+
+def ask_prompt(req, tools, lang="English"):
+    turns = "\n\n".join(f"Q: {t.get('q', '')}\nA: {t.get('a', '')}" for t in req.get("history") or [])
+    return (f"Answer the question below in {lang}, briefly (at most 8 sentences, markdown allowed), about the focus when "
+            "there is one." + (" You may read the code (Read, Grep, Glob) to check before you answer; claim only what you "
+            "confirmed." if tools else "") +
+            " highlights: the ids of the picture's nodes and edges (e0, e1, …) your answer is about (empty when none). "
+            "evidence: file:line places that back the answer, each with why (one short phrase).\n\n" + deep_context(req)
+            + (f"\n\nEarlier in this thread:\n{turns}" if turns else "") + f"\n\nQuestion: {req['ask']}")
+
+
+def read_tools(root):
+    """Read-only tools in root (the PR head checkout or the explored repo), or none."""
+    if not (root and pathlib.Path(root).is_dir()):
+        return {"tools": "", "cwd": pathlib.Path.home(), "extra": ()}
+    return {"tools": "Read,Grep,Glob", "cwd": root, "extra": ("--allowedTools", "Read", "Grep", "Glob", "--disallowedTools", "Edit", "Write",
+                                                              "NotebookEdit", "WebFetch", "WebSearch", "Bash")}
+
+
+def main_ask(req):
+    model, lang, rt = req["model"], llm.language(), read_tools(req.get("root"))
+    meta = {}
+    answer = llm.claude(FEATURE_ASK, ask_prompt(req, bool(rt["tools"]), lang), context=req.get("context"), model=model, schema=ASK_SCHEMA,
+                        system=SYSTEM.format(lang=lang), budget=BUDGET_ASK[model], timeout=TIMEOUT, cwd=rt["cwd"], tools=rt["tools"],
+                        meta=meta, extra=rt["extra"])
+    if not answer:
+        raise RuntimeError(f"{FEATURE_ASK}: no answer")
+    return {"answer": answer, "cost": meta.get("cost"), "ms": meta.get("ms"), "model_id": meta.get("model_id", model)}
+
+
 def save(path, value):
     path = pathlib.Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -496,6 +548,9 @@ if __name__ == "__main__":
     if status:
         save(status, {"busy": True, "pid": os.getpid(), "started": dt.datetime.now().astimezone().isoformat(), "model": req["model"]})
     try:
+        if req.get("ask"):  # sync calls: the answer on stdout
+            print(json.dumps(main_ask(req), ensure_ascii=False))
+            sys.exit(0)
         r = main_diagrams(req) if req.get("diagrams") else main(req)
         if status:
             save(status, {"done": True, "cost": r["cost"], "ms": r["ms"]})
