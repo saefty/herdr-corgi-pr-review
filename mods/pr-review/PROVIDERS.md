@@ -1,5 +1,9 @@
 # PR review: the plug-in contract (version 1)
 
+The rules every mod in the herdr-corgi set shares (announcing, requests, providers, the context hook,
+versions) are in [CONVENTIONS.md](https://github.com/saefty/herdr-corgi/blob/main/CONVENTIONS.md). This page has
+what is specific to this mod.
+
 pr-review works on its own. Everything here is optional: other mods add to it through shared state only, and
 pr-review never reads another mod's files. Load order doesn't matter: pr-review reads these keys each time it
 renders, and a plug-in can write them whether or not pr-review is installed.
