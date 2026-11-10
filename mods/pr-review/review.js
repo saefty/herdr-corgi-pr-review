@@ -35,6 +35,7 @@ const SPIN = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "�
 const SPLIT = 6, ROW = 22, GUTTER = 4 + 48 + 48 + 22, GAP_SEG = 110, BTN = 110, BTN_GAP = 8, ACT = 44;
 const FILE_CHEV = 30, FILE_SEEN = 100, FILE_WHOLE = 124;
 const MORE = 20; // lines per ↑/↓ click
+const KEYS_POP = { width: 340, height: 330 }; // the "?" popup: sized to its rows and the last line
 const COMPOSE = 168; // the composer row: header + a fixed-height textarea (the list needs every row's height up front)
 const progressFile = () => `${appHome()}/pr-data/review-progress.json`; // per PR: progress and where you were (bounded)
 const MAX_PROGRESS = 100;
@@ -91,7 +92,7 @@ export function renderKeys() {
     .children([["j k", "next / previous file (Layers: step)"], ["n p", "next / previous hunk"], ["c", "comment on the selected line"], ["a x", "accept / dismiss AI suggestion"],
       ["⌘ click", "go to definition"], ["⌘ ↩", "add the comment (in the composer)"], ["Esc", "close composer or popover, else back"]].map(([k, what]) =>
       h_flex().gap(10).items_center().child(h_flex().w(74).flex_none().gap(3).children(k.split(" ").map((x) => kbd(t, x)))).child(div().text_color(t.muted).child(what))))
-    .child(div().pt(2).text_size(12).text_color(t.muted).child("Click a line number to comment, shift-click for a range."));
+    .child(div().pt(2).text_size(12).text_color(t.muted).whitespace_normal().child("Click a line number to comment, shift-click for a range."));
 }
 
 // The title bar of the floating agent terminal (props {part: "agentbar", title}): drag it, close it.
@@ -227,7 +228,7 @@ export const ReviewMode = {
     else if (name === "back") leave();
     else if (name === "finish") this.finishOpen = !this.finishOpen;
     else if (name === "discuss") { const f = this.find.list.find((x) => x.id === arg); if (f) this.discuss(f, cx); } // discuss:<finding id> (scripts, keys)
-    else if (name === "keys") openOverlay({ mod: "pr-review", props: { part: "keys" }, kind: "popup", width: 330, height: 250 });
+    else if (name === "keys") openOverlay({ mod: "pr-review", props: { part: "keys" }, kind: "popup", ...KEYS_POP });
     else if (name === "comment") { // comment:<path>:<line>[-<end>]: the composer under that new-side line (scripts, tests)
       const m = /^(.*):(\d+)(?:-(\d+))?$/.exec(arg);
       if (m) { this.tab = "files"; this.collapsed.delete(m[1]); this.fsel = { path: m[1], a: `+${m[2]}`, b: `+${m[3] ?? m[2]}` }; this.openComposer(cx, null, true); }
@@ -1340,7 +1341,7 @@ export const ReviewMode = {
       .child(pill("rv-done", t, "Mark done", () => run("pr-review.done")))
       .child(div().id("rv-keys").w(26).h(26).flex().items_center().justify_center().rounded_full().border_1().border_color(t.border).text_size(12.5).text_color(t.muted)
         .cursor_pointer().hover((s) => s.text_color(t.foreground)).on_mouse_down("left", stop).tooltip("Keyboard shortcuts")
-        .on_click(() => openOverlay({ mod: "pr-review", props: { part: "keys" }, kind: "popup", width: 330, height: 250 })).child("?"))
+        .on_click(() => openOverlay({ mod: "pr-review", props: { part: "keys" }, kind: "popup", ...KEYS_POP })).child("?"))
       .child(pill("rv-reviews-btn", t, Object.values(shared("review.reviewers") ?? {}).some((r) => r.busy) ? "Reviews ⋯" : "Reviews ▾",
         () => openOverlay({ mod: "pr-review", props: { part: "reviews" }, kind: "popup", width: 460, height: 250 })))
       .when(Boolean(this.worktree?.path) && !this.trustedPr(), (e) => e.child(div().id("rv-trust-wrap").tooltip("Restricted Mode: someone else's code, so language servers don't run anything from the repository and go-to-definition may find less. Click to trust this PR.")
