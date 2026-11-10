@@ -393,6 +393,7 @@ export function expireReviews(list, prs, now) {
 export function progressLine(p = {}) {
   return [p.steps ? `${p.stepsChecked ?? 0}/${p.steps} steps` : null, p.files ? `${p.filesViewed ?? 0}/${p.files} files` : null,
     p.comments ? `${p.comments} ${p.comments === 1 ? "comment" : "comments"}` : null,
+    p.replies ? `${p.replies} ${p.replies === 1 ? "reply" : "replies"}` : null, p.fixedThreads ? `${p.fixedThreads} fixed` : null,
     p.findingsOpen ? `${p.findingsOpen} open ${p.findingsOpen === 1 ? "finding" : "findings"}` : null].filter(Boolean).join(" · ");
 }
 
