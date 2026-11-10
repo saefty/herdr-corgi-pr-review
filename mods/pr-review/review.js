@@ -1856,7 +1856,8 @@ export const ReviewMode = {
     const more = () => visualsCard(this.ai.visuals, t, "rv-arch-vis", (at, cx) => this.jumpTo(at, cx), this.archVisTab ?? 0, (k, cx) => { this.archVisTab = k; cx.notify(); });
     if (!a) return v_flex().gap(12).child(this.diagramsBar(t, "rv-dia-arch", "Refresh diagrams")).child(div().text_size(13.5).text_color(t.muted).child(this.ai ? "This analysis has no architecture picture (older analysis, or the PR touches no architecture). Re-analyze for one." : "No analysis yet: Analyze in the left column."))
       .when(this.ai?.visuals?.length > 0, (e) => e.child(div().max_w(760).child(more())));
-    const groups = new Set(a.nodes.map((n) => n.group)).size, L = archModel(a, this.archMode), wide = (this.listW ?? 900) >= 980;
+    const groups = new Set(a.nodes.map((n) => n.group)).size, L = archModel(a, this.archMode);
+    const askOpen = Boolean(this.askOpen || this.archFocus || this.askBusy || threadOf(this.deep.threads, this.deepKey()).length);
     const opts = this.archOpts("arch");
     return v_flex().gap(12)
       .child(h_flex().gap(12).items_center().flex_wrap().child(div().text_size(20).font_semibold().child("Architecture impact")).child(this.diagramsBar(t, "rv-dia-arch", "Refresh diagrams")))
@@ -1865,10 +1866,13 @@ export const ReviewMode = {
         .child(div().flex_none().child(legend(t)))
         .when(hasSources(a) || (this.ai.visuals ?? []).some(hasSources), (e) => e.child(div().flex_none().child(sourceLegend(t))))
         .child(h_flex().flex_none().gap(2).p(2).rounded(7).border_1().border_color(t.border).child(seg("diff", "Structural diff")).child(seg("before", "Before")).child(seg("after", "After"))))
-      .child((wide ? h_flex().items_start() : v_flex()).w_full().gap(12)
-        .child(div().id("rv-arch-scroll").flex_1().min_w(0).w_full().overflow_x_scroll().pb(8)
-          .child(archView(L, t, "rv-arch", (n, _e, cx) => this.jumpTo(n.at, cx), null, opts)))
-        .child(div().when(wide, (e) => e.w(340).flex_none()).child(this.askPanel(t, "rv-ask-arch"))))
+      .child(div().id("rv-arch-scroll").w_full().overflow_x_scroll().pb(8)
+        .child(archView(L, t, "rv-arch", (n, _e, cx) => this.jumpTo(n.at, cx), null, opts)))
+      // Ask: one line until a card is clicked (or asked about before); then the panel, below the picture.
+      .child(askOpen ? div().max_w(760).child(this.askPanel(t, "rv-ask-arch"))
+        : h_flex().gap(8).items_center().text_size(12.5).text_color(t.muted)
+          .child(pill("rv-ask-open", t, "Ask about the architecture…", (_e, cx) => { this.askOpen = true; cx.timer.after(0, () => this.askIn.focus()); cx.notify(); }))
+          .child(div().child("or click a card to ask about it")))
       .child(archLegend(L, t, "rv-arch-edges", "Edges", opts))
       .when(this.ai?.visuals?.length > 0, (e) => e.child(div().pt(6).text_size(13).font_semibold().text_color(t.muted).child("More views"))
         .child(div().max_w(760).child(more())));

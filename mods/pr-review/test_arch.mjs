@@ -157,7 +157,11 @@ const sync = {
   // The call that skips the Lambdas: a stub with its chip.
   const skip = L.paths.find((p) => p.label === "reads the config");
   assert.equal(skip.kind, "stub");
-  assert.equal(skip.chip.text, "→ Secrets vault ⑭");
+  assert.equal(skip.chip.text, `→ Secrets vault ${skip.mark}`);
+  // Numbers in reading order: by the source's column, then top to bottom.
+  const colOf = (p) => L.nodes.find((n) => n.id === p.from[0]).col;
+  assert.deepEqual(L.paths.map((p) => p.num), L.paths.map((_, k) => k + 1));
+  assert.ok(L.paths.every((p, k) => k === 0 || colOf(L.paths[k - 1]) <= colOf(p)), "numbers go column by column");
   // Fan-out: the four calls from the stages into the external services share one trunk into the group's frame.
   const fan = L.paths.filter((p) => p.from[0] === "stages" && L.nodes.find((n) => n.id === p.to).group === "ext");
   assert.equal(fan.length, 4);
@@ -194,6 +198,27 @@ const sync = {
   assert.equal(p2.segments[0].y1, row(2)); // leaves at "Rank", below
   assert.ok(sm.y + sm.stateTop + 4 * ARCH.ROW <= sm.y + sm.h - 24, "the states fit above the card's footer");
   assert.ok(archLayout({ ...arch, nodes: arch.nodes.map((n) => ({ ...n, states: undefined })) }).nodes[0].stateTop === null); // old analyses: no lane
+}
+
+// Many state rows calling a few targets: one path per target (a line from each row into one trunk), each target its
+// own channel, badges at the start of the lines next to the rows, numbered top to bottom.
+{
+  const st = (name, calls) => ({ name, type: "task", calls });
+  const arch = { groups: [{ id: "flow", label: "Step Functions" }, { id: "work", label: "Lambdas" }],
+    nodes: [{ id: "sm", group: "flow", label: "State machine intel", type: "orchestration",
+      states: [st("Validate", "read"), st("Planned"), st("Partitions", "phase"), st("Research", "phase"), st("search", "phase"), st("lockfiles", "read"), st("prs", "phase"), st("Assemble", "asm")] },
+    { id: "phase", group: "work", label: "Phase Lambdas" }, { id: "read", group: "work", label: "Read Lambdas" }, { id: "asm", group: "work", label: "Assemble" }],
+    edges: [] };
+  const L = archLayout(arch), sm = L.nodes.find((n) => n.id === "sm");
+  sane(L, "rows");
+  assert.equal(L.paths.length, 3, "one path per target");
+  const phase = L.paths.find((p) => p.to === "phase");
+  assert.equal(phase.label, "Partitions, Research, search, prs");
+  assert.equal(phase.edges.length, 4);
+  const lanes = L.paths.map((p) => p.segments.find((s) => s.x1 === s.x2)?.x1).filter((x) => x !== undefined);
+  assert.equal(new Set(lanes).size, lanes.length, "each target its own channel");
+  for (const p of L.paths) assert.ok(p.badge.x < sm.x + sm.w + 60, `badge ${p.mark} sits next to the rows, not in the channel`);
+  assert.deepEqual(L.paths.map((p) => p.to), ["read", "phase", "asm"], "numbered by their first row, top to bottom");
 }
 
 // The blast radius: each context file's relation is its own path (no merged lanes), titles wrap to two lines.
