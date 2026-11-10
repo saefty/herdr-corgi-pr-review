@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.3.0 (2026-11-11)
+
+### Features
+
+- review: resizable layers column, wider by default
+- review: ask about the architecture
+- panel: split the side panel into picking and a chosen PR
+- review: draw flow pictures like Architecture impact
+- review: keep sent comments as threads with agent replies
+- review: fix comments with a sub-agent in its own worktree
+- panel: show replies and fixed threads in the in-progress line
+- review: Ask in a drawer, pinned answers as private notes
+- review: compact comment cards, a floating selection bar, a two-row header
+- review: steady sideways scrolling and a Fit view for wide pictures
+- review: a Comments tab and a Show switch for comment kinds
+- review: let the analysis choose its scope for big PRs
+- review: drill down into a card or a layer
+- review: explore a topic in existing code without a PR
+
+### Fixes
+
+- review: size the keyboard shortcuts popup to its content
+- review: open the comment box from a selection, keep letters in inputs
+- review: one channel per target, badges in reading order, Ask on demand
+- llm: retry once when the claude binary is briefly missing
+- review: say who posts where, post no empty body, make the deep review easy to find
+- review: explore folders start in Restricted Mode
+
+### Other
+
+- docs: describe Ask, drill-down, Explore, comment threads and Fix
+
 ## 0.2.1 (2026-11-10)
 
 ### Fixes
