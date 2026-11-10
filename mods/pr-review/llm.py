@@ -81,8 +81,15 @@ def claude(feature, prompt, *, context=None, model="haiku", schema=None, system=
     if system:
         args += ["--system-prompt", system]
     started = time.monotonic()
-    out = subprocess.run([*args, *extra], input=prompt, capture_output=True, text=True, timeout=timeout,
-                         env=env_for(context), cwd=str(cwd or APP))
+    for attempt in (1, 2):  # ponytail: one retry covers the moment a Claude Code self-update swaps the binary
+        try:
+            out = subprocess.run([*args, *extra], input=prompt, capture_output=True, text=True, timeout=timeout,
+                                 env=env_for(context), cwd=str(cwd or APP))
+            break
+        except FileNotFoundError:
+            if attempt == 2:
+                raise RuntimeError(f"{feature}: the claude command was not found on PATH") from None
+            time.sleep(3)
     ms = (time.monotonic() - started) * 1000
     try:
         data = json.loads(out.stdout)
