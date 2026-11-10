@@ -423,6 +423,7 @@ export function itemKeys(items) {
     else if (it.t === "def") k = `d|${it.d.key}`;
     else if (it.t === "compose" || it.t === "composeact") k = `x|${it.t}`;
     else if (it.t === "gh") k = `gh|${it.g.id}`;
+    else if (it.obj) k = `${it.t}|${it.k}|${it.obj.id ?? i}`; // a comment card's rows (review.js cardItems)
     else k = `n|${it.text ?? i}`;
     const n = seen.get(k) ?? 0;
     seen.set(k, n + 1);

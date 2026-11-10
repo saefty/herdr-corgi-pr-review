@@ -63,7 +63,7 @@ export function threadView(th, replies = [], gh = [], open = false) {
   for (const g of gh) entries.push({ who: g.user ?? "GitHub", text: g.body ?? "", url: g.url ?? null });
   const last = replies[replies.length - 1], status = last?.status ?? (th.route === "github" ? "posted" : "sent");
   const fixedIn = status === "fixed" ? [...replies].reverse().find((r) => r.commit)?.commit ?? null : null;
-  return { status, fixedIn, collapsed: status === "fixed" && !open, entries };
+  return { status, fixedIn, collapsed: (status === "fixed" || status === "wontfix") && !open, entries };
 }
 
 // For the open-reviews registry: threads, replies and fixed ones of a PR.

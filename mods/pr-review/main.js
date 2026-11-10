@@ -22,7 +22,7 @@ import * as C from "./context.js";
 import { setupBanner, renderSetup, loadSetup, runSetup, openUrl, readConfig } from "./setup-view.js";
 import { chip } from "./stack.js";
 import { panelState, bodyTab, capped, IN_PROGRESS_MAX } from "./views.js";
-import { ReviewMode, startReview, saveKey, flowCard, modelPills, renderReviews, renderAgentBar, renderKeys } from "./review.js";
+import { ReviewMode, startReview, saveKey, flowCard, modelPills, renderReviews, renderAgentBar, renderKeys, renderCardMenu } from "./review.js";
 import { highlightRows, langOf, colors, renderLine, editorSyntax } from "./syntax.js";
 
 // Same mapping as the shipped files panel.
@@ -95,7 +95,7 @@ export default class PrReview extends View {
   init(_props, cx) {
     this.part = props()?.part ?? null;
     this.uid = Math.random().toString(36).slice(2, 8);
-    if (this.part === "bar" || this.part === "reviews" || this.part === "agentbar" || this.part === "keys") return;
+    if (this.part === "bar" || this.part === "reviews" || this.part === "agentbar" || this.part === "keys" || this.part === "cmenu") return;
     this.announces = true; // Go to's keys: published while this copy runs, cleared in close()
     this.files = []; this.rows = []; this.sel = null; this.selEnd = null; this.from = 0; this.question = "";
     // this.uid: list/scroll ids must not collide between copies
@@ -855,6 +855,7 @@ export default class PrReview extends View {
     if (this.part === "reviews") return renderReviews();
     if (this.part === "agentbar") return renderAgentBar();
     if (this.part === "keys") return renderKeys();
+    if (this.part === "cmenu") return renderCardMenu();
     if (this.part === "review") {
       // Go to hands PRs over through "pr.goto"; the panel isn't mounted while the review layout shows, so take it here.
       if (shared("pr.goto")?.url && !this.gotoQueued) { this.gotoQueued = true; cx.timer.after(0, (cx) => { this.gotoQueued = false; this.takeGoto(cx); }); }
