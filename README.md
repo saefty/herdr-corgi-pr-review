@@ -59,9 +59,9 @@ The screenshots show an invented demo project (`demo/`), not a real repository.
 
 ## Works with
 
-PR review, [Go to](https://github.com/saefty/herdr-goto) and the [chat bar](https://github.com/saefty/herdr-chatbar) each work alone. Installed together, they plug into each other:
+PR review, [Go to](https://github.com/saefty/herdr-corgi-goto) and the [chat bar](https://github.com/saefty/herdr-corgi-chatbar) each work alone. Installed together, they plug into each other:
 
-- With **Go to** (⌘⇧P), paste a PR link or type `repo#123` and pick "Review PR"; reviews you started are searchable as "Resume review". Go to is extensible: its [provider contract](https://github.com/saefty/herdr-goto/blob/main/mods/goto/PROVIDERS.md) is how PR review registers these.
+- With **Go to** (⌘⇧P), paste a PR link or type `repo#123` and pick "Review PR"; reviews you started are searchable as "Resume review". Go to is extensible: its [provider contract](https://github.com/saefty/herdr-corgi-goto/blob/main/mods/goto/PROVIDERS.md) is how PR review registers these.
 - With the **chat bar**, Discuss opens the agent's chat bubble so you can follow its answer without leaving the review.
 - Contexts (accounts, clone folders, env per context) come from your own mod through [PROVIDERS.md](mods/pr-review/PROVIDERS.md).
 
