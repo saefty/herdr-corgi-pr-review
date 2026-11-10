@@ -22,7 +22,7 @@ import { ghTarget, lowValue, markReviewed, sinceBase, verifyCandidates, applyVer
 import { diffLines, inDiff, ghReview, lineThreads, suggestionBlock, buildReview, layoutPlan, specElements, diagramsState } from "./pr.js";
 import { archView, archModel, archLegend, visualsCard, statCard, segBar, foldCard, chip, legend, specTag, sourceLegend, SEVERITY_COLOR } from "./stack.js";
 import { hasSources } from "./arch.js";
-import { leftWidth } from "./explore.js";
+import { leftWidth, rowClick, CHIP_W, keyRoute } from "./explore.js";
 
 const LEVEL = { high: "ansi1", medium: "ansi3", low: "ansi4", skim: "muted" };
 const COVER = { seen: ["done", "ansi2"], partly: ["partly", "ansi3"], absent: ["missing", "ansi1"], extra: ["extra (not asked)", "ansi4"] };
@@ -88,11 +88,11 @@ export function renderReviews() {
 export function renderKeys() {
   const t = theme();
   return v_flex().id("rv-keys-pop").size_full().p(12).gap(7).bg(t.popover).text_color(t.foreground).text_size(13)
-    .child(div().font_semibold().pb(2).child("Keyboard shortcuts"))
+    .child(div().font_semibold().child("Keyboard shortcuts"))
+    .child(div().pb(2).text_size(12.5).whitespace_normal().child("Click a line number or press c to comment; shift-click for a range."))
     .children([["j k", "next / previous file (Layers: step)"], ["n p", "next / previous hunk"], ["c", "comment on the selected line"], ["a x", "accept / dismiss AI suggestion"],
       ["⌘ click", "go to definition"], ["⌘ ↩", "add the comment (in the composer)"], ["Esc", "close composer or popover, else back"]].map(([k, what]) =>
-      h_flex().gap(10).items_center().child(h_flex().w(74).flex_none().gap(3).children(k.split(" ").map((x) => kbd(t, x)))).child(div().text_color(t.muted).child(what))))
-    .child(div().pt(2).text_size(12).text_color(t.muted).whitespace_normal().child("Click a line number to comment, shift-click for a range."));
+      h_flex().gap(10).items_center().child(h_flex().w(74).flex_none().gap(3).children(k.split(" ").map((x) => kbd(t, x)))).child(div().text_color(t.muted).child(what))));
 }
 
 // The title bar of the floating agent terminal (props {part: "agentbar", title}): drag it, close it.
@@ -974,13 +974,12 @@ export const ReviewMode = {
       if (this.press.cmd) return this.define(it, r, cx); // ⌘-click a name: its definition
       // Selections are (file, line keys), not row indexes: rows are rebuilt on every render.
       // A line number (GitHub's gutter "+") opens the composer there; shift-click makes it a range.
-      const k = lineKey(r), f = this.fsel, gutter = x < GUTTER - 22;
-      if (this.composing && !gutter && !shift) return this.draft.focus(); // the open composer keeps its line
-      if (shift && f && f.path === it.path && rangeOf(this.rowsFor(it.path), f.a, k)) this.fsel = { ...f, b: k };
-      else if (gutter) this.fsel = { path: it.path, a: k, b: k };
-      else this.fsel = f?.path === it.path && f.a === k && f.b === k ? null : { path: it.path, a: k, b: k };
-      this.sug = null;
-      if (gutter || (shift && this.composing && !this.editing)) this.openComposer(cx);
+      const k = lineKey(r), f = this.fsel;
+      const d = rowClick({ x, w: this.press.w, shift, gutterW: GUTTER, composing: this.composing, editing: Boolean(this.editing), sel: f, path: it.path, k,
+        rangeOk: Boolean(f && f.path === it.path && rangeOf(this.rowsFor(it.path), f.a, k)) });
+      if (d.focus) return this.draft.focus(); // the open composer keeps its line
+      this.fsel = d.sel; this.sug = null;
+      if (d.open) this.openComposer(cx);
     } else if (it.t === "sug") { this.sug = this.sug === it.s.key ? null : it.s.key; this.visit(it.s.hunk, cx); }
     else if (it.t === "comment") this.openComposer(cx, it.c);
     else if (it.t === "composeact") { const b = this.composeButtons().find((b) => x >= b.x && x < b.x + b.w); if (b) this[b.act](cx); }
@@ -1255,7 +1254,10 @@ export const ReviewMode = {
   },
 
   onReviewKey(e, cx) {
-    if (this.typing) {
+    const route = keyRoute({ typing: this.typing, rootFocused: this.fh.is_focused(), key: e.key });
+    if (route === "pass") return; // an input inside the review has the keyboard: its letters are text
+    if (route === "blur") { this.fh.focus(); cx.notify(); return cx.stop_propagation(); }
+    if (route === "typing") {
       if (this.typing === "draft" && e.keystroke === "cmd-enter") this.addDraft(cx);
       else if (e.key === "escape" && this.typing === "summary") { this.finishOpen = false; this.fh.focus(); cx.notify(); }
       else if (e.key === "escape") this.closeComposer(cx);
@@ -1870,7 +1872,10 @@ export const ReviewMode = {
         .child(div().w(22).flex_none().text_center().font_semibold().text_color(tone ?? t.muted).child(r.kind === " " ? "" : r.kind === "-" ? "−" : "+"))
         .child(div().flex_1().min_w(0).pr(12).truncate().text_color(t.foreground).child(this.code(r, it)))
         .when(Boolean(this.traces?.get(`${it.path}:${r.n}`)) && r.kind !== "-", (e) => e.child(div().flex_none().max_w(460).mr(12).px(8).h(18).flex().items_center()
-          .rounded(9).bg(t.accent + "1f").italic().text_size(12).text_color(t.muted).truncate().child(this.traces.get(`${it.path}:${r.n}`))));
+          .rounded(9).bg(t.accent + "1f").italic().text_size(12).text_color(t.muted).truncate().child(this.traces.get(`${it.path}:${r.n}`))))
+        // The selection's last row: "+ Comment (c)" at its right end (onItem places the click by x, rowClick).
+        .when(on && !this.composing && this.fsel?.b === lineKey(r), (e) => e.child(div().w(CHIP_W).h(18).mr(12).flex_none().flex().items_center().justify_center()
+          .rounded(9).bg(t.accent).text_size(12).font_semibold().text_color(t.accent_foreground).child("+ Comment (c)")));
     }
     if (it.t === "gap") {
       const h = it.r.hidden, seg = (label) => div().w(GAP_SEG).flex_none().child(label);
