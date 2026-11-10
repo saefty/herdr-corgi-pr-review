@@ -15,7 +15,7 @@ import { exec, run, theme, settings, readTextFile, writeTextFile, shared, setSha
 import { parseReports, findingStatus, fixPrompt, hash, touchReview, expireReviews, resumeFields, itemKeys, expandTabs, tokenAt } from "./pr.js";
 import * as C from "./context.js";
 import { hasTool, copyText, openUrl, loadSetup, readConfig } from "./setup-view.js";
-import { highlightRows, highlightLines, langOf, colors, renderLine, refAt } from "./syntax.js";
+import { highlightRows, highlightLines, cachedRows, langOf, colors, renderLine, refAt } from "./syntax.js";
 import { lookup, warm, contents, vscodeArgs, where, setTrusted } from "./defs.js";
 import { diffRows, hunksOf, selection, uiLine, lineKey, rangeOf, MODELS, reviewRequest, mapReview, suspectComment, stepKey, fileRows, fileTree, atLine, splitPatch } from "./pr.js";
 import { ghTarget, lowValue, markReviewed, sinceBase, verifyCandidates, applyVerification, blastArch, preMergeChecks, mergeBlockers, triageOf } from "./pr.js";
@@ -1889,6 +1889,18 @@ export const ReviewMode = {
   },
 
   // A row's code: plain text now; phase 3 (syntax.js) swaps in highlighted spans here.
+  // Highlights queued files outside render, ~12 ms per slice, then redraws; the next render finds them in the cache.
+  drainHighlight(cx) {
+    const start = Date.now();
+    for (const [k, job] of this.hlQueue ?? []) {
+      highlightRows(job.shown, job.lang, job.hkey);
+      this.hlQueue.delete(k);
+      if (Date.now() - start > 12) break;
+    }
+    this.hlBusy = false;
+    if (this.hlQueue?.size) { this.hlBusy = true; cx.timer.after(0, (cx) => this.drainHighlight(cx)); }
+    cx.notify();
+  },
   // A row's code, highlighted (syntax.js); spans per row array are computed once per render (spanMap).
   code(r, it) {
     const m = this.spanMap?.get(it.src);
@@ -1923,8 +1935,13 @@ export const ReviewMode = {
     for (const it of items) {
       if (it.t !== "row" || this.spanMap.has(it.src)) continue;
       const shown = it.src.map((r) => (r.text?.includes("\t") ? { ...r, text: expandTabs(r.text) } : r)); // tabs drawn as spaces: clicks map back
-      this.spanMap.set(it.src, { shown, spans: highlightRows(shown, langOf(it.path), `${this.worktree?.head ?? ""}:${it.path}`) });
+      // Never tokenize in render (a big PR timed it out): uncolored until drainHighlight has filled the cache.
+      const lang = langOf(it.path), hkey = `${this.worktree?.head ?? ""}:${it.path}`;
+      let spans = cachedRows(shown, lang, hkey);
+      if (!spans) { spans = []; (this.hlQueue ??= new Map()).set(`${hkey}\0${shown.length}`, { shown, lang, hkey }); }
+      this.spanMap.set(it.src, { shown, spans });
     }
+    if (this.hlQueue?.size && !this.hlBusy) { this.hlBusy = true; cx.timer.after(0, (cx) => this.drainHighlight(cx)); }
     const keys = itemKeys(items);
     this.items = items; this.at = at; this.byKey = new Map(keys.map((k, i) => [k, items[i]]));
     const listId = `rv-list-${this.tab === "steps" ? "steps" : "files"}`, sug = this.openSugs().find((s) => s.key === this.sug);

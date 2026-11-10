@@ -282,8 +282,13 @@ export function highlightRows(rows, lang, key = null) {
     if (r.kind !== "+") olds = tokenize(text, lang, olds).state; // context: both sides see it
     return t.spans;
   });
-  if (k !== null) { if (memo.size > 200) memo.delete(memo.keys().next().value); memo.set(k, out); }
+  if (k !== null) { if (memo.size > 400) memo.delete(memo.keys().next().value); memo.set(k, out); }
   return out;
+}
+/** The memoized result of highlightRows, or undefined when it still has to be computed (never tokenizes). */
+export function cachedRows(rows, lang, key) {
+  if (!lang) return rows.map(() => EMPTY);
+  return memo.get(`${key}\0${lang}\0${rows.length}\0${hashRows(rows)}`);
 }
 /** Whole file (full-file view): spans per line. */
 export const highlightLines = (lines, lang, key = null) => highlightRows(lines.map((text) => ({ kind: "+", text })), lang, key);
