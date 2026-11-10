@@ -1,5 +1,7 @@
 # PR review for Herdr
 
+Part of [Corgi](https://github.com/saefty/herdr-corgi), a set of Herdr mods that plug into each other.
+
 A Herdr mod for reviewing pull requests next to your agents. A side panel shows the focused branch's diff (or any
 PR), lets you comment on lines and send the comments to the agent that wrote the code. A full-window review
 layout adds an AI analysis that walks you through the PR by risk and layer, reviewers (Claude code review,
