@@ -973,7 +973,14 @@ export const ReviewMode = {
   rowsFor(path, whole = false) {
     const sh = whole ? { patch: this.patch ?? [], fileHunks: this.fileHunks } : this.shown();
     const hs = sh.fileHunks?.get(path) ?? [], f = sh.patch.find((x) => x.path === path), full = Array.isArray(this.full[path]) ? this.full[path] : null;
-    return fileRows(hs.map((h) => h.rows), full, this.gaps[path], this.whole.has(path), f?.status === "modified" || f?.status === "renamed");
+    // Memoized: findings' status and counts call this per finding on every render (a big PR timed the render out).
+    const deps = [hs, full, JSON.stringify(this.gaps[path] ?? null), this.whole.has(path), f?.status];
+    const key = `${whole ? 1 : 0}\0${path}`, memo = (this.rowsMemo ??= new Map()), hit = memo.get(key);
+    if (hit && hit.deps.every((d, i) => d === deps[i])) return hit.rows;
+    const rows = fileRows(hs.map((h) => h.rows), full, this.gaps[path], this.whole.has(path), f?.status === "modified" || f?.status === "renamed");
+    if (memo.size > 400) memo.clear();
+    memo.set(key, { deps, rows });
+    return rows;
   },
 
   // The selected range as a comment anchor (lines, side, quoted code); null when nothing (or nothing valid) is selected.
