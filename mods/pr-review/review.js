@@ -11,7 +11,7 @@
 // submit popover: one GitHub review (gh api) or, for a PR with an agent session, the prompt to that session.
 import { div } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, TextView, v_virtual_list, VirtualListScrollHandle, Textarea, TextareaState } from "gpui-base";
-import { exec, run, theme, settings, readTextFile, writeTextFile, shared, setShared, appHome, nextCommand, watchFolder, openOverlay, closeOverlay, props, home } from "herdr";
+import { exec, run, spaces, theme, settings, readTextFile, writeTextFile, shared, setShared, appHome, nextCommand, watchFolder, openOverlay, closeOverlay, props, home } from "herdr";
 import { parseReports, findingStatus, fixPrompt, hash, touchReview, expireReviews, resumeFields, itemKeys, expandTabs, tokenAt } from "./pr.js";
 import * as C from "./context.js";
 import { hasTool, copyText, openUrl, loadSetup, readConfig } from "./setup-view.js";
@@ -224,6 +224,7 @@ export const ReviewMode = {
     else if (name === "findings") this.tab = "findings";
     else if (name === "back") leave();
     else if (name === "finish") this.finishOpen = !this.finishOpen;
+    else if (name === "discuss") { const f = this.find.list.find((x) => x.id === arg); if (f) this.discuss(f, cx); } // discuss:<finding id> (scripts, keys)
     else if (name === "keys") openOverlay({ mod: "pr-review", props: { part: "keys" }, kind: "popup", width: 330, height: 250 });
     else if (name === "comment") { // comment:<path>:<line>[-<end>]: the composer under that new-side line (scripts, tests)
       const m = /^(.*):(\d+)(?:-(\d+))?$/.exec(arg);
@@ -663,7 +664,9 @@ export const ReviewMode = {
   // ponytail: goes through the clipboard (hc send always presses Enter), so the clipboard holds the prompt after.
   discuss(f, cx) {
     const text = this.findingText(f), origin = this.prSel;
-    const agent = origin?.session ? this.sessionAgent(origin) : this.target(origin?.space ?? null);
+    // A PR picked from a list or handed over by Go to has no space: the agent is the one in a space at the PR's checkout.
+    const space = origin?.space ?? spaces().find((s) => origin?.cwd && s.folder === origin.cwd)?.id ?? null;
+    const agent = origin?.session ? this.sessionAgent(origin) : this.target(space);
     cx.spawn(async (cx) => {
       if (agent && shared("chatbar.api")) { // the chat bubble drafts it; nothing is sent
         setShared("chatbar.request", { action: "draft", terminal: agent.address, text, from: "pr-review", at: Date.now() });
