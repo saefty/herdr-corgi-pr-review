@@ -127,3 +127,69 @@ for part in ("Warum ruft die API den Worker?", '"e0"', "L1: w", "call()", "Q: Wa
 assert r["answer"]["highlights"]["edges"] == ["e0"] and r["cost"] == 0.05
 assert review.read_tools(str(d))["tools"] == "Read,Grep,Glob" and "Bash" in review.read_tools(str(d))["extra"]
 print("ok ask")
+
+# Show details: one call ("Review: drill down") with what to open, the path and the context.
+seen = {}
+def stub(feature, text, **kw):  # noqa: E302
+    seen.update(feature=feature, text=text, schema=kw["schema"], budget=kw["budget"])
+    kw["meta"].update(cost=0.07)
+    return {"summary": "s", "visual": {"kind": "flow", "title": "t", "nodes": [{"id": "a", "label": "run()", "values": "x = 1"}], "edges": []}}
+real, review.llm.claude = review.llm.claude, stub
+try:
+    r = review.main_drill({"drill": {"label": "Stages handler", "path": ["Architecture", "Workers", "Stages handler"], "subject": {"kind": "node", "id": "stages"}},
+                           "model": "sonnet", "context": None, "root": None, "picture": {"nodes": [], "edges": []}, "hunks": []})
+finally:
+    review.llm.claude = real
+assert seen["feature"] == "Review: drill down" and seen["schema"] is review.DRILL_SCHEMA and seen["budget"] == review.BUDGET_DRILL["sonnet"]
+assert "Architecture › Workers › Stages handler" in seen["text"] and "debugger" in seen["text"] and r["answer"]["visual"]["nodes"][0]["values"] == "x = 1"
+print("ok drill")
+
+# The analysis' own scope: every hunk as a patch with an index, what fits inlined (never lockfiles), every alias in a
+# layer (missing ones in "Skimmed (low value)"), and big PRs in cohort passes plus a merge pass, all under the cap.
+import tempfile as _tf  # noqa: E402
+d2 = pathlib.Path(_tf.mkdtemp())
+hs = [{"alias": "h1", "id": "i1", "path": "src/a/x.ts", "lines": ["@@ -1 +1,2 @@", "+a", " b"]}, {"alias": "h2", "id": "i2", "path": "yarn.lock", "lines": ["@@ -1 +1 @@", "+v2"]}]
+ix = review.write_run(d2 / "run", hs)
+assert (d2 / "run/patches/h1.patch").read_text().startswith("src/a/x.ts\n@@") and json.loads((d2 / "run/index.json").read_text())[1]["low"] is True
+assert [i["add"] for i in ix] == [1, 1] and "h2 yarn.lock +1 -0 low" in review.index_text(ix)
+assert [h["alias"] for h in review.pick_inline(hs, 10_000)] == ["h1"], "lockfiles are never inlined"
+ans = review.account({"steps": [{"title": "A", "hunks": ["h1", "h1", "zz"]}]}, ["h1", "h2"], ix)
+assert ans["steps"][0]["hunks"] == ["h1"] and ans["steps"][1]["title"] == "Skimmed (low value)" and ans["steps"][1]["hunks"] == ["h2"]
+assert "yarn.lock" in ans["steps"][1]["why_it_matters"]
+assert review.scope_of(ans, ix) == {"files": 2, "detailed": 1, "skimmed": 1, "why": "lockfiles", "passes": 1}
+cb, mb = review.pass_budgets(3.0, 4)
+assert sum(cb) + mb <= 3.0 + 1e-9 and len(cb) == 4
+
+big = [{"alias": f"h{k}", "id": f"i{k}", "path": f"{['api', 'web', 'jobs'][k % 3]}/m{k}/f{k}.ts", "lines": ["@@ -1 +1,400 @@"] + ["+" + "x" * 150] * 400} for k in range(1, 10)]
+big.append({"alias": "h10", "id": "i10", "path": "package-lock.json", "lines": ["@@ -1 +1 @@", "+lock"]})
+co = review.cohorts_of(big, review.INLINE["haiku"])
+assert co and len(co) >= 2 and all(not review.low_value(h["path"]) for c in co for h in c)
+assert sorted(h["alias"] for c in co for h in c) == sorted(f"h{k}" for k in range(1, 10)), "each high-value hunk in one cohort"
+assert review.cohorts_of(hs, review.INLINE["haiku"]) is None, "a small PR: one pass"
+calls, statuses = [], []
+real_save = review.save
+def stub2(feature, text, **kw):  # noqa: E302
+    calls.append((feature, kw["budget"], kw["schema"]))
+    kw["meta"].update(cost=0.1, ms=10, model_id="claude-z")
+    if kw["schema"] is review.COHORT_SCHEMA:
+        mine = [a for a in (f"h{k}" for k in range(1, 10)) if f"\n{a} " in "\n" + text.split("Index:")[-1]]
+        return {"summary": "c", "steps": [{"title": f"L{mine[0]}", "risk": "low", "why_it_matters": "w", "explanation": "e", "reading_order": 1, "hunks": mine, "check_questions": []}]}
+    return {"title": "T", "summary": "S", "behavior": "B", "merge_risk": {"level": "low", "why": "w"}, "effort": {"score": 2, "why": "w"},
+            "rule_checks": [], "architecture": {"groups": [], "nodes": [], "edges": []}, "blast_radius": {"units": [], "context": []}, "asks": [], "reading_order": [1, 0]}
+real, review.llm.claude = review.llm.claude, stub2
+review.save = lambda path, value: (statuses.append(value) if str(path).endswith(".status") else None, real_save(path, value))[1]
+try:
+    r = review.main({"model": "haiku", "context": None, "worktree": None, "pr": None, "hunks": big, "out": str(d2 / "o.json"), "latest": str(d2 / "l.json"), "status": str(d2 / "o.json.status")})
+finally:
+    review.llm.claude, review.save = real, real_save
+merge = [c for c in calls if c[2] is review.MERGE_SCHEMA]
+assert len(merge) == 1 and len(calls) == len(co) + 1, "one pass per cohort, then the merge"
+assert sum(b for _, b, _ in calls) <= review.BUDGET["haiku"] + 1e-9, "all under the cap"
+assert any(c[0].startswith("Review analysis (pass") for c in calls)
+placed = [a for st in r["answer"]["steps"] for a in st["hunks"]]
+assert sorted(placed) == sorted(h["alias"] for h in big), "every alias accounted for"
+assert r["answer"]["steps"][-1]["skimmed"] and r["answer"]["steps"][-1]["hunks"] == ["h10"]
+assert r["scope"]["passes"] == len(co) + 1 and r["scope"]["skimmed"] == 1 and r["cut"] == []
+assert [x["pass"] for x in statuses if "pass" in x][0] == 1 and statuses[-1]["passes"] == len(co) + 1, "progress: Pass k of n"
+assert r["answer"]["title"] == "T" and r["cost"] == round(0.1 * (len(co) + 1), 10) or abs(r["cost"] - 0.1 * (len(co) + 1)) < 1e-9
+print("ok scope")

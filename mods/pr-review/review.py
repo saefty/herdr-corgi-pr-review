@@ -96,7 +96,7 @@ SCHEMA = {"type": "object", "required": ["title", "summary", "behavior", "merge_
         "hunks": STRINGS, "check_questions": {**STRINGS, "maxItems": 3},
         "suggestions": {"type": "array", "items": {"type": "object", "required": ["hunk", "line", "side", "severity", "text"], "properties": {
             "hunk": S, "line": {"type": "integer"}, "side": {"enum": ["new", "old"]}, "severity": {"enum": LEVELS}, "text": S}}},
-        "flows": {"type": "array", "maxItems": 3, "items": FLOW}, "visuals": VISUALS}}}}}
+        "flows": {"type": "array", "maxItems": 3, "items": FLOW}, "visuals": VISUALS, "skimmed": {"type": "boolean"}}}}}}
 
 
 def jira_key(title, branch, body):
@@ -252,7 +252,7 @@ def previous_digest(prev):
                       *(f"- {s.get('title', '')}: {s.get('why_it_matters', '')}" for s in a.get("steps") or [])])[:6000]
 
 
-def prompt(hunks, cut, task_text, tools, rules="", candidates=(), previous=None, lang="English"):
+def prompt(hunks, cut, task_text, tools, rules="", candidates=(), previous=None, lang="English", index=None, patches=None):
     text = ("Analyze the diff below thoroughly." + (" You are in a checkout of the PR head and may read (Read, Grep, Glob, "
             "git log/show/blame/diff/grep): check callers, types and surrounding code before you name a suspicious spot, and "
             "name only what you confirmed in the code." if tools else "") +
@@ -322,8 +322,137 @@ def prompt(hunks, cut, task_text, tools, rules="", candidates=(), previous=None,
         text += "\n\nasks: empty list."
     if cut:
         text += f"\n\nCut: {len(cut)} more hunks ({', '.join(cut[:40])}) were too large and are missing here."
+    if index:
+        inl = {h["alias"] for h in hunks}
+        text += ("\n\nScope: the index below lists EVERY hunk of this PR (alias, path, +added/-removed, low = low value). The hunks "
+                 "printed in the diff section are inlined; each other one is in " + str(patches) + "/<alias>.patch: read the ones "
+                 "that matter with Read and decide how much detail each deserves. Don't read low-value ones (lockfiles, snapshots, "
+                 "generated code): put them into one step with skimmed true, title \"Skimmed (low value)\", risk skim, and as "
+                 "why_it_matters a one-line summary from the index (e.g. \"lockfile: 214 version bumps\"). Every alias must end up "
+                 "in exactly one step.\n\nIndex:\n" + index_text(index, inl))
     return (text + "\n\nDiff (lines: prefix + new, - removed, space context; then the line number):\n"
             + "\n\n".join(f"### {h['alias']} {h['path']}\n" + "\n".join(numbered(h["lines"])) for h in hunks))
+
+
+# ---- the analysis' own scope for big PRs: every hunk is written to the run's folder with an index; what fits is
+# inlined (high value first), the model reads the rest itself; too big for one pass: one pass per cohort (directory),
+# then a merge pass for the whole-PR parts. All under the one cap.
+
+INLINE = {"haiku": 60000, "sonnet": 150000, "opus": 150000}  # characters inlined per pass
+SPLIT = 3  # cohorts when the high-value hunks exceed SPLIT times what one pass inlines
+LOW = re.compile(r"(^|/)([^/]*\.lock|package-lock\.json|pnpm-lock\.yaml|go\.sum)$|\.snap$|\.min\.(js|css)$|(^|/)(dist|vendor|generated|__generated__)/")
+
+
+def low_value(path):
+    return bool(LOW.search(path or ""))
+
+
+def hunk_chars(h):
+    return len(h["path"]) + len(h["alias"]) + 6 + sum(len(line) + 1 for line in h["lines"])
+
+
+def write_run(run, hunks):
+    """<run>/patches/<alias>.patch for every hunk and <run>/index.json: [{alias, path, add, del, low, chars}]."""
+    pdir = pathlib.Path(run) / "patches"
+    pdir.mkdir(parents=True, exist_ok=True)
+    index = []
+    for h in hunks:
+        (pdir / f"{h['alias']}.patch").write_text(f"{h['path']}\n" + "\n".join(h["lines"]) + "\n")
+        index.append({"alias": h["alias"], "path": h["path"], "add": sum(1 for x in h["lines"] if x.startswith("+")),
+                      "del": sum(1 for x in h["lines"] if x.startswith("-")), "low": low_value(h["path"]), "chars": hunk_chars(h)})
+    (pathlib.Path(run) / "index.json").write_text(json.dumps(index, indent=1))
+    return index
+
+
+def index_text(index, inlined=()):
+    return "\n".join(f"{i['alias']} {i['path']} +{i['add']} -{i['del']}{' low' if i['low'] else ''}{' (inlined)' if i['alias'] in inlined else ''}" for i in index)
+
+
+def pick_inline(hunks, budget):
+    """The hunks inlined into a prompt: high-value ones in diff order while they fit; low-value ones never."""
+    out, used = [], 0
+    for h in hunks:
+        if low_value(h["path"]):
+            continue
+        size = hunk_chars(h)
+        if used + size <= budget:
+            out.append(h)
+            used += size
+    return out
+
+
+def cohorts_of(hunks, budget, most=6):
+    """None when one pass reads it all; else the high-value hunks in cohorts by directory (top two levels), packed to
+    about twice what a pass inlines, at most `most` (the smallest merge)."""
+    high = [h for h in hunks if not low_value(h["path"])]
+    if sum(hunk_chars(h) for h in high) <= SPLIT * budget:
+        return None
+    groups = {}
+    for h in high:
+        groups.setdefault("/".join(h["path"].split("/")[:-1][:2]) or ".", []).append(h)
+    cohorts = []
+    for key in sorted(groups, key=lambda k: -sum(hunk_chars(h) for h in groups[k])):
+        g = groups[key]
+        target = next((c for c in cohorts if sum(hunk_chars(h) for h in c) + sum(hunk_chars(h) for h in g) <= 2 * budget), None)
+        if target is None:
+            cohorts.append(list(g))
+        else:
+            target.extend(g)
+    while len(cohorts) > most:
+        cohorts.sort(key=lambda c: sum(hunk_chars(h) for h in c))
+        cohorts[1].extend(cohorts.pop(0))
+    return [sorted(c, key=lambda h: int(h["alias"][1:]) if h["alias"][1:].isdigit() else 0) for c in cohorts]
+
+
+def pass_budgets(cap, n):
+    """n cohort passes and one merge pass under one cap: 70% shared by the cohorts, 30% for the merge."""
+    down = lambda x: int(x * 10000) / 10000  # noqa: E731  (rounded down: the sum never exceeds the cap)
+    return [down(cap * 0.7 / n)] * n, down(cap * 0.3)
+
+
+def account(answer, aliases, index):
+    """Every alias in exactly one step: duplicates and unknown aliases dropped, the missing ones into the skimmed step
+    ("Skimmed (low value)", made when there is none) with a one-line reason. No silent "not analyzed"."""
+    steps, seen = answer.get("steps") or [], set()
+    for st in steps:
+        st["hunks"] = [a for a in st.get("hunks") or [] if a in aliases and not (a in seen or seen.add(a))]
+    missing = [a for a in aliases if a not in seen]
+    if missing:
+        skim = next((st for st in steps if st.get("skimmed")), None)
+        if skim is None:
+            skim = {"title": "Skimmed (low value)", "risk": "skim", "skimmed": True, "why_it_matters": "", "explanation": "", "reading_order": 999,
+                    "hunks": [], "check_questions": []}
+            steps.append(skim)
+        by = {i["alias"]: i for i in index}
+        names = list(dict.fromkeys(by[a]["path"].split("/")[-1] for a in missing if a in by))
+        note = f"Not placed in a layer: {len(missing)} {'hunk' if len(missing) == 1 else 'hunks'} ({', '.join(names[:4])}{', …' if len(names) > 4 else ''}), read them yourself."
+        skim["why_it_matters"] = f"{skim.get('why_it_matters') or ''} {note}".strip()
+        skim["hunks"] += missing
+    answer["steps"] = steps
+    return answer
+
+
+def scope_of(answer, index, passes=1):
+    """What the run read: {files, detailed, skimmed, why, passes}; skimmed files are those only in skimmed steps."""
+    path = {i["alias"]: i["path"] for i in index}
+    files = set(path.values())
+    detail = {path[a] for st in answer.get("steps") or [] if not st.get("skimmed") for a in st.get("hunks") or [] if a in path}
+    skimmed = files - detail
+    why = "low value" if skimmed and all(low_value(f) for f in skimmed) else "skimmed" if skimmed else ""
+    if skimmed and all(re.search(r"\.lock$|lock\.(json|yaml)$|go\.sum$", f) for f in skimmed):
+        why = "lockfiles"
+    return {"files": len(files), "detailed": len(detail), "skimmed": len(skimmed), "why": why, "passes": passes}
+
+
+COHORT_SCHEMA = {"type": "object", "required": ["summary", "steps"], "properties": {"summary": S, "steps": SCHEMA["properties"]["steps"]}}
+MERGE_SCHEMA = {"type": "object", "required": [k for k in SCHEMA["required"] if k != "steps"] + ["reading_order"],
+                "properties": {**{k: v for k, v in SCHEMA["properties"].items() if k != "steps"}, "reading_order": {"type": "array", "items": {"type": "integer"}}}}
+
+
+def progress(req, k, n):
+    if req.get("status"):
+        save(req["status"], {"busy": True, "pid": os.getpid(), "started": req.get("started") or dt.datetime.now().astimezone().isoformat(),
+                             "model": req["model"], "pass": k, "passes": n})
 
 
 def span(header):
@@ -500,6 +629,45 @@ def main_ask(req):
     return {"answer": answer, "cost": meta.get("cost"), "ms": meta.get("ms"), "model_id": meta.get("model_id", model)}
 
 
+# ---- Show details: one card (or layer) from the inside: its functions and classes and how data flows through them,
+# with sample values like a debugger's and where each is. Sync: prints the sub-diagram as JSON.
+
+FEATURE_DRILL = "Review: drill down"
+BUDGET_DRILL = {"haiku": 0.5, "sonnet": 1.5, "opus": 4.0}
+DRILL_NODE = {"type": "object", "required": ["id", "label"], "properties": {
+    "id": S, "label": S, "note": S, "values": S, "at": S, "changed": {"type": "boolean"}, "type": {"enum": STATE_TYPES}, "source": SOURCE, "evidence": S}}
+DRILL_SCHEMA = {"type": "object", "required": ["summary", "visual"], "properties": {
+    "summary": S, "visual": {"type": "object", "required": ["kind", "title", "nodes", "edges"], "properties": {
+        "kind": {"enum": ["flow", "sequence", "state_machine"]}, "title": S,
+        "nodes": {"type": "array", "maxItems": 12, "items": DRILL_NODE}, "edges": {"type": "array", "maxItems": 16, "items": TRANSITION},
+        "transitions": {"type": "array", "maxItems": 16, "items": TRANSITION}}}}}
+
+
+def drill_prompt(req, tools, lang="English"):
+    d = req["drill"]
+    path = " › ".join(d.get("path") or [])
+    return (f"Show the inside of {d.get('label', 'this component')} ({path}) in {lang}: its functions, classes or steps and how "
+            "data flows through them, as one picture. Pick the kind that explains it best: flow (data and calls, edges with what "
+            "is passed), sequence (who calls whom in order) or state_machine (how a status moves). At most 12 nodes: id, label "
+            "(e.g. sendDueReminders()), note (what it does, one line), values (sample values at that point, like a debugger: "
+            "\"loan = {id: 7, dueAt: 2026-03-12}, sent = 0\"; derived from the code, invent nothing), at (file:line), changed "
+            "(touched by the change), source (implemented, existing or spec) and evidence (file:line). Edges: from, to, label "
+            "(the payload), changed. summary: 2-3 sentences on what happens inside." +
+            (" Read the code (Read, Grep, Glob) to find the real functions and lines; claim only what you read." if tools else "") +
+            "\n\nWhat to open up:\n" + json.dumps(d.get("subject") or {}, ensure_ascii=False) + "\n\n" + deep_context(req))
+
+
+def main_drill(req):
+    model, lang, rt = req["model"], llm.language(), read_tools(req.get("root"))
+    meta = {}
+    answer = llm.claude(FEATURE_DRILL, drill_prompt(req, bool(rt["tools"]), lang), context=req.get("context"), model=model, schema=DRILL_SCHEMA,
+                        system=SYSTEM.format(lang=lang), budget=BUDGET_DRILL[model], timeout=TIMEOUT, cwd=rt["cwd"], tools=rt["tools"],
+                        meta=meta, extra=rt["extra"])
+    if not answer:
+        raise RuntimeError(f"{FEATURE_DRILL}: no answer")
+    return {"answer": answer, "cost": meta.get("cost"), "ms": meta.get("ms"), "model_id": meta.get("model_id", model)}
+
+
 def save(path, value):
     path = pathlib.Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -513,28 +681,40 @@ def main(req):
     t = task(req.get("pr"), (ctx or {}).get("tickets", True))
     tools = bool(wt and pathlib.Path(wt).is_dir())
     prev = json.loads(pathlib.Path(req["previous"]).read_text()) if req.get("previous") else None
-    paths = list(dict.fromkeys(h["path"] for h in req["hunks"]))
+    hunks = req["hunks"]
+    paths = list(dict.fromkeys(h["path"] for h in hunks))
     candidates = blast_candidates(wt, paths) if tools else []
-    meta = {}
-    extra = ("--effort", "high")
-    if tools:
-        extra += ("--allowedTools", *READ_ONLY, "--disallowedTools", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch")
-    text = prompt(req["hunks"], req.get("cut") or [], t and t["text"], tools, rules=repo_rules(wt), candidates=candidates,
-                  previous=prev and previous_digest(prev), lang=lang)
-    answer = llm.claude(FEATURE_INC if prev else FEATURE, text, context=ctx, model=model,
-                        schema=SCHEMA, system=SYSTEM.format(lang=lang), budget=BUDGET[model], timeout=TIMEOUT, cwd=wt if tools else pathlib.Path.home(),
-                        tools="Read,Grep,Glob,Bash" if tools else "", meta=meta, extra=extra)
-    if not answer:
-        raise RuntimeError(f"{FEATURE}: no answer")
+    run = req.get("run") or str(pathlib.Path(req["out"]).with_suffix("")) + ".run"
+    index = write_run(run, hunks)
+    cap, aliases = BUDGET[model], [h["alias"] for h in hunks]
+    # Read-only tools in the checkout plus the run's folder (the patches); without a checkout, only the folder.
+    extra = ("--effort", "high", "--add-dir", run, "--allowedTools", *READ_ONLY, "--disallowedTools", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch")
+    call = lambda feature, text, schema, budget, meta: llm.claude(feature, text, context=ctx, model=model, schema=schema, system=SYSTEM.format(lang=lang),  # noqa: E731
+                                                              budget=budget, timeout=TIMEOUT, cwd=wt if tools else run, tools="Read,Grep,Glob,Bash", meta=meta, extra=extra)
+    cohorts = None if prev else cohorts_of(hunks, INLINE[model])
+    metas = []
+    if not cohorts:
+        meta = {}
+        text = prompt(pick_inline(hunks, INLINE[model]), [], t and t["text"], True, rules=repo_rules(wt), candidates=candidates,
+                      previous=prev and previous_digest(prev), lang=lang, index=index, patches=pathlib.Path(run) / "patches")
+        answer = call(FEATURE_INC if prev else FEATURE, text, SCHEMA, cap, meta)
+        metas.append(meta)
+        if not answer:
+            raise RuntimeError(f"{FEATURE}: no answer")
+    else:
+        answer = analyze_cohorts(req, cohorts, hunks, index, run, t, candidates, wt, lang, call, metas)
+    account(answer, aliases, index)
     if tools:  # only context files that exist: no invented callers
         blast = answer.get("blast_radius") or {}
         blast["context"] = [c for c in blast.get("context") or [] if (pathlib.Path(wt) / c.get("file", "")).is_file()]
-    hunks = [{"alias": h["alias"], "id": h["id"]} for h in req["hunks"]]
+    scope = scope_of(answer, index, passes=len(cohorts) + 1 if cohorts else 1)
+    out_hunks = [{"alias": h["alias"], "id": h["id"]} for h in hunks]
     if prev:
-        hunks, answer = merge_incremental(prev, answer, req["hunks"], req["full"])
-    result = {"source": req.get("source") or req.get("pr"), "model": model, "model_id": meta.get("model_id", model),
-              "hunks": hunks, "answer": answer, "incremental": req.get("since") if prev else None,
-              "cut": [] if prev else req.get("cut") or [], "cost": meta.get("cost"), "ms": meta.get("ms"), "budget": BUDGET[model],
+        out_hunks, answer = merge_incremental(prev, answer, hunks, req["full"])
+    cost = sum(m.get("cost") or 0 for m in metas) if any(m.get("cost") is not None for m in metas) else None
+    result = {"source": req.get("source") or req.get("pr"), "model": model, "model_id": next((m["model_id"] for m in metas if m.get("model_id")), model),
+              "hunks": out_hunks, "answer": answer, "incremental": req.get("since") if prev else None, "cut": [], "scope": scope,
+              "cost": cost, "ms": sum(m.get("ms") or 0 for m in metas), "budget": cap,
               "task": {k: t[k] for k in ("title", "jira", "note")} if t else {},
               "generated": dt.datetime.now().astimezone().isoformat()}
     save(req["out"], result)
@@ -542,14 +722,63 @@ def main(req):
     return result
 
 
+def analyze_cohorts(req, cohorts, hunks, index, run, t, candidates, wt, lang, call, metas):
+    """One pass per cohort (up to 3 at a time), then a merge pass for the whole-PR parts and the reading order. The
+    layers are the cohorts' layers; the merge orders them. Progress: "Pass k of n" in the status file."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    n = len(cohorts) + 1
+    cb, mb = pass_budgets(BUDGET[req["model"]], len(cohorts))
+    patches = pathlib.Path(run) / "patches"
+
+    def one(k):
+        c, meta = cohorts[k], {}
+        names = {h["alias"] for h in c}
+        text = (f"This is pass {k + 1} of {n} over a big pull request: analyze only the hunks of this cohort (the index lists them; "
+                "a merge pass draws the whole picture later). Answer with summary (this cohort in 2 sentences) and steps for these "
+                "hunks only, following the rules below; architecture, rules and the rest come later.\n\n"
+                + prompt(pick_inline(c, INLINE[req["model"]]), [], None, True, lang=lang, index=[i for i in index if i["alias"] in names], patches=patches))
+        out = call(f"{FEATURE} (pass {k + 1} of {n})", text, COHORT_SCHEMA, cb[k], meta)
+        return k, out or {"summary": "", "steps": []}, meta
+
+    done, results = 0, [None] * len(cohorts)
+    progress(req, 1, n)
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        for fut in as_completed([pool.submit(one, k) for k in range(len(cohorts))]):
+            k, out, meta = fut.result()
+            results[k] = out
+            metas.append(meta)
+            done += 1
+            progress(req, done + 1, n)
+    layers = [st for r in results for st in r.get("steps") or []]
+    digest = "\n".join(f"{k}. {st.get('title', '')}: {st.get('why_it_matters', '')} (hunks {', '.join(st.get('hunks') or [])})" for k, st in enumerate(layers))
+    meta = {}
+    text = (f"This is the merge pass ({n} of {n}) over a big pull request analyzed in {len(cohorts)} cohorts. The layers below are "
+            "final; write the whole-PR parts from them, the index and the code (read patches or the checkout where it helps): "
+            "title, summary, behavior, merge_risk, effort, rule_checks, architecture, blast_radius, visuals, intent, "
+            "behavior_points, asks (hunks as aliases) and reading_order (the layer numbers in the order the PR is best read)."
+            f" Write every text field in {lang}.\n\n" + picture_guide(lang) + "\n\nLayers:\n" + digest +
+            "\n\nCohort summaries:\n" + "\n".join(f"- {r.get('summary', '')}" for r in results) +
+            (("\n\nUpstream candidates (git grep):\n" + "\n".join(f"- {f} (names {stem})" for f, stem in candidates)) if candidates else "") +
+            "\n\nRules:\n" + (repo_rules(wt) or "(none)") +
+            ("\n\nTask:\n" + t["text"][:8000] if t and t.get("text") else "") +
+            "\n\nIndex:\n" + index_text(index))
+    merged = call(f"{FEATURE} (merge)", text, MERGE_SCHEMA, mb, meta) or {}
+    metas.append(meta)
+    order = [k for k in merged.pop("reading_order", []) if isinstance(k, int) and 0 <= k < len(layers)]
+    order += [k for k in range(len(layers)) if k not in order]
+    for rank, k in enumerate(order, 1):
+        layers[k]["reading_order"] = rank
+    return {**{k: merged.get(k) for k in MERGE_SCHEMA["required"] if k != "reading_order"}, "steps": layers}
+
 if __name__ == "__main__":
-    req = json.loads(sys.argv[1])
+    req = json.loads(pathlib.Path(sys.argv[1][1:]).read_text() if sys.argv[1].startswith("@") else sys.argv[1])
+    req["started"] = dt.datetime.now().astimezone().isoformat()
     status = req.get("status")
     if status:
         save(status, {"busy": True, "pid": os.getpid(), "started": dt.datetime.now().astimezone().isoformat(), "model": req["model"]})
     try:
-        if req.get("ask"):  # sync calls: the answer on stdout
-            print(json.dumps(main_ask(req), ensure_ascii=False))
+        if req.get("ask") or req.get("drill"):  # sync calls: the answer on stdout
+            print(json.dumps(main_ask(req) if req.get("ask") else main_drill(req), ensure_ascii=False))
             sys.exit(0)
         r = main_diagrams(req) if req.get("diagrams") else main(req)
         if status:

@@ -71,4 +71,9 @@ assert.equal(Object.keys(doc).length, 40);
 assert.ok(!doc.pr1 && doc.p44 && !doc.p4 && doc.p5, "the oldest threads go");
 assert.deepEqual(X.threadOf(doc, "nope"), []);
 
+// ---- the scope line
+assert.equal(X.scopeLine({ files: 41, detailed: 38, skimmed: 3, why: "lockfiles" }), "Read 38 of 41 files in detail, 3 skimmed (lockfiles)");
+assert.equal(X.scopeLine({ files: 1, detailed: 1, skimmed: 0, passes: 1 }), "Read 1 of 1 file in detail");
+assert.equal(X.scopeLine({ files: 90, detailed: 80, skimmed: 10, passes: 4 }), "Read 80 of 90 files in detail, 10 skimmed · 4 passes");
+assert.equal(X.scopeLine(null), "");
 console.log("explore ok");

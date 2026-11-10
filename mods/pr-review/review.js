@@ -23,7 +23,7 @@ import { diffLines, inDiff, ghReview, lineThreads, suggestionBlock, buildReview,
 import { archView, archModel, archLegend, visualsCard, statCard, segBar, foldCard, chip, legend, specTag, sourceLegend, SEVERITY_COLOR } from "./stack.js";
 import { hasSources, archLayout } from "./arch.js";
 import * as TH from "./threads.js";
-import { leftWidth, rowClick, CHIP_W, ASK_W, keyRoute, pictureOf, scopeOf, scopeFiles, hunksFor, mapAnswer, threadAdd, threadOf, history, highlightOf, rangeLabel, pinAnchor, pinAdd, pinDrop, pinsOf, pinsOn, codePins } from "./explore.js";
+import { leftWidth, rowClick, CHIP_W, ASK_W, keyRoute, scopeLine, pictureOf, scopeOf, scopeFiles, hunksFor, mapAnswer, threadAdd, threadOf, history, highlightOf, rangeLabel, pinAnchor, pinAdd, pinDrop, pinsOf, pinsOn, codePins } from "./explore.js";
 
 const LEVEL = { high: "ansi1", medium: "ansi3", low: "ansi4", skim: "muted" };
 const COVER = { seen: ["done", "ansi2"], partly: ["partly", "ansi3"], absent: ["missing", "ansi1"], extra: ["extra (not asked)", "ansi4"] };
@@ -522,16 +522,24 @@ export const ReviewMode = {
       if (this.aiBusy) return;
       if (!job.req.hunks.length) { this.aiError = "No diff"; return cx.notify(); }
       if (!this.worktree && !this.prSel.space) { this.pendingRun = true; this.note = "Analysis starts once the PR head is checked out…"; return cx.notify(); }
-      let req = job.req;
+      // Every hunk goes along: review.py inlines what fits and lets the model read the rest (no "too large" cut).
+      const all = (hs) => hs.map(({ alias, id, path, lines }) => ({ alias, id, path, lines }));
+      let req = { ...job.req, hunks: all(job.hunks), cut: [] };
       if (incremental) {
         if (!this.since?.files.length || !this.aiFile) return;
-        const inc = reviewRequest({ url, files: this.since.files, model: m, context: this.ctxReq(), dir: cacheDir() }).req, n = (a) => a.replace(/^h/, "n");
-        req = { ...job.req, hunks: inc.hunks.map((h) => ({ ...h, alias: n(h.alias) })), cut: inc.cut.map(n), previous: this.aiFile,
+        const inc = reviewRequest({ url, files: this.since.files, model: m, context: this.ctxReq(), dir: cacheDir() }), n = (a) => a.replace(/^h/, "n");
+        req = { ...job.req, hunks: all(inc.hunks).map((h) => ({ ...h, alias: n(h.alias) })), cut: [], previous: this.aiFile,
           since: { base: this.since.base.sha, head: this.since.head }, full: job.hunks.map((h) => ({ alias: h.alias, id: h.id, path: h.path, head: h.lines[0] })) };
       }
       this.aiError = null; this.aiBusy = { model: m, started: Date.now(), status: job.status, incremental };
-      exec("sh", ["-c", 'nohup python3 "$0" "$1" >/dev/null 2>&1 &', `${appHome()}/mods/pr-review/review.py`, JSON.stringify(req)])
+      // The request as a file: a big PR's hunks outgrow a command line.
+      const reqFile = `${job.out}.req.json`;
+      cx.spawn(async (cx) => {
+        const before = await readTextFile(reqFile).catch(() => null);
+        await writeTextFile(reqFile, JSON.stringify(req), before).catch((e) => { this.aiError = String(e); });
+        exec("sh", ["-c", 'nohup python3 "$0" "$1" >/dev/null 2>&1 &', `${appHome()}/mods/pr-review/review.py`, `@${reqFile}`])
         .catch((e) => { this.aiError = String(e); this.aiBusy = false; cx.notify(); });
+      });
       this.publish(); this.pollAi(cx, job, url, m);
       return cx.notify();
     }
@@ -599,7 +607,7 @@ export const ReviewMode = {
     cx.timer.after(5000, (cx) => cx.spawn(async (cx) => {
       if (this.prSel?.url !== url || !this.aiBusy) return;
       const st = JSON.parse(await readTextFile(job.status).catch(() => null) ?? "null");
-      if (st?.busy || !st) { if (st?.pid) this.aiBusy.pid = st.pid; cx.notify(); return this.pollAi(cx, job, url, m); }
+      if (st?.busy || !st) { if (st?.pid) this.aiBusy.pid = st.pid; if (st?.passes) Object.assign(this.aiBusy, { pass: st.pass, passes: st.passes }); cx.notify(); return this.pollAi(cx, job, url, m); }
       this.aiBusy = false;
       if (st.error) this.aiError = st.error;
       else {
@@ -632,7 +640,7 @@ export const ReviewMode = {
       ...extra(`In no step (${left.filter((h) => !cut.has(h.alias)).length} hunks)`, exact ? "The model put these hunks in no step." : "New since the analysis.", left.filter((h) => !cut.has(h.alias))));
     for (const s of r.steps) s.stale = s.hunks.length > 0 && !s.hunks.some((id) => this.byId.has(id));
     return { ...r, exact, diagrams: saved.diagrams ?? null, cost: saved.cost, ms: saved.ms, budget: saved.budget, model: saved.model, model_id: saved.model_id, generated: saved.generated, cut: saved.cut ?? [], task: saved.task ?? {},
-      incremental: saved.incremental ?? null };
+      incremental: saved.incremental ?? null, scope: saved.scope ?? null };
   },
 
   // What the bar shows: the analysis on screen, or the one running.
@@ -2062,11 +2070,12 @@ export const ReviewMode = {
           .child(h_flex().gap(10).items_center().child(run(`Analyze with ${MODELS[m].label}`))
             .child(div().text_size(12).text_color(t.muted).child(this.estimate(m))))))
         .when(Boolean(this.aiBusy), (e) => e.child(h_flex().gap(8).items_center().text_size(13).text_color(t.muted).child(div().child(SPIN[0]).frames(SPIN, 90))
-          .child(div().flex_1().child(`${MODELS[this.aiBusy.model]?.label} is reading ${this.aiBusy.incremental ? "the new changes" : "the code"} · ${clock(Date.now() - this.aiBusy.started)} · cap $${CAP[this.aiBusy.model]}`))
+          .child(div().flex_1().child(`${MODELS[this.aiBusy.model]?.label} is reading ${this.aiBusy.incremental ? "the new changes" : "the code"}${this.aiBusy.passes ? ` · Pass ${this.aiBusy.pass} of ${this.aiBusy.passes}` : ""} · ${clock(Date.now() - this.aiBusy.started)} · cap $${CAP[this.aiBusy.model]}`))
           .child(pill("rv-cancel", t, "Cancel", (_e, cx) => this.cancelAi(cx), false, t.ansi1))))
         .when(Boolean(this.aiError), (e) => e.child(div().text_size(12.5).text_color(t.ansi1).whitespace_normal().child(this.aiError)))
         .when(Boolean(ai && !ai.exact), (e) => e.child(div().text_size(12.5).text_color(t.ansi3).whitespace_normal().child(canInc ? "Analysis of an older diff: re-analyze, or analyze only the new changes." : "Analysis of an older diff: re-analyze for the current state.")))
-        .when(Boolean(ai?.cut.length), (e) => e.child(div().text_size(12.5).text_color(t.ansi3).whitespace_normal().child(`${ai.cut.length} hunks were too large for ${MODELS[ai.model]?.label ?? ai.model} and are not analyzed (layer "Not analyzed").`)))
+        .when(Boolean(ai?.scope), (e) => e.child(div().text_size(12.5).text_color(t.muted).whitespace_normal().child(scopeLine(ai.scope))))
+        .when(Boolean(ai?.cut.length) && !ai?.scope, (e) => e.child(div().text_size(12.5).text_color(t.ansi3).whitespace_normal().child(`${ai.cut.length} hunks were too large for ${MODELS[ai.model]?.label ?? ai.model} and are not analyzed (an older analysis: re-analyze to read them).`)))
         .child(h_flex().flex_wrap().gap(6).items_center().text_size(12.5)
           .child(h_flex().gap(2).p(2).rounded(7).border_1().border_color(t.border).children([["reading", "Layers"], ["risk", "By risk"]].map(([k, label]) =>
             div().id(`rv-order-${k}`).px(8).h(22).flex().items_center().rounded(5).cursor_pointer().bg(this.order === k ? t.selected : t.chrome)

@@ -160,3 +160,10 @@ export function pinsOn(pins, L) {
 }
 // The code pins of a file, by the line they hang under.
 export const codePins = (pins, file) => pins.filter((p) => p.anchor?.file && sameFile(p.anchor.file, file));
+
+// ---- the analysis' scope (review.py): "Read 38 of 41 files in detail, 3 skimmed (lockfiles)"
+export function scopeLine(scope) {
+  if (!scope?.files) return "";
+  const passes = scope.passes > 1 ? ` · ${scope.passes} passes` : "";
+  return `Read ${scope.detailed} of ${scope.files} ${scope.files === 1 ? "file" : "files"} in detail${scope.skimmed ? `, ${scope.skimmed} skimmed${scope.why ? ` (${scope.why})` : ""}` : ""}${passes}`;
+}
