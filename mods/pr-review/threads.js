@@ -15,8 +15,8 @@ export const withIds = (list) => (list ?? []).map((c) => (c.id ? c : { ...c, id:
 // url, dry, followups: [{text, at, after}]}]}}
 
 export const threadsOf = (doc, key) => doc?.[key]?.threads ?? [];
-function bound(doc, key, threads, now) {
-  const next = { ...(doc ?? {}), [key]: { at: now, threads: threads.slice(-MAX_THREADS) } };
+function bound(doc, key, threads, now, extra = {}) {
+  const next = { ...(doc ?? {}), [key]: { ...doc?.[key], ...extra, at: now, threads: threads.slice(-MAX_THREADS) } };
   for (const k of Object.keys(next).sort((a, b) => next[b].at - next[a].at).slice(MAX_PRS)) delete next[k];
   return next;
 }
@@ -122,3 +122,63 @@ export function singlePayload(c, commit, inDiffNow) {
 // What a GitHub post carried, for the popover afterwards: the body and each line comment.
 export const postedItems = (payload) => [...(payload.body ? [`Review body: ${payload.body.slice(0, 120)}`] : []),
   ...payload.comments.map((c) => `${c.path}:${c.start_line ? `${c.start_line}–` : ""}${c.line}: ${c.body.slice(0, 120)}`)];
+
+// ---- Fix: comments (and findings) to a sub-agent in its own worktree, or to the main agent; the selection
+
+export const MAX_FIXES = 30;
+export const selectedOf = (doc, key) => doc?.[key]?.selected ?? [];
+// The selection for "Fix selected": comment ids, kept per PR.
+export const toggleSelected = (doc, key, id, now = Date.now()) => {
+  const sel = selectedOf(doc, key);
+  return bound(doc, key, threadsOf(doc, key), now, { selected: sel.includes(id) ? sel.filter((x) => x !== id) : [...sel, id] });
+};
+export const clearSelected = (doc, key, now = Date.now()) => bound(doc, key, threadsOf(doc, key), now, { selected: [] });
+
+// Fix jobs: {id, branch, path (its worktree), base (the PR's checkout), head (where the branch starts), items: [{kind:
+// "comment" | "finding", id}], terminal, target: "sub" | "main", at, state: "running" | "applied" | "discarded"}.
+export const fixesOf = (doc, key) => doc?.[key]?.fixes ?? [];
+export const addFix = (doc, key, job, now = Date.now()) => bound(doc, key, threadsOf(doc, key), now, { fixes: [...fixesOf(doc, key).filter((f) => f.id !== job.id), job].slice(-MAX_FIXES) });
+export const setFix = (doc, key, id, change, now = Date.now()) => bound(doc, key, threadsOf(doc, key), now, { fixes: fixesOf(doc, key).map((f) => (f.id === id ? { ...f, ...change } : f)) });
+// The live job (not applied or discarded) an item belongs to.
+export const fixFor = (doc, key, id) => [...fixesOf(doc, key)].reverse().find((f) => f.state === "running" && f.items.some((x) => x.id === id)) ?? null;
+
+// A fix branch per job: fix/<pr number>-<first item>.
+export const fixBranch = (number, ids) => `fix/${number ?? "pr"}-${String(ids[0] ?? "x").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 12)}${ids.length > 1 ? `-and-${ids.length - 1}` : ""}`;
+// Where its worktree goes (Herdr's convention for worktrees): ~/.herdr/worktrees/<repo>/<branch with - for />.
+export const fixPath = (home, repo, branch) => `${home}/.herdr/worktrees/${String(repo ?? "repo").split("/").pop()}/${branch.replace(/\//g, "-")}`;
+
+// The commit a job's items report (a comment's reply or a finding's report with status fixed); null while none.
+export function fixCommit(job, replies = {}, reports = {}) {
+  for (const it of job.items) {
+    const r = it.kind === "finding" ? reports[it.id] : (replies[it.id] ?? []).at(-1);
+    if (r?.status === "fixed" && r.commit) return r.commit;
+  }
+  return null;
+}
+
+// What the sub-agent is told on top of the comments or findings: its worktree, its branch, commit there, never push.
+export const worktreeNote = (branch, path) => `You work in your own git worktree ${path} on branch ${branch}, started from the PR head. ` +
+  `Make the change there, commit it on ${branch} (one commit per point is fine), and don't push: the reviewer applies it to the PR.`;
+
+// The comments as one fix task, with ids and the replies contract (each point answered with status fixed and the commit).
+export function fixCommentsPrompt({ pr, comments, file, lang, branch = null, path = null }) {
+  const items = withIds(comments).map((c, i) => [`${i + 1}. [${c.id}] \`${c.file}\`${c.start === undefined ? "" : ` ${lineLabel(c)}`}`, c.hunk ? "```diff\n" + c.hunk + "\n```" : null, c.text.trim()].filter(Boolean).join("\n"));
+  return [`${pr ? `PR #${pr.number} "${pr.title}"${pr.url ? ` (${pr.url})` : ""}` : "This branch"}: please fix ${comments.length === 1 ? "this review comment" : `these ${comments.length} review comments`}.`,
+    branch ? worktreeNote(branch, path) : null, ...items, repliesContract(file, withIds(comments)[0]?.id)].filter(Boolean).join("\n\n") + answerIn(lang);
+}
+
+// hc run for the sub-agent: under the PR's agent (parent) so it shows there, in its worktree, on the PR's context
+// (env: the context's command prefix), no notes typed into the parent.
+export function subAgentArgs({ parent, cwd, name, env = [], task, job }) {
+  return ["run", "--bg", "--json", "--no-notify", "--name", name, "--cwd", cwd, ...(parent ? ["--parent", parent] : ["--no-parent"]),
+    "--label", `pr-review.fix=${job}`, "--", ...env, "claude", task];
+}
+
+// Apply to PR: a cherry-pick of the branch's commits onto the PR's checkout, only when that checkout is clean.
+export function applyPlan({ status, head, branch }) {
+  const dirty = String(status ?? "").split("\n").filter((l) => l.trim());
+  if (dirty.length) return { ok: false, reason: `The PR's checkout has ${dirty.length} uncommitted ${dirty.length === 1 ? "change" : "changes"}: Apply needs a clean checkout.` };
+  return { ok: true, args: ["cherry-pick", `${head}..${branch}`] };
+}
+// The hand-over when the checkout isn't clean: the main agent cherry-picks it itself.
+export const applyPrompt = ({ branch, head, path }) => `The reviewer's fix is ready on branch ${branch} (worktree ${path}). Please cherry-pick its commits onto your PR branch: git cherry-pick ${head}..${branch}. Resolve conflicts if any, run the tests, and don't push.`;

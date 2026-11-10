@@ -74,4 +74,42 @@ assert.ok(plan.payload.comments.some((c) => c.body.startsWith("SQL injection")),
 assert.deepEqual(TH.singlePayload(comments[0], "h", true), { commit_id: "h", path: "a.py", line: 4, side: "RIGHT", start_line: 3, start_side: "RIGHT", body: "Warum? (edited)" });
 assert.equal(TH.singlePayload(comments[2], "h", false), null);
 assert.equal(TH.postedItems(plan.payload)[1], "a.py:3–4: Warum? (edited)");
+
+// ---- Fix: selection, jobs, the sub-agent's launch, Apply only on a clean checkout
+let fx = TH.addThreads({}, "pr", [{ id: "c1", file: "a.py", end: 3, text: "t" }], { route: "agent" }, 1);
+fx = TH.toggleSelected(fx, "pr", "c1", 2);
+fx = TH.toggleSelected(fx, "pr", "p9", 3);
+assert.deepEqual(TH.selectedOf(fx, "pr"), ["c1", "p9"]);
+assert.equal(TH.threadsOf(fx, "pr").length, 1, "the selection keeps the threads");
+assert.deepEqual(TH.selectedOf(TH.toggleSelected(fx, "pr", "c1", 4), "pr"), ["p9"]);
+assert.deepEqual(TH.selectedOf(JSON.parse(JSON.stringify(fx)), "pr"), ["c1", "p9"], "it persists with the threads");
+fx = TH.addThreads(fx, "pr", [{ id: "c2", file: "b.py", end: 1, text: "u" }], { route: "agent" }, 5);
+assert.deepEqual(TH.selectedOf(fx, "pr"), ["c1", "p9"], "adding threads keeps the selection");
+assert.equal(TH.fixBranch(7, ["mwb8736v"]), "fix/7-mwb8736v");
+assert.equal(TH.fixBranch(7, ["a", "b", "c"]), "fix/7-a-and-2");
+assert.equal(TH.fixPath("/h", "acme/bookshelf", "fix/7-a"), "/h/.herdr/worktrees/bookshelf/fix-7-a");
+const job = { id: "j1", branch: "fix/7-c1", path: "/w", base: "/repo", head: "abc", items: [{ kind: "comment", id: "c1" }, { kind: "finding", id: "f1" }], target: "sub", state: "running" };
+fx = TH.addFix(fx, "pr", job, 6);
+assert.equal(TH.fixFor(fx, "pr", "f1").id, "j1");
+assert.equal(TH.fixFor(TH.setFix(fx, "pr", "j1", { state: "applied" }, 7), "pr", "f1"), null, "an applied job is no longer live");
+assert.equal(TH.fixCommit(job, {}, {}), null);
+assert.equal(TH.fixCommit(job, { c1: [{ status: "answered" }, { status: "fixed", commit: "beef" }] }, {}), "beef", "a comment reply with the commit");
+assert.equal(TH.fixCommit(job, {}, { f1: { status: "fixed", commit: "cafe" } }), "cafe", "a finding report with the commit");
+const args = TH.subAgentArgs({ parent: "t3", cwd: "/w", name: "fix-j1", env: ["env", "CLAUDE_CONFIG_DIR=/c"], task: "Fix it", job: "j1" });
+assert.deepEqual(args.slice(0, 2), ["run", "--bg"]);
+assert.ok(args.includes("--no-notify"), "nothing typed into the parent");
+assert.equal(args[args.indexOf("--parent") + 1], "t3", "a sub-agent of the PR's agent");
+assert.equal(args[args.indexOf("--cwd") + 1], "/w", "in its own worktree");
+assert.deepEqual(args.slice(args.indexOf("--") + 1), ["env", "CLAUDE_CONFIG_DIR=/c", "claude", "Fix it"], "on the PR's context");
+assert.ok(TH.subAgentArgs({ parent: null, cwd: "/w", name: "n", task: "x", job: "j" }).includes("--no-parent"));
+assert.equal(TH.applyPlan({ status: " M src/a.ts\n?? x", head: "abc", branch: "fix/7-c1" }).ok, false, "a dirty checkout: refused");
+assert.match(TH.applyPlan({ status: " M a\n", head: "abc", branch: "b" }).reason, /1 uncommitted change/);
+assert.deepEqual(TH.applyPlan({ status: "", head: "abc", branch: "fix/7-c1" }), { ok: true, args: ["cherry-pick", "abc..fix/7-c1"] });
+assert.ok(TH.applyPrompt(job).includes("git cherry-pick abc..fix/7-c1"));
+// The target choice: the sub-agent's text names its worktree, the main agent's doesn't; the preview sends that text.
+const sub = TH.fixCommentsPrompt({ pr: { number: 7, title: "T" }, comments: [{ id: "c1", file: "a.py", start: 3, end: 3, text: "Warum?" }], file: "/r.jsonl", branch: "fix/7-c1", path: "/w" });
+const main = TH.fixCommentsPrompt({ pr: { number: 7, title: "T" }, comments: [{ id: "c1", file: "a.py", start: 3, end: 3, text: "Warum?" }], file: "/r.jsonl" });
+assert.ok(sub.includes("own git worktree /w on branch fix/7-c1") && sub.includes("[c1]") && sub.includes(">> /r.jsonl"));
+assert.ok(!main.includes("worktree") && main.includes("[c1]"));
+assert.equal(TH.confirm(TH.preview({ what: "Fix", agent: "x", prompt: sub })).text, sub);
 console.log("threads ok");
