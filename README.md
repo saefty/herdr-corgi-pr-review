@@ -19,6 +19,34 @@ architecture picture, a security blast radius, CI checks, related PRs, and go-to
 
 The screenshots show an invented demo project (`demo/`), not a real repository.
 
+## Use cases
+
+- **Your agent opened a PR.** It shows up in the panel with the session that made it. You read the diff, comment on
+  lines, and send the comments back to that agent, which picks up where it left off.
+- **A colleague asked you for a review.** Pick it under *Review requested*, open it full size, and let the AI walk
+  you through it: what the PR wants, how behaviour changes, which layer to read first and why.
+- **A big PR lands on a Friday.** The overview gives you merge risk, review effort, blockers and failed checks
+  before you open a file. The layers group 40 files into five steps you can tick off.
+- **The author pushed again.** You see only what changed since your last review, and one click re-analyses just
+  that part.
+- **You want a second opinion.** Run a Claude code review, a security review or Codex. Findings land on their lines;
+  send one to the agent with *Fix*, then *Verify* checks the new commit.
+- **You don't know the codebase.** Hover a name or ⌘-click it to read its definition, see example values next to
+  the changed lines, and look at the architecture picture to see which services the change touches.
+
+## Features
+
+- Panel: PRs from your sessions, the repo you're in, or review requests, with a one-line triage per PR.
+- Review layout: overview (intent, behaviour, risk, effort, blockers, pre-merge checks), layers in risk or reading
+  order with check questions, an architecture impact diagram, a security blast radius, and related PRs.
+- Diff: syntax highlighting, go-to-definition through real language servers, inline example values, collapsed
+  context you can open, line and range comments.
+- Reviewers: Claude code review, security review, Codex (when installed), each finding with Discuss, Fix and Verify.
+- Incremental: "since your last review" view and analysis.
+- Model per review (Haiku, Sonnet, Opus); LLM calls only on click.
+- Restricted Mode for other people's code (see below).
+- Optional hooks for other mods: contexts (accounts, clone folders), a Go to palette, a chat bar.
+
 ## What's in here
 
 - `mods/pr-review/`: the mod (the panel, and the review layout's two parts).
