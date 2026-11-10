@@ -234,14 +234,16 @@ def throwaway(root):
 class Server:
     """One language server process over stdio JSON-RPC."""
 
-    def __init__(self, root, lang, active=()):
-        self.root, self.lang, self.dirs, self.new_bins = root, lang, [], []
+    def __init__(self, root, lang, active=(), safe=True):
+        """safe: the checkout is untrusted (someone else's PR). Nothing from the repo may run: no project
+        TypeScript, no Gradle/Maven import (build scripts), no Rust build scripts or proc macros, no module downloads."""
+        self.root, self.lang, self.dirs, self.new_bins, self.safe = root, lang, [], [], safe
         self.pending, self.opened, self.known = {}, {}, set()
         self.lock, self.next_id = threading.Lock(), 0
         self.ready = threading.Event()
         self.state, self.message, self.error = "starting", f"{LABEL[lang]} server is starting…", None
         cmd = list(SERVERS[lang])
-        if lang == "typescript" and not os.path.isfile(os.path.join(root, "node_modules", "typescript", "lib", "tsserver.js")):
+        if lang == "typescript" and (safe or not os.path.isfile(os.path.join(root, "node_modules", "typescript", "lib", "tsserver.js"))):
             cmd = ["tsc", "--lsp", "--stdio"]  # no project TypeScript: the global TypeScript 7 (native) has its own LSP
         cmd[0] = shutil.which(name := cmd[0], path=os.environ.get("PATH", "") + os.pathsep + os.pathsep.join(PATH_EXTRA))
         if not cmd[0]:
@@ -254,16 +256,17 @@ class Server:
                                  if not os.path.exists(b)]
             cmd += ["-data", data, "--jvm-arg=-Djava.import.generatesMetadataFilesAtProjectRoot=false"]
             self.message = "Java index is building…"
-            self.options = {"settings": {"java": {"import": {"gradle": {"enabled": True}, "maven": {"enabled": True},
+            self.options = {"settings": {"java": {"import": {"gradle": {"enabled": not safe}, "maven": {"enabled": not safe},
                                                              "generatesMetadataFilesAtProjectRoot": False},
                                                   # Compiling writes <module>/bin (and runs annotation processors):
                                                   # only in a throwaway review worktree, not in the user's repo.
-                                                  "autobuild": {"enabled": throwaway(root)}}},
+                                                  "autobuild": {"enabled": throwaway(root) and not safe}}},
                             "extendedClientCapabilities": {"classFileContentsSupport": True}}
         if lang == "rust":  # build scripts and proc macros compile into pr-data, never <repo>/target; no cargo check
             self.dirs.append(target := data_dir("rust-target", root, active))
             self.message = "Rust analyzer is indexing…"
-            self.options = {"cargo": {"targetDir": target}, "checkOnSave": False}
+            self.options = {"cargo": {"targetDir": target, "buildScripts": {"enable": not safe}}, "procMacro": {"enable": not safe},
+                            "checkOnSave": False}
         self.limited = False
         if lang == "cpp":  # clangd: a compilation database if there is one, else C++20 fallback flags (Arduino .ino too)
             db = next((d for d in (root, os.path.join(root, "build"), os.path.join(root, ".pio", "build")) if os.path.isfile(os.path.join(d, "compile_commands.json"))), None)
@@ -273,8 +276,9 @@ class Server:
             # The background index writes <db dir>/.cache/clangd: only in a throwaway review worktree.
             cmd.append(f"--background-index={'true' if throwaway(root) else 'false'}")
             self.options = {"fallbackFlags": ["-xc++", "-std=c++20"]}
+        env = {**os.environ, "GOFLAGS": "-mod=readonly", "GOPROXY": "off", "GOTOOLCHAIN": "local"} if safe else None
         self.proc = subprocess.Popen(cmd, cwd=root, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                     start_new_session=True)
+                                     start_new_session=True, env=env)
         CappedLog(os.path.join(DATA, f"lsp-{lang}.log")).pump(self.proc.stderr)
         self.started = time.time()
         threading.Thread(target=self.read_loop, daemon=True).start()
@@ -428,8 +432,8 @@ class Bridge:
         self.servers, self.crashes, self.lock = {}, {}, threading.Lock()
         self.last = time.time()
 
-    def server(self, root, lang):
-        key = (root, lang)
+    def server(self, root, lang, safe=True):
+        key = (root, lang, safe)
         with self.lock:
             s = self.servers.get(key)
             if s and s.proc.poll() is None and s.state != "dead":
@@ -440,7 +444,9 @@ class Bridge:
                 self.crashes[key] = hist
                 if len(hist) > 3:
                     raise RuntimeError(s.message or f"{LABEL[lang]} server keeps crashing")
-            s = self.servers[key] = Server(root, lang, self.active())
+            for k in [k for k in self.servers if k[:2] == (root, lang) and k[2] != safe]:  # trust changed: one server per root
+                self.servers.pop(k).stop()
+            s = self.servers[key] = Server(root, lang, self.active(), safe)
             return s
 
     def active(self):
@@ -457,7 +463,7 @@ class Bridge:
         lang = EXT.get(ext_of(full), (None,))[0]
         if not lang:
             return root, full, None
-        return root, full, self.server(root, lang)
+        return root, full, self.server(root, lang, req.get("trusted") is not True)
 
     def wait_ready(self, s):
         """Never blocks long: a cold Java/Rust index answers 'starting' at once; others get up to TIMEOUT to come up."""
@@ -522,7 +528,7 @@ class Bridge:
 
     def status(self, _req):
         return {"status": "ok", "pid": os.getpid(), "servers": [
-            {"root": r, "lang": l, "state": s.state, "message": s.message, "pid": s.proc.pid} for (r, l), s in self.servers.items()]}
+            {"root": r, "lang": l, "safe": safe, "state": s.state, "message": s.message, "pid": s.proc.pid} for (r, l, safe), s in self.servers.items()]}
 
     def forget(self, req):
         """Stops root's servers and deletes its data dirs (called when a review worktree is removed)."""

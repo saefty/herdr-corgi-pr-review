@@ -30,7 +30,12 @@ function connect(fresh = false) {
 
 /** POST to the bridge. Retries once with a fresh connection (the bridge idles out after 20 min); falls back to the
  *  bridge's `call` mode through exec when fetch can't reach 127.0.0.1. */
+// Checkouts whose code may run inside language servers (build scripts, proc macros, project TypeScript). Everything
+// else is someone else's code: the bridge starts its servers in safe mode. See review.js trustedPr.
+const trusted = new Set();
+export function setTrusted(root, yes) { if (yes) trusted.add(root); else trusted.delete(root); }
 export async function call(endpoint, body) {
+  if (body?.root) body = { ...body, trusted: trusted.has(body.root) };
   if (!viaExec) {
     for (const fresh of [false, true]) {
       let c;

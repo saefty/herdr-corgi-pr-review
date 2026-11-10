@@ -13,7 +13,7 @@ import { parseReports, findingStatus, fixPrompt, hash, touchReview, expireReview
 import * as C from "./context.js";
 import { hasTool, copyText, openUrl, loadSetup, readConfig } from "./setup-view.js";
 import { highlightRows, highlightLines, langOf, colors, renderLine, refAt } from "./syntax.js";
-import { lookup, warm, contents, vscodeArgs, where } from "./defs.js";
+import { lookup, warm, contents, vscodeArgs, where, setTrusted } from "./defs.js";
 import { diffRows, hunksOf, selection, uiLine, lineKey, rangeOf, MODELS, reviewRequest, mapReview, suspectComment, stepKey, fileRows, fileTree, atLine, splitPatch } from "./pr.js";
 import { ghTarget, lowValue, markReviewed, sinceBase, verifyCandidates, applyVerification, blastArch, preMergeChecks, mergeBlockers, triageOf } from "./pr.js";
 import { archView, archModel, archLegend, visualCard, statCard, segBar, foldCard, chip, legend, SEVERITY_COLOR } from "./stack.js";
@@ -237,11 +237,27 @@ export const ReviewMode = {
   // The PR head as files (worktree.py: a detached worktree of a dedicated clone under the clone root), for reviewers,
   // whole files and the LSP bridge: shared("review.worktree") = {url, head, path}. The current branch: its repo root.
   // clone: the "Clone to …" click; never otherwise (worktree.py exits 3 with the folder it would use).
+  // Someone else's PR is untrusted: its language servers run in safe mode (no build scripts, proc macros, project
+  // TypeScript, module downloads) and aren't warmed up. Trusted: your branch, your sessions' PRs, PRs you authored,
+  // and PRs you marked with "Trust code".
+  trustedPr(pr = this.prSel) {
+    if (!pr) return false;
+    if (pr.space || !pr.source || pr.source === "mine") return true;
+    if (pr.author && pr.author === shared("gh.login")) return true;
+    return (shared("pr-review.trusted") ?? []).includes(pr.url);
+  },
+  applyTrust() {
+    const w = this.worktree, yes = this.trustedPr();
+    if (!w?.path) return;
+    setTrusted(w.path, yes);
+    if (yes) warm(w.path, (this.patch ?? []).map((f) => f.path)); // Java needs ~25 s cold
+  },
+
   makeWorktree(cx, clone = false) {
     const url = this.prSel.url;
     this.worktree = null;
     if (this.prSel.space && this.root) {
-      this.worktree = { url, head: this.head, path: this.root, local: true }; setShared("review.worktree", this.worktree); warm(this.root, (this.patch ?? []).map((f) => f.path));
+      this.worktree = { url, head: this.head, path: this.root, local: true }; setShared("review.worktree", this.worktree); this.applyTrust();
       this.loadSince(cx); this.loadContext(cx); return;
     }
     // A PR you didn't open may use the active space's checkout of its repo (cwd); your own PRs keep the dedicated clones.
@@ -261,7 +277,8 @@ export const ReviewMode = {
       this.head ??= w.head;
       this.worktree = { url, head: w.head, path: w.path };
       setShared("review.worktree", this.worktree);
-      warm(w.path, (this.patch ?? []).map((f) => f.path)); // Java needs ~25 s cold
+      if (!shared("gh.login")) exec("gh", ["api", "user", "--jq", ".login"]).then((r) => { if (r.code === 0) { setShared("gh.login", r.stdout.trim()); this.applyTrust(); } }).catch(() => null);
+      this.applyTrust();
       if (this.pendingRun) { this.pendingRun = false; this.loadAi(cx, "run"); }
       this.loadSince(cx); this.loadContext(cx);
       cx.notify();
@@ -999,6 +1016,8 @@ export const ReviewMode = {
       .child(pill("rv-done", t, "Mark done", () => run("pr-review.done")))
       .child(pill("rv-reviews-btn", t, Object.values(shared("review.reviewers") ?? {}).some((r) => r.busy) ? "Reviews ⋯" : "Reviews ▾",
         () => openOverlay({ mod: "pr-review", props: { part: "reviews" }, kind: "popup", width: 460, height: 250 })))
+      .when(Boolean(this.worktree?.path) && !this.trustedPr(), (e) => e.child(div().id("rv-trust-wrap").tooltip("Someone else's code: language servers run in safe mode (no build scripts, proc macros or project TypeScript), so go-to-definition may find less. Click to trust this PR's code.")
+        .child(pill("rv-trust", t, "Safe mode · Trust code", (_e, cx) => { setShared("pr-review.trusted", [this.prSel.url, ...(shared("pr-review.trusted") ?? [])].slice(0, 200)); this.applyTrust(); cx.notify(); }))))
       .child(pill("rv-values", t, `Values: ${valuesOn() ? "On" : "Off"}`, () => setShared("review.values", !valuesOn()), valuesOn()))
       .child(h_flex().flex_none().gap(4).p(3).items_center().rounded(8).border_1().border_color(t.border)
         .children(Object.entries(MODELS).map(([k, v]) => pill(`rv-m-${k}`, t, v.label, () => setShared("review.model", k), m === k)))
