@@ -2,6 +2,7 @@
 // this" (one LLM call per question, a short thread per PR), "Show details" (a drill-down sub-diagram per node, with a
 // breadcrumb) and Explore (a walkthrough of existing code without a PR). review.js draws them; review.py and
 // explore.py make the calls.
+import { hash, mapReview } from "./pr.js";
 
 // ---- the left column (Files / Layers / Findings): shared "review.leftWidth", null = the default
 export const LEFT_W = { def: 560, min: 340, max: 0.65 };
@@ -160,6 +161,87 @@ export function pinsOn(pins, L) {
 }
 // The code pins of a file, by the line they hang under.
 export const codePins = (pins, file) => pins.filter((p) => p.anchor?.file && sameFile(p.anchor.file, file));
+
+// ---- Show details: a sub-diagram per node, a breadcrumb, a bounded cache per node and diff head
+
+export const DRILLS = 60;
+// stack: [{id, label, group?}] from the top picture down; pushing an item already on it goes back to it.
+export function drillPush(stack, item) {
+  const k = (stack ?? []).findIndex((x) => x.id === item.id);
+  return k >= 0 ? stack.slice(0, k + 1) : [...(stack ?? []), item];
+}
+// A breadcrumb click: depth 0 closes the drill-down, k keeps the first k levels.
+export const drillTo = (stack, k) => (stack ?? []).slice(0, Math.max(0, k));
+// "Architecture › Workers › Stages handler": the root, the first node's group (not a level), every level.
+export function crumbs(stack, root) {
+  const out = [{ label: root, depth: 0 }];
+  (stack ?? []).forEach((x, k) => { if (k === 0 && x.group) out.push({ label: x.group, depth: null }); out.push({ label: x.label, depth: k + 1 }); });
+  return out;
+}
+export const drillKey = (source, head, stack) => `${source}|${head ?? ""}|${(stack ?? []).map((x) => x.id).join("/")}`;
+// doc: {<key>: {at, ...}}: put one, keep the newest max.
+export function cachePut(doc, key, value, max = DRILLS, now = Date.now()) {
+  const next = { ...(doc ?? {}), [key]: { ...value, at: now } };
+  for (const k of Object.keys(next).sort((a, b) => next[b].at - next[a].at).slice(max)) delete next[k];
+  return next;
+}
+
+const KINDS = ["flow", "sequence", "state_machine"];
+const SOURCES = ["implemented", "existing", "spec"];
+// The drill-down's answer as a visual stack.js visualCard draws: sample values go into the node's note (as the
+// debugger values), payloads into the edge labels; unknown kinds become flow.
+export function mapDrill(raw) {
+  const v = raw?.visual ?? {}, kind = KINDS.includes(v.kind) ? v.kind : "flow";
+  const nodes = (v.nodes ?? []).filter((n) => n?.id).slice(0, 12).map((n) => ({ id: String(n.id), label: n.label ?? n.id, at: n.at ?? n.evidence ?? undefined,
+    note: [n.note, n.values ? `= ${n.values}` : null].filter(Boolean).join("\n") || undefined, changed: Boolean(n.changed), type: n.type,
+    source: SOURCES.includes(n.source) ? n.source : undefined, evidence: n.evidence ?? undefined }));
+  const ids = new Set(nodes.map((n) => n.id));
+  const link = (e) => ({ from: String(e.from), to: String(e.to), label: e.label ?? "", event: e.event, guard: e.guard, action: e.action, changed: Boolean(e.changed),
+    source: SOURCES.includes(e.source) ? e.source : undefined, evidence: e.evidence ?? undefined });
+  const edges = [...(v.edges ?? []), ...(v.transitions ?? [])].filter((e) => ids.has(String(e?.from)) && ids.has(String(e?.to))).slice(0, 16).map(link);
+  return { summary: String(raw?.summary ?? "").trim(), visual: { kind, title: v.title ?? "", nodes, ...(kind === "state_machine" ? { edges: [], transitions: edges } : { edges }) } };
+}
+
+// ---- Explore: a walkthrough of existing code, saved per repo and topic
+
+export const EXPLORE_MAX = 20;
+export const exploreId = (root, topic) => hash(`${root}\0${String(topic).trim().toLowerCase()}`);
+// The Explorations list: newest first, one per repo and topic, at most max; dropped: the ids that fell off (their files go).
+export function exploreIndex(list, entry, max = EXPLORE_MAX) {
+  const all = [entry, ...(list ?? []).filter((x) => x.id !== entry.id)];
+  return { list: all.slice(0, max), dropped: all.slice(max).map((x) => x.id) };
+}
+
+// Every place a walkthrough cites (layers' evidence, pictures, flows, statements), per file with its lines.
+export function citedFiles(ai) {
+  const at = [...(ai?.intent ?? []), ...(ai?.behaviorPoints ?? [])].map((x) => x.evidence);
+  for (const n of ai?.arch?.nodes ?? []) at.push(n.at, n.evidence, ...(n.states ?? []).map((s) => s.evidence));
+  for (const e of ai?.arch?.edges ?? []) at.push(e.evidence);
+  const vis = [...(ai?.visuals ?? []), ...(ai?.steps ?? []).flatMap((s) => s.visuals ?? [])];
+  for (const v of vis) at.push(...(v.nodes ?? []).flatMap((n) => [n.at, n.evidence]), ...[...(v.edges ?? []), ...(v.transitions ?? [])].map((e) => e.evidence));
+  for (const s of ai?.steps ?? []) at.push(...(s.evidence ?? []), ...(s.flows ?? []).flatMap((f) => [f.at, ...(f.trace ?? []).map((t) => `${t.path}:${t.line}`)]));
+  const files = new Map();
+  for (const x of at) {
+    const p = pathOf(x), l = lineOf(x);
+    if (!p || !l || /^https?:/.test(p)) continue;
+    const set = files.get(p) ?? new Set();
+    set.add(l);
+    files.set(p, set);
+  }
+  return [...files].map(([path, lines]) => ({ path, lines: [...lines].sort((a, b) => a - b) })).sort((a, b) => a.path.localeCompare(b.path));
+}
+
+// A saved exploration (explore.py) in the shape the review layout draws: layers without hunks, each with its evidence;
+// Question / How it works as the statements; everything existing.
+export function exploreAi(saved) {
+  const a = saved?.answer ?? {};
+  const raw = (a.steps ?? []).map((s) => ({ ...s, hunks: [], check_questions: [], suggestions: [] }));
+  const r = mapReview({ ...a, intent: a.question, behavior_points: a.how_it_works, behavior: a.summary, steps: raw, rule_checks: [], asks: [] }, []);
+  for (const s of r.steps) s.evidence = (raw[s.n]?.evidence ?? []).filter((x) => lineOf(x));
+  const ai = { ...r, explore: true, exact: true, topic: saved?.topic ?? "", root: saved?.root ?? null, repo: saved?.repo ?? null, cost: saved?.cost ?? null, ms: saved?.ms ?? null,
+    budget: saved?.budget ?? null, model: saved?.model ?? null, model_id: saved?.model_id ?? null, generated: saved?.generated ?? null, cut: [], task: {}, diagrams: null };
+  return { ...ai, files: citedFiles(ai) };
+}
 
 // ---- the analysis' scope (review.py): "Read 38 of 41 files in detail, 3 skimmed (lockfiles)"
 export function scopeLine(scope) {

@@ -71,6 +71,52 @@ assert.equal(Object.keys(doc).length, 40);
 assert.ok(!doc.pr1 && doc.p44 && !doc.p4 && doc.p5, "the oldest threads go");
 assert.deepEqual(X.threadOf(doc, "nope"), []);
 
+// ---- Show details: breadcrumb and cache
+let st = X.drillPush([], { id: "stages", label: "Stages handler", group: "Workers" });
+st = X.drillPush(st, { id: "stages/run", label: "run()" });
+assert.deepEqual(X.crumbs(st, "Architecture").map((c) => c.label), ["Architecture", "Workers", "Stages handler", "run()"]);
+assert.deepEqual(X.crumbs(st, "Architecture").map((c) => c.depth), [0, null, 1, 2]);
+assert.deepEqual(X.drillPush(st, { id: "stages", label: "Stages handler" }).map((x) => x.id), ["stages"], "pushing a level on the stack goes back to it");
+assert.deepEqual(X.drillTo(st, 1).map((x) => x.id), ["stages"]);
+assert.deepEqual(X.drillTo(st, 0), []);
+assert.equal(X.drillKey("pr", "abc", st), "pr|abc|stages/stages/run");
+assert.notEqual(X.drillKey("pr", "abc", st), X.drillKey("pr", "def", st), "per diff head");
+let cache = {};
+for (let i = 0; i < 65; i++) cache = X.cachePut(cache, `k${i}`, { v: i }, X.DRILLS, i);
+assert.equal(Object.keys(cache).length, 60);
+assert.ok(!cache.k4 && cache.k5 && cache.k64.v === 64);
+const d = X.mapDrill({ summary: "s", visual: { kind: "pie", title: "T", nodes: [{ id: "a", label: "load()", values: "id = 7", note: "liest", at: "x.py:3" }, { id: "b", label: "save()" }],
+  edges: [{ from: "a", to: "b", label: "{id: 7}" }, { from: "a", to: "ghost" }] } });
+assert.equal(d.visual.kind, "flow");
+assert.equal(d.visual.nodes[0].note, "liest\n= id = 7");
+assert.deepEqual(d.visual.edges.map((e) => e.label), ["{id: 7}"]);
+const sm = X.mapDrill({ visual: { kind: "state_machine", nodes: [{ id: "a" }, { id: "b" }], transitions: [{ from: "a", to: "b", event: "go" }] } });
+assert.equal(sm.visual.transitions.length, 1);
+assert.deepEqual(sm.visual.edges, []);
+
+// ---- Explore: the list, the shape without a diff, the cited files
+const e1 = { id: X.exploreId("/r", "How?"), root: "/r", topic: "How?" };
+assert.equal(e1.id, X.exploreId("/r", "  how? "), "same repo and topic: one entry");
+let ix = { list: [] };
+for (let i = 0; i < 22; i++) ix = X.exploreIndex(ix.list, { id: `x${i}`, topic: `t${i}` });
+assert.equal(ix.list.length, 20);
+assert.deepEqual(ix.dropped, ["x1"]);
+assert.deepEqual(X.exploreIndex(ix.list, { id: "x15", topic: "again" }).list.slice(0, 2).map((x) => x.id), ["x15", "x21"], "reopened: on top, once");
+const saved = { topic: "Reminder?", root: "/r", model: "sonnet", cost: 0.4, generated: "2026-11-10T10:00:00+01:00", answer: {
+  title: "Reminders", summary: "Ein Job …", question: [{ text: "Wie wird erinnert?", source: "existing" }],
+  how_it_works: [{ text: "Cron startet", source: "existing", evidence: "infra/cron.tf:4" }], architecture: arch, visuals: [],
+  steps: [{ title: "Scheduling", why_it_matters: "w", explanation: "e", reading_order: 2, evidence: ["jobs/schedule.py:10", "bad"], flows: [{ function: "run", at: "jobs/run.py:5", trace: [{ path: "jobs/run.py", line: 6, values: "x = 1" }] }] },
+    { title: "Sending", why_it_matters: "w2", explanation: "e2", reading_order: 1, evidence: ["mail/send.py:3"] }] } };
+const ex = X.exploreAi(saved);
+assert.equal(ex.explore, true);
+assert.deepEqual(ex.steps.map((s) => s.title), ["Sending", "Scheduling"], "reading order");
+assert.deepEqual(ex.steps.map((s) => s.hunks), [[], []], "no diff");
+assert.deepEqual(ex.steps[1].evidence, ["jobs/schedule.py:10"]);
+assert.equal(ex.intent[0].text, "Wie wird erinnert?");
+assert.equal(ex.behaviorPoints[0].evidence, "infra/cron.tf:4");
+assert.deepEqual(ex.files.map((f) => f.path), ["infra/cron.tf", "jobs/run.py", "jobs/schedule.py", "mail/send.py", "src/api.py", "src/stages.py"]);
+assert.deepEqual(ex.files.find((f) => f.path === "jobs/run.py").lines, [5, 6]);
+
 // ---- the scope line
 assert.equal(X.scopeLine({ files: 41, detailed: 38, skimmed: 3, why: "lockfiles" }), "Read 38 of 41 files in detail, 3 skimmed (lockfiles)");
 assert.equal(X.scopeLine({ files: 1, detailed: 1, skimmed: 0, passes: 1 }), "Read 1 of 1 file in detail");

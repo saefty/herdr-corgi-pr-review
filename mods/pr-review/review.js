@@ -20,10 +20,10 @@ import { lookup, warm, contents, vscodeArgs, where, setTrusted } from "./defs.js
 import { diffRows, hunksOf, selection, uiLine, lineKey, rangeOf, MODELS, reviewRequest, mapReview, suspectComment, stepKey, fileRows, fileTree, atLine, splitPatch } from "./pr.js";
 import { ghTarget, lowValue, markReviewed, sinceBase, verifyCandidates, applyVerification, blastArch, preMergeChecks, mergeBlockers, triageOf } from "./pr.js";
 import { diffLines, inDiff, ghReview, lineThreads, suggestionBlock, buildReview, layoutPlan, specElements, diagramsState } from "./pr.js";
-import { archView, archModel, archLegend, visualsCard, statCard, segBar, foldCard, chip, legend, specTag, sourceLegend, SEVERITY_COLOR } from "./stack.js";
+import { archView, archModel, archLegend, visualsCard, visualCard, statCard, segBar, foldCard, chip, legend, specTag, sourceLegend, SEVERITY_COLOR } from "./stack.js";
 import { hasSources, archLayout } from "./arch.js";
 import * as TH from "./threads.js";
-import { leftWidth, rowClick, CHIP_W, ASK_W, keyRoute, scopeLine, pictureOf, scopeOf, scopeFiles, hunksFor, mapAnswer, threadAdd, threadOf, history, highlightOf, rangeLabel, pinAnchor, pinAdd, pinDrop, pinsOf, pinsOn, codePins } from "./explore.js";
+import { leftWidth, rowClick, CHIP_W, ASK_W, keyRoute, scopeLine, pictureOf, scopeOf, scopeFiles, hunksFor, mapAnswer, threadAdd, threadOf, history, highlightOf, rangeLabel, pinAnchor, pinAdd, pinDrop, pinsOf, pinsOn, codePins, drillPush, drillTo, crumbs, drillKey, cachePut, mapDrill } from "./explore.js";
 
 const LEVEL = { high: "ansi1", medium: "ansi3", low: "ansi4", skim: "muted" };
 const COVER = { seen: ["done", "ansi2"], partly: ["partly", "ansi3"], absent: ["missing", "ansi1"], extra: ["extra (not asked)", "ansi4"] };
@@ -1982,7 +1982,9 @@ export const ReviewMode = {
       .when(on && s.visuals?.length > 0, (e) => e.child(div().pl(26).child(this.diagramsBar(t, `rv-dia-${i}`, "Refresh this view"))).child(div().pl(26).child(visualsCard(s.visuals, t, `rv-vis-${i}`, (at, cx) => this.jumpTo(at, cx),
         this.visTab?.[i] ?? 0, (k, cx) => { this.visTab = { ...this.visTab, [i]: k }; cx.notify(); }))))
       .when(on && !s.pseudo && Boolean(this.ai), (e) => e.child(h_flex().pl(26).gap(6).child(pill(`rv-ask-l${i}`, t, "Ask about this layer", (_e, cx) => {
-        const k = (this.ai?.steps ?? []).indexOf(s); this.setDrawer("open", cx, k >= 0 ? { layer: k } : null); cx.stop_propagation(); }))))
+        const k = (this.ai?.steps ?? []).indexOf(s); this.setDrawer("open", cx, k >= 0 ? { layer: k } : null); cx.stop_propagation(); }))
+        .child(pill(`rv-drill-l${i}`, t, "Show details", (_e, cx) => { this.showDetails(this.layerSubject(s), `layer:${stepKey(s)}`, cx); cx.stop_propagation(); })))
+        .child(div().pl(26).child(this.drillPanel(t, `layer:${stepKey(s)}`))))
       .when(on, (e) => e.children((s.flows ?? []).map((f, k) => {
         const picked = this.flowOf()?.f === f;
         return div().pl(26).child(div().rounded(9).border_1().border_color(picked ? t.accent : t.chrome).child(flowCard(f, t, `rv-flow-${i}-${k}`,
@@ -2236,7 +2238,9 @@ export const ReviewMode = {
     this.archGeom = { maxX, contentW, viewW };
     return v_flex().gap(12)
       .child(h_flex().gap(12).items_center().flex_wrap().child(div().text_size(20).font_semibold().child("Architecture impact")).child(this.diagramsBar(t, "rv-dia-arch", "Refresh diagrams"))
-        .when(this.drawerState() !== "open", (e) => e.child(pill("rv-ask-open", t, "Ask", (_e, cx) => this.setDrawer("open", cx, null)))))
+        .when(this.drawerState() !== "open", (e) => e.child(pill("rv-ask-open", t, "Ask", (_e, cx) => this.setDrawer("open", cx, null))))
+        .when(Boolean(this.archFocus), (e) => { const n = a.nodes.find((x) => x.id === this.archFocus); return n ? e.child(pill("rv-drill-arch", t, `Show details: ${n.label ?? n.id}`,
+          (_e, cx) => this.showDetails({ id: n.id, label: n.label ?? n.id, group: (a.groups ?? []).find((g) => g.id === n.group)?.label, at: n.at ?? n.evidence, kind: "node", description: n.description }, "arch", cx), false, t.foreground)) : e; }))
       .child(h_flex().w_full().gap(12).items_center().flex_wrap() // wraps onto two rows when narrow
         .child(div().flex_none().text_size(13).text_color(t.muted).child(`${groups} ${groups === 1 ? "system" : "systems"} | ${(a.edges ?? []).length} edges`))
         .child(div().flex_none().child(legend(t)))
@@ -2252,6 +2256,7 @@ export const ReviewMode = {
       .when(maxX > 0, (e) => e.child(div().id("rv-arch-hbar").w_full().h(10).relative().rounded(5).bg(t.raised)
         .child(div().id("rv-arch-thumb").absolute().top(1).left(Math.round((x / contentW) * viewW)).w(Math.max(30, Math.round((viewW * viewW) / contentW))).h(8).rounded(4).bg(t.muted).cursor_pointer()
           .on_mouse_down("left", (ev, cx) => { this.archThumb = { x0: ev.position.x, from: x }; cx.stop_propagation(); }))))
+      .child(this.drillPanel(t, "arch"))
       .child(archLegend(L, t, "rv-arch-edges", "Edges", opts))
       .when(this.ai?.visuals?.length > 0, (e) => e.child(div().pt(6).text_size(13).font_semibold().text_color(t.muted).child("More views"))
         .child(div().max_w(760).child(more())));
@@ -2310,6 +2315,67 @@ export const ReviewMode = {
   },
   askLabel(scope) {
     return scope.kind === "node" ? scope.node.label ?? scope.node.id : scope.kind === "layer" ? plain(scope.layer.title) : scope.kind === "range" ? rangeLabel(scope.range) : "the architecture";
+  },
+
+  // ---- Show details (review.py main_drill, "Review: drill down"): a card or a layer from the inside, a sub-diagram
+  // inline under the picture with a breadcrumb; its cards open further. Cached per node path and diff head (deep.json).
+
+  layerSubject(s) {
+    const files = this.filesOf ? this.filesOf(s) : [];
+    return { id: `layer:${stepKey(s)}`, label: plain(s.title), kind: "layer", why: plain(s.why), text: s.text, files, evidence: s.evidence ?? [], hunks: s.hunks };
+  },
+  drillCacheKey(stack) { return drillKey(this.deepKey(), this.headNow?.() ?? this.head ?? "", stack); },
+  drillResult(stack) { return this.deep.drills?.[this.drillCacheKey(stack)] ?? null; },
+  showDetails(item, from, cx, force = false) {
+    const stack = drillPush(this.drill?.from === from ? this.drill.stack : [], item);
+    this.drill = { from, stack };
+    if (force || !this.drillResult(stack)) this.runDrill(cx);
+    cx.notify();
+  },
+  runDrill(cx) {
+    const d = this.drill, ai = this.ai, key = this.deepKey();
+    if (!d || !ai || this.drillBusy) return;
+    const top = d.stack.at(-1), ck = this.drillCacheKey(d.stack), root = d.from === "arch" ? "Architecture" : plain(d.stack[0]?.label ?? "Layer");
+    const subject = { ...top, parent: d.stack.length > 1 ? d.stack.at(-2).label : null };
+    const scope = top.kind === "node" ? scopeOf(ai, { node: top.id }) : top.kind === "layer" ? { kind: "layer", layer: { title: top.label, why: top.why, text: top.text, visuals: [], evidence: top.evidence } }
+      : { kind: "node", node: { id: top.id, label: top.label, evidence: top.at ?? null }, edges: [] };
+    const files = [...new Set([...(top.files ?? []), ...scopeFiles(scope)])];
+    const req = { drill: { label: top.label, path: crumbs(d.stack, root).map((c) => c.label), subject }, model: model(), context: this.ctxReq(), root: this.lspRoot(), explore: Boolean(ai.explore),
+      analysis: { title: ai.title, summary: ai.summary, layers: ai.steps.filter((x) => !x.pseudo).map((x) => ({ title: plain(x.title), why: plain(x.why) })) },
+      picture: pictureOf(ai.arch), scope, hunks: hunksFor(files, this.hunks, top.hunks ?? []) };
+    this.drillBusy = ck; this.drillErr = null;
+    cx.spawn(async (cx) => {
+      const r = await exec("python3", [`${appHome()}/mods/pr-review/review.py`, JSON.stringify(req)], { timeout: 600000 }).catch((e) => ({ code: 1, stderr: String(e) }));
+      this.drillBusy = null;
+      if (this.deepKey() !== key) return;
+      if (r.code !== 0) { this.drillErr = `Could not show details: ${(r.stderr || r.stdout).trim().slice(0, 200)}`; return cx.notify(); }
+      const out = JSON.parse(r.stdout);
+      this.updateDeep(cx, (doc) => ({ ...doc, drills: cachePut(doc.drills, ck, { ...mapDrill(out.answer), cost: out.cost }) }));
+      cx.notify();
+    });
+  },
+  // The sub-diagram under the picture (or the layer): breadcrumb (click a level to go back), the summary, the picture
+  // with sample values, its cards to open further, Refresh and ✕.
+  drillPanel(t, from) {
+    const d = this.drill;
+    if (!d || d.from !== from || !d.stack.length) return div();
+    const res = this.drillResult(d.stack), ck = this.drillCacheKey(d.stack), root = from === "arch" ? "Architecture" : "Layer", top = d.stack.at(-1);
+    const crumb = (c, k) => div().id(`rv-crumb-${k}`).flex_none().text_size(12.5).text_color(c.depth === null ? t.muted : k === crumbs(d.stack, root).length - 1 ? t.foreground : t.accent)
+      .when(c.depth !== null && k < crumbs(d.stack, root).length - 1, (e) => e.cursor_pointer().on_click((_e, cx) => { this.drill = c.depth === 0 ? null : { from, stack: drillTo(d.stack, c.depth) }; cx.notify(); }))
+      .child(c.label);
+    return v_flex().id(`rv-drill-${from}`).gap(8).p(12).rounded(10).border_1().border_color(t.border).bg(t.surface)
+      .child(h_flex().flex_wrap().gap(6).items_center()
+        .children(crumbs(d.stack, root).flatMap((c, k) => (k ? [div().text_color(t.dim).text_size(12).child("›"), crumb(c, k)] : [crumb(c, k)])))
+        .child(div().flex_1())
+        .child(this.drillBusy === ck ? h_flex().gap(6).text_size(12).text_color(t.muted).child(div().child(SPIN[0]).frames(SPIN, 90)).child("Reading the code…")
+          : pill(`rv-drill-re-${from}`, t, "↻ Refresh", (_e, cx) => { this.runDrill(cx); cx.notify(); }))
+        .child(pill(`rv-drill-x-${from}`, t, "✕", (_e, cx) => { this.drill = null; cx.notify(); })))
+      .when(Boolean(this.drillErr), (e) => e.child(div().text_size(12.5).text_color(t.ansi1).whitespace_normal().child(this.drillErr)))
+      .when(!res && this.drillBusy !== ck && !this.drillErr, (e) => e.child(div().text_size(12.5).text_color(t.muted).child(`One ${MODELS[model()].label} call opens up ${top.label}.`)))
+      .when(Boolean(res), (e) => e.child(div().text_size(13).line_height(1.5).whitespace_normal().child(res.summary))
+        .child(visualCard(res.visual, t, `rv-drill-v-${from}`, (at, cx) => this.jumpTo(at, cx)))
+        .when(res.visual.nodes.length > 0, (x) => x.child(h_flex().flex_wrap().gap(4).items_center().child(div().text_size(12).text_color(t.muted).child("Open further:"))
+          .children(res.visual.nodes.map((n) => pill(`rv-drill-n-${from}-${n.id}`, t, n.label, (_e, cx) => this.showDetails({ id: `${top.id}/${n.id}`, label: n.label, at: n.at, kind: "sub", note: n.note }, from, cx)))))));
   },
 
   // ---- the Ask drawer, one for every view: open (380 px at the right), folded to a 28 px strip, or closed; kept per
