@@ -43,6 +43,14 @@ write(`${data}/sources.json`, {
 write(`${data}/triage.json`, Object.fromEntries(Object.entries(fx("triage.json")).map(([u, t]) => [u, { ...t, at: iso(now) }])));
 write(`${data}/review-progress.json`, { [url]: { visited: [], checked: {}, handled: {}, seen: [], ui: { tab: "steps", page: "overview", cur: 0, order: "reading" } } });
 
+// One pending review comment (pending comments live in reviews.json until the review is submitted).
+write(`${data}/reviews.json`, { [url]: [{ id: (now - 600e3).toString(36), file: "src/jobs/scheduler.ts", start: 13, end: 15, old: false,
+  hunk: '+schedule("due-reminders", DAY, async () => {\n+  await sendDueReminders(loanStore);\n+});',
+  text: "This runs every 24 h from process start, not at 08:00 like the cron rule in infra/main.tf. Can one of them go?" }] });
+
+// trustAsked: the trust question was answered (Restricted Mode), so screenshots show the review without it; frame.welcomed:
+// no first-run welcome over the demo.
 write(`${home}/shared.json`, { "review.target": pr, "review.model": "sonnet", "review.back": "demo-panel", "review.values": true,
-  "pr.selected": { all: url }, "pr.picked": { [url]: pr }, "pr.source": "repo" });
+  "pr.selected": { all: url }, "pr.picked": { [url]: pr }, "pr.source": "repo", "pr-review.trustAsked": [url],
+  "frame.welcomed": "skipped" });
 console.log(`seeded ${files.length} files, ${job.hunks.length} hunks`);

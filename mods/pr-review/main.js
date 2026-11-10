@@ -18,7 +18,7 @@ import { parsePrRef, ghTarget, pruneSources } from "./pr.js";
 import * as C from "./context.js";
 import { setupBanner, renderSetup, loadSetup, runSetup, openUrl, readConfig } from "./setup-view.js";
 import { chip } from "./stack.js";
-import { ReviewMode, startReview, saveKey, flowCard, modelPills, renderReviews, renderAgentBar } from "./review.js";
+import { ReviewMode, startReview, saveKey, flowCard, modelPills, renderReviews, renderAgentBar, renderKeys } from "./review.js";
 import { highlightRows, langOf, colors, renderLine, editorSyntax } from "./syntax.js";
 
 // Same mapping as the shipped files panel.
@@ -90,7 +90,7 @@ export default class PrReview extends View {
   init(_props, cx) {
     this.part = props()?.part ?? null;
     this.uid = Math.random().toString(36).slice(2, 8);
-    if (this.part === "bar" || this.part === "reviews" || this.part === "agentbar") return;
+    if (this.part === "bar" || this.part === "reviews" || this.part === "agentbar" || this.part === "keys") return;
     this.files = []; this.rows = []; this.sel = null; this.selEnd = null; this.from = 0; this.question = "";
     // this.uid: list/scroll ids must not collide between copies
     this.fh = cx.focus_handle();
@@ -388,7 +388,6 @@ export default class PrReview extends View {
   }
 
   addComment(cx) {
-    if (this.part === "review") return this.addFull(cx);
     const text = this.question.trim();
     if (!text || !this.open || !this.reviewKey) return;
     if (this.editing) this.comments = this.comments.map((c) => (c.id === this.editing.id ? { ...c, text } : c));
@@ -407,7 +406,7 @@ export default class PrReview extends View {
     cx.spawn(async (cx) => {
       await saveKey(reviews(), key, comments.length ? comments : undefined).catch((e) => { this.note = `Could not save the review: ${e}`; cx.notify(); });
     });
-    if (this.part === "review") this.registerReview(cx);
+    if (this.part === "review") { this.registerReview(cx); this.publish(); }
   }
 
   sendReview(cx) {
@@ -827,6 +826,7 @@ export default class PrReview extends View {
     if (this.part === "bar") return this.renderBar(cx);
     if (this.part === "reviews") return renderReviews();
     if (this.part === "agentbar") return renderAgentBar();
+    if (this.part === "keys") return renderKeys();
     if (this.part === "review") return this.renderReview(cx);
     if (this.view === "walk" && this.walkModel && walkModel() !== this.walkModel && !this.walkBusy) this.openWalk(cx, false); // picker changed: that model's cache
     // Go to: a handed-over PR (outside render), and the reviews-in-progress items when that list changes.

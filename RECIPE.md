@@ -40,12 +40,15 @@ corners and a 1 px `border`:
   `ansi2`, `missing` in `ansi1`, `not installed` in `muted` or `logged out` in `ansi3`, what it enables
   ("Go to definition in Java needs jdtls"), the install command in mono, `Copy` and `Install in terminal`.
 
-**The review layout** (`layouts/review.json`): a column, no system title bar (traffic lights at 12, 16):
+**The review layout** (`mods/pr-review/review-layout.json`, written to `layouts/` on first use): a column, no system
+title bar (traffic lights at 12, 16):
 
 - The bar (44 px, `chrome`, draggable; the mod with `{part: "bar"}`, left padding 84 px): `← Back`, `#n title`
   (14 px semibold), `owner/repo#n`, a state badge, a context tag (only with several contexts), merge risk and
-  review effort badges, `Pre-merge checks ✓ n ✗ n`, `Mark done`, `Reviews ▾`, `Values: On`, the model picker
-  (Haiku / Sonnet / Opus) and the shown analysis' model and cost.
+  review effort badges, `Pre-merge checks ✓ n ✗ n`, `Mark done`, a round `?` (the keys popup), `Reviews ▾`,
+  `Values: On`, the model picker (Haiku / Sonnet / Opus) and the shown analysis' model and cost (it truncates first
+  when the window is narrow), and at the right GitHub's green (`#238636`) `Review changes ▾`, which reads
+  `Finish your review (n) ▾` while n comments are pending.
 - The body (`{part: "review"}`): a 420 px left column with tabs `Files · n`, `Layers · n`, `Findings · n`.
   Layers: model, cost and age; merge risk and effort; `Layers / By risk`, `‹ Prev`, `Next ›`, `Re-analyze`;
   pages Overview, Security blast radius, Architecture impact, Verify; a yellow "Needs your attention" box; the
@@ -55,8 +58,17 @@ corners and a 1 px `border`:
 - On the right one virtual list of 22 px rows: the step header, then each hunk with old/new line numbers,
   `+` rows tinted `#2ea043`, `−` rows `#f85149`, and cards inline: AI suggestions (`Accept (a)`, `Dismiss (x)`)
   and findings (severity badge, reviewer in its color, `Comment`, `Discuss in chat`, `Fix`, `Dismiss`).
-- Under it: a key hint line (`j k` step, `n p` hunk, `c` comment, `a x` suggestion, `⌘ click` definition, `Esc`
-  back), the comment input, `Comment`, the pending count and `Send review`.
+- Commenting as on GitHub's "Files changed": hovering the line numbers shows a `+`. The composer is two list rows
+  under the selection's last line (168 px and 48 px, `accent` border): "Comment on lines 13–15", a fixed-height
+  textarea, then `Suggestion` (inserts a GitHub suggestion block with the selected lines), `Cancel`,
+  `Add single comment` and a solid `Start a review` / `Add review comment`. A comment whose lines are outside the PR
+  diff (opened context) gets the badge "not in the diff: will go into the review body". Pending comments show as
+  threads under their last line: `You`, a `Pending` badge, the text, `Edit`, `Delete`. GitHub's own review
+  comments on the PR show there too, read only.
+- `Finish your review` opens a 460 px popover at the top right of the body: a summary textarea, radios
+  `Comment` / `Approve` / `Request changes` with GitHub's descriptions, `Send to: GitHub | Agent session` (only
+  when the PR has a session), a preview of what goes out ("Posts one review to owner/repo#n: Comment, 2 line
+  comments, 1 in the body." and the lines), `Discard pending` and a green `Submit review`.
 - **Architecture impact** and **Security blast radius**: groups as dashed columns of cards (title up to 2 lines,
   description up to 3, type, a status chip: ADDED `ansi2`, CHANGED `accent`, UNCHANGED `muted`, REMOVED
   `ansi1`); every connection on its own lane with an arrow and a numbered round badge; a small hop where two
@@ -66,12 +78,26 @@ corners and a 1 px `border`:
 
 ## How it behaves
 
-- Agent status isn't shown; agents are only targets: "Send review", "Ask" and "Fix" go to the PR's session
+- Agent status isn't shown; agents are only targets: the panel's "Send review" and "Ask", the review layout's
+  "Submit review" sent to the agent session, and "Fix" go to the PR's session
   agent if it is live, else `claude --resume <session>` in a new tab, else this space's agent, else a new
   `claude` tab, with the prompt as its task.
 - Clicking a diff line selects it (shift-click a range); type and Enter adds a comment; `j/k` next/previous
   change, `n/p` file, `c` comment, Esc clears.
+- In the review layout, a click on a line number (or `c` on the selected line) opens the composer there;
+  shift-click extends it to a range. One composer at a time; focus goes into it; ⌘↩ adds the comment to the
+  pending review, Esc cancels. `Add single comment` posts just that comment now. Pending comments are saved per PR
+  (`pr-data/reviews.json`) and survive tab switches and restarts.
+- `Submit review` to GitHub posts one review with all pending comments in a single
+  `gh api -X POST repos/{owner}/{repo}/pulls/{n}/reviews --input -` (JSON on stdin, under the PR context's env):
+  `commit_id` the PR head, `event` COMMENT / APPROVE / REQUEST_CHANGES, `body` the summary plus the comments outside
+  the diff with their file and lines, `comments` `{path, line, side, start_line?, start_side?, body}`. Pending
+  comments clear only on success; the popover then shows the review's URL with `Open`, on failure the error (with
+  the line comments it tried). To the agent session the same review goes as one prompt with the verdict and
+  summary. Default: the agent session when the PR came from one, else GitHub.
 - `Review` switches to the review layout (and remembers the layout to come back to); `← Back` / Esc returns.
+  The first time, the mod writes `review-layout.json` to `layouts/review.json`; when a `review` layout that isn't
+  this mod's is already there, it uses `layouts/pr-review.json` instead. It never overwrites a file.
 - The AI analysis never runs by itself: "Analyze with Sonnet" (or Haiku/Opus) starts it detached; a spinner shows
   the time and the cost cap; it can take minutes. After a push, "Only new changes" analyses just the new commits.
 - `Reviews ▾` lists Claude code review, Security review and (when installed) Codex review with their last run;
@@ -85,9 +111,9 @@ corners and a 1 px `border`:
 
 ## Built from
 
-- `layouts/review.json`: `root` column (`titlebar: "none"`, `traffic_lights: [12, 16]`, `resizable: false`,
-  1 px `border` divider) with `review-bar` (44 px, `window_drag`, `{mod: "pr-review", props: {part: "bar"}}`)
-  and `review-body` (`{part: "review"}`).
+- `mods/pr-review/review-layout.json` (installed as `layouts/review.json`): `root` column (`titlebar: "none"`,
+  `traffic_lights: [12, 16]`, `resizable: false`, 1 px `border` divider) with `review-bar` (44 px, `window_drag`,
+  `{mod: "pr-review", props: {part: "bar"}}`) and `review-body` (`{part: "review"}`).
 - `mods/pr-review`: `main.js` (the panel; mixes in `review.js` for the layout parts and the `reviews` popup and
   `agentbar` window title), `pr.js` (pure: diff parsing, prompts, registry, triage, pre-merge checks),
   `arch.js` (pure: the diagram layout with lanes, ports, hops and badges), `stack.js` (diagram and card
@@ -110,6 +136,11 @@ corners and a 1 px `border`:
   layout follows.
 - `hc send` always presses Enter, so drafts go through the clipboard and `terminal.paste`.
 - The virtual list takes clicks by x position (one handler per list); measure the mono font's character width.
+  Its rows can't hold handlers or create state: the composer's `TextareaState` is made in init, its buttons are
+  placed by x, and a press in the list doesn't take the keyboard while the composer is open.
+- The bar and the body are two copies of the mod: the bar's button sends `pr-review.finish`, the body draws the
+  popover and publishes the pending count in `review.meta`.
+- Every row height is stated up front, so the composer's textarea has a fixed height (it scrolls inside).
 - Diagram text heights are estimated (29 / 38 characters per line); cards clip to 2 + 3 lines with an ellipsis
   and show the whole text as a tooltip.
 - A column with more than 7 cards keeps barycentre order only (no exhaustive crossing search).
@@ -127,6 +158,8 @@ references are written `@<path>` and `demo/seed.mjs` turns them into aliases), `
 ## Done when
 
 - `herdr-app check mods/pr-review` passes and every `test_*.mjs` / `test_*.py` passes without network.
+- In the demo (`"dryRun": true`), a click on a line number opens the composer under it, the seeded pending comment
+  shows as a thread, and `Submit review` writes the payload to `pr-data/review-dry-run.json` instead of posting.
 - The panel shows the focused branch's diff; a comment and "Send review" reach the space's agent.
 - `PRs ▾ → This repo` lists the repo's open PRs; `Review` opens the layout on one; `← Back` returns.
 - "Analyze" produces layers, an Architecture impact page where no line runs through a card and every connection

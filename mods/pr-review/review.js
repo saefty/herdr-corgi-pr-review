@@ -6,8 +6,11 @@
 // Verify, then the AI's layers; stack.js draws the pictures), Findings. Cheap context (since-diff, related PRs, CI checks)
 // loads by itself; every LLM call (Analyze, Only new changes, Verify fixes) is a click.
 // UI text is English; the AI's content stays as it answers. Keys (diff focused): j/k step (Files tab: file), n/p hunk, c comment, a/x take/drop suggestion, s/f Layers/Files, Esc back.
+// Commenting works like GitHub's "Files changed": a click on a line number (shift-click: a range) or c opens the
+// composer under that line, pending comments show as threads there, and "Finish your review" in the bar opens the
+// submit popover: one GitHub review (gh api) or, for a PR with an agent session, the prompt to that session.
 import { div } from "gpui-kit";
-import { v_flex, h_flex, Input, Scrollbar, TextView, v_virtual_list, VirtualListScrollHandle } from "gpui-base";
+import { v_flex, h_flex, Scrollbar, TextView, v_virtual_list, VirtualListScrollHandle, Textarea, TextareaState } from "gpui-base";
 import { exec, run, theme, settings, readTextFile, writeTextFile, shared, setShared, appHome, nextCommand, watchFolder, openOverlay, closeOverlay, props, home } from "herdr";
 import { parseReports, findingStatus, fixPrompt, hash, touchReview, expireReviews, resumeFields, itemKeys, expandTabs, tokenAt } from "./pr.js";
 import * as C from "./context.js";
@@ -16,22 +19,25 @@ import { highlightRows, highlightLines, langOf, colors, renderLine, refAt } from
 import { lookup, warm, contents, vscodeArgs, where, setTrusted } from "./defs.js";
 import { diffRows, hunksOf, selection, uiLine, lineKey, rangeOf, MODELS, reviewRequest, mapReview, suspectComment, stepKey, fileRows, fileTree, atLine, splitPatch } from "./pr.js";
 import { ghTarget, lowValue, markReviewed, sinceBase, verifyCandidates, applyVerification, blastArch, preMergeChecks, mergeBlockers, triageOf } from "./pr.js";
+import { diffLines, inDiff, ghReview, lineThreads, suggestionBlock, buildReview, layoutPlan } from "./pr.js";
 import { archView, archModel, archLegend, visualCard, statCard, segBar, foldCard, chip, legend, SEVERITY_COLOR } from "./stack.js";
 
 const LEVEL = { high: "ansi1", medium: "ansi3", low: "ansi4", skim: "muted" };
 const COVER = { seen: ["done", "ansi2"], partly: ["partly", "ansi3"], absent: ["missing", "ansi1"], extra: ["extra (not asked)", "ansi4"] };
 // ponytail: GitHub's saturated diff hues; the theme's olive ansi2 under alpha turned the code background grey and dulled the syntax colors.
 const tint = (kind) => (kind === "+" ? "#2ea043" : "#f85149");
+const GH_GREEN = "#238636"; // GitHub's "Review changes" button
 const STATUS = { added: ["A", "ansi2"], deleted: ["D", "ansi1"], renamed: ["R", "ansi4"], modified: ["M", "ansi3"] };
 const SPIN = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 // Diff column geometry: clicks inside the virtual list are placed by x (one click handler per list).
 const LEFT = 420, ROW = 22, GUTTER = 4 + 48 + 48 + 22, GAP_SEG = 110, BTN = 110, BTN_GAP = 8, ACT = 44;
 const FILE_CHEV = 30, FILE_SEEN = 100, FILE_WHOLE = 124;
 const MORE = 20; // lines per ↑/↓ click
+const COMPOSE = 168; // the composer row: header + a fixed-height textarea (the list needs every row's height up front)
 const progressFile = () => `${appHome()}/pr-data/review-progress.json`; // per PR: progress and where you were (bounded)
 const MAX_PROGRESS = 100;
 // Open reviews, for other mods (PROVIDERS.md). Resume contract for any mod:
-//   setShared("review.target", <a PR from pr-data/prs.json, or a registry entry's `target`>); run("layout.switch", { name: "review" })
+//   setShared("review.target", <a PR from pr-data/prs.json, or a registry entry's `target`>); run("layout.switch", { name: shared("review.layout") ?? "review" })
 // shared("review.open") is this file's in-progress and sent entries: [{url, number, repo, title, context, startedAt,
 // lastTouched, headSha, status, progress: {stepsChecked, steps, filesViewed, files, comments, findingsOpen}, target}].
 const openFile = () => `${appHome()}/pr-data/open-reviews.json`;
@@ -75,6 +81,17 @@ export function renderReviews() {
     .child(div().px(8).pt(2).text_size(11.5).text_color(t.muted).child(`Claude reviews run read-only in a checkout of the PR head${C.tagged(ctxDoc()) ? ", with the PR's context" : ""}.${hasTool("codex") ? " Codex uses its own login." : ""}`));
 }
 
+// "?" in the bar (or the ? key) opens this popup (props {part: "keys"}): the review's keys.
+export function renderKeys() {
+  const t = theme();
+  return v_flex().id("rv-keys-pop").size_full().p(12).gap(7).bg(t.popover).text_color(t.foreground).text_size(13)
+    .child(div().font_semibold().pb(2).child("Keyboard shortcuts"))
+    .children([["j k", "next / previous file (Layers: step)"], ["n p", "next / previous hunk"], ["c", "comment on the selected line"], ["a x", "accept / dismiss AI suggestion"],
+      ["⌘ click", "go to definition"], ["⌘ ↩", "add the comment (in the composer)"], ["Esc", "close composer or popover, else back"]].map(([k, what]) =>
+      h_flex().gap(10).items_center().child(h_flex().w(74).flex_none().gap(3).children(k.split(" ").map((x) => kbd(t, x)))).child(div().text_color(t.muted).child(what))))
+    .child(div().pt(2).text_size(12).text_color(t.muted).child("Click a line number to comment, shift-click for a range."));
+}
+
 // The title bar of the floating agent terminal (props {part: "agentbar", title}): drag it, close it.
 export function renderAgentBar() {
   const t = theme();
@@ -95,12 +112,21 @@ export async function saveKey(path, key, value) {
   }
 }
 
-// Opens a PR in the review layout; Back returns to the layout shown now.
-export function startReview(target) {
+// Opens a PR in the review layout; Back returns to the layout shown now. The first time, the layout is copied from
+// this folder into layouts/ ("review", or "pr-review" when another "review" layout is there; pr.js layoutPlan).
+export async function startReview(target) {
+  const dir = `${appHome()}/layouts`, read = (name) => readTextFile(`${dir}/${name}.json`).catch(() => null);
+  const plan = layoutPlan(await read("review"), await read("pr-review"));
+  if (plan.write) {
+    await exec("mkdir", ["-p", dir]).catch(() => null);
+    const text = await readTextFile(`${appHome()}/mods/pr-review/review-layout.json`);
+    await writeTextFile(`${dir}/${plan.name}.json`, text, null).catch(() => null); // null: only when still missing
+  }
   const back = shared("layout");
-  if (back && back !== "review") setShared("review.back", back);
+  if (back && back !== plan.name) setShared("review.back", back);
+  setShared("review.layout", plan.name);
   setShared("review.target", target);
-  run("layout.switch", { name: "review" });
+  run("layout.switch", { name: plan.name });
 }
 const leave = () => run("layout.switch", { name: shared("review.back") || "main" });
 
@@ -163,6 +189,14 @@ export const ReviewMode = {
       for (;;) { await watchFolder(findDir()).catch(() => null); await this.loadFindings(cx); }
     });
     this.press = { x: 0, w: 0, shift: false }; this.items = []; this.at = {};
+    // The inline composer (one at a time, under the selection) and the Finish-your-review popover's summary.
+    this.composing = false; this.finishOpen = false; this.event = "comment"; this.route = null; this.posted = null; this.gh = [];
+    this.draft = TextareaState.new({ placeholder: "Leave a comment (⌘↩ adds it, Esc cancels)" });
+    this.summary = TextareaState.new({ placeholder: "Leave a comment" });
+    for (const [st, k] of [[this.draft, "draft"], [this.summary, "summary"]]) {
+      st.on("focus", (_e, cx) => { this.typing = k; cx.notify(); });
+      st.on("blur", (_e, cx) => { if (this.typing === k) this.typing = false; cx.notify(); });
+    }
     this.prSel = shared("review.target") ?? null;
     cx.spawn(async (cx) => { this.cfg = await readConfig(); await loadSetup(this, cx); });
     this.refresh(cx);
@@ -189,6 +223,12 @@ export const ReviewMode = {
     else if (name === "done") { this.registerReview(cx, { status: "done", doneAt: Date.now() }); this.note = "Marked done: it leaves the open reviews"; }
     else if (name === "findings") this.tab = "findings";
     else if (name === "back") leave();
+    else if (name === "finish") this.finishOpen = !this.finishOpen;
+    else if (name === "keys") openOverlay({ mod: "pr-review", props: { part: "keys" }, kind: "popup", width: 330, height: 250 });
+    else if (name === "comment") { // comment:<path>:<line>[-<end>]: the composer under that new-side line (scripts, tests)
+      const m = /^(.*):(\d+)(?:-(\d+))?$/.exec(arg);
+      if (m) { this.tab = "files"; this.collapsed.delete(m[1]); this.fsel = { path: m[1], a: `+${m[2]}`, b: `+${m[3] ?? m[2]}` }; this.openComposer(cx, null, true); }
+    }
     else if (name === "open") {
       cx.spawn(async () => {
         const prs = JSON.parse(await readTextFile(`${appHome()}/pr-data/prs.json`).catch(() => null) ?? "{}").prs ?? [];
@@ -200,6 +240,7 @@ export const ReviewMode = {
 
   resetReview() {
     this.reviewKey = null; this.ai = null; this.aiError = null; this.aiModel = null; this.cur = 0; this.focusHunk = null; this.fsel = null; this.sug = null;
+    this.composing = false; this.editing = null; this.finishOpen = false; this.posted = null; this.gh = []; this.route = null; this.event = "comment";
     this.full = {}; this.gaps = {}; this.whole = new Set(); this.collapsed = new Set(); this.hunks = null;
     this.ctx = null; this.since = null; this.sinceOn = false; this.lastReviewed = null; this.page = "overview"; this.aiFile = null; this.needClone = null;
   },
@@ -212,6 +253,8 @@ export const ReviewMode = {
     this.byId = new Map(this.hunks.map((h) => [h.id, h]));
     this.fileHunks = new Map();
     for (const h of this.hunks) this.fileHunks.set(h.path, [...(this.fileHunks.get(h.path) ?? []), h]);
+    this.diffLines = diffLines(this.hunks);
+    this.loadGhComments(cx);
     const p = JSON.parse(await readTextFile(progressFile()).catch(() => null) ?? "{}")[url] ?? {};
     this.prog = { visited: new Set(p.visited ?? []), checked: p.checked ?? {}, handled: p.handled ?? {}, seen: new Set(p.seen ?? []) };
     this.collapsed = new Set(this.prog.seen);
@@ -231,7 +274,7 @@ export const ReviewMode = {
     this.loadAi(cx, "cache"); // never runs by itself: Analyze is a click
     await this.loadFindings(cx);
     this.registerReview(cx); // opened: an open review from now on
-    cx.notify();
+    this.publish(); cx.notify();
   },
 
   // The PR head as files (worktree.py: a detached worktree of a dedicated clone under the clone root), for reviewers,
@@ -497,7 +540,7 @@ export const ReviewMode = {
   // What the bar shows: the analysis on screen, or the one running.
   publish() {
     const a = this.ai;
-    setShared("review.meta", { url: this.prSel?.url ?? null, model: this.aiModel, busy: this.aiBusy?.model ?? null, error: this.aiError,
+    setShared("review.meta", { url: this.prSel?.url ?? null, pending: this.comments?.length ?? 0, model: this.aiModel, busy: this.aiBusy?.model ?? null, error: this.aiError,
       shown: a ? { model: a.model, model_id: a.model_id, cost: a.cost, exact: a.exact, mergeRisk: a.mergeRisk, effort: a.effort } : null,
       checks: this.prSel ? this.checksNow().reduce((n, c) => ({ ok: n.ok + (c.ok === true), fail: n.fail + (c.ok === false) }), { ok: 0, fail: 0 }) : null });
   },
@@ -800,6 +843,8 @@ export const ReviewMode = {
   pushRows(items, at, rows, path, hunkOf) {
     const sugs = this.openSugs(path), cms = this.comments.filter((c) => c.file === path), used = new Set();
     const finds = this.find.list.filter((f) => f.file === path && ["open", "progress", "recheck"].includes(this.fstatus(f)));
+    const gh = this.gh.filter((g) => g.path === path), f = this.fsel, range = this.composing && f?.path === path && rangeOf(rows, f.a, f.b);
+    const thread = { gh, editId: this.composing ? this.editing?.id ?? null : null, composeKey: range && at.compose === undefined ? lineKey(rows[range[1]]) : null };
     rows.forEach((r, ri) => {
       if (r.kind === "gap") { items.push({ t: "gap", path, r }); return; }
       const hunk = hunkOf(r);
@@ -808,7 +853,12 @@ export const ReviewMode = {
       if (r.number === undefined) return;
       if (this.defAt && this.defAt.key === `${path}:${lineKey(r)}`) items.push({ t: "def", d: this.defAt });
       for (const s of sugs) if (atLine(r, s.line, s.old)) items.push({ t: "sug", s }, { t: "sugact", s });
-      for (const c of cms) if (atLine(r, c.end, c.old)) { used.add(c); items.push({ t: "comment", c }, { t: "cact", c }); }
+      for (const it of lineThreads(r, cms, thread)) {
+        if (it.c) used.add(it.c);
+        if (it.t === "compose") { if (at.compose !== undefined) continue; at.compose = items.length; } // one composer, even when a hunk shows twice
+        if (it.t === "composeact" && at.compose !== items.length - 1) continue;
+        items.push(it);
+      }
       if (r.kind !== "-") for (const f of finds) if (f.line === r.number) items.push({ t: "find", f }, { t: "fact", f });
     });
     return cms.filter((c) => !used.has(c));
@@ -849,7 +899,10 @@ export const ReviewMode = {
       if (!hs.length) { items.push({ t: "note", text: f.status === "renamed" ? `Renamed from ${f.from}, content unchanged` : "No text change" }); continue; }
       const rows = fileRows(hs.map((h) => h.rows), full, this.gaps[f.path], this.whole.has(f.path), f.status === "modified" || f.status === "renamed");
       const loose = this.pushRows(items, at, rows, f.path, (r) => (r.h === undefined ? null : hs[r.h].id));
-      for (const c of loose) items.push({ t: "comment", c, loose: true }, { t: "cact", c });
+      for (const c of loose) {
+        if (this.composing && this.editing?.id === c.id && at.compose === undefined) { at.compose = items.length; items.push({ t: "compose", c, loose: true }, { t: "composeact", c }); }
+        else items.push({ t: "comment", c, loose: true }, { t: "cact", c });
+      }
     }
     return { items, at };
   },
@@ -861,6 +914,7 @@ export const ReviewMode = {
     const it = this.byKey?.get(key); // a stable key: the item pressed, even if the list changed since
     if (!it) return;
     const { x, shift } = this.press;
+    if (it.t === "compose") return this.draft.focus();
     this.fh.focus();
     if (it.t === "row") {
       if (it.hunk) this.visit(it.hunk, cx);
@@ -868,12 +922,17 @@ export const ReviewMode = {
       if (r.number === undefined) return;
       if (this.press.cmd) return this.define(it, r, cx); // ⌘-click a name: its definition
       // Selections are (file, line keys), not row indexes: rows are rebuilt on every render.
-      const k = lineKey(r), f = this.fsel;
+      // A line number (GitHub's gutter "+") opens the composer there; shift-click makes it a range.
+      const k = lineKey(r), f = this.fsel, gutter = x < GUTTER - 22;
+      if (this.composing && !gutter && !shift) return this.draft.focus(); // the open composer keeps its line
       if (shift && f && f.path === it.path && rangeOf(this.rowsFor(it.path), f.a, k)) this.fsel = { ...f, b: k };
+      else if (gutter) this.fsel = { path: it.path, a: k, b: k };
       else this.fsel = f?.path === it.path && f.a === k && f.b === k ? null : { path: it.path, a: k, b: k };
       this.sug = null;
+      if (gutter || (shift && this.composing && !this.editing)) this.openComposer(cx);
     } else if (it.t === "sug") { this.sug = this.sug === it.s.key ? null : it.s.key; this.visit(it.s.hunk, cx); }
-    else if (it.t === "comment") this.editComment(it.c, cx);
+    else if (it.t === "comment") this.openComposer(cx, it.c);
+    else if (it.t === "composeact") { const b = this.composeButtons().find((b) => x >= b.x && x < b.x + b.w); if (b) this[b.act](cx); }
     else if (it.t === "def") {
       const b = x - GUTTER - 12, which = b >= 0 && b < BTN + 40 ? 0 : b >= BTN + 40 + BTN_GAP && b < 2 * (BTN + 40) + BTN_GAP ? 1 : b >= 2 * (BTN + 40 + BTN_GAP) ? 2 : -1;
       const d = it.d.res?.definitions?.[0];
@@ -891,7 +950,7 @@ export const ReviewMode = {
       const b = x - GUTTER - 12, which = b >= 0 && b < BTN ? 0 : b >= BTN + BTN_GAP && b < 2 * BTN + BTN_GAP ? 1 : -1;
       if (it.t === "sugact" && which === 0) this.takeSug(it.s, cx);
       else if (it.t === "sugact" && which === 1) this.dropSug(it.s, cx);
-      else if (it.t === "cact" && which === 0) this.editComment(it.c, cx);
+      else if (it.t === "cact" && which === 0) this.openComposer(cx, it.c);
       else if (it.t === "cact" && which === 1) this.dropComment(it.c, cx);
     } else if (it.t === "gap") this.expand(it.path, it.r.gap, x < GUTTER + GAP_SEG ? "down" : x < GUTTER + 2 * GAP_SEG ? "up" : "all", cx);
     else if (it.t === "file") {
@@ -998,37 +1057,226 @@ export const ReviewMode = {
     if (i >= 0) this.fsel = { path: h.path, a: lineKey(h.rows[i]), b: lineKey(h.rows[i]) };
   },
 
-  addFull(cx) {
-    const text = this.question.trim();
-    if (!text || !this.reviewKey) return;
-    if (this.editing) this.comments = this.comments.map((c) => (c.id === this.editing.id ? { ...c, text } : c));
-    else if (this.selAnchor()) this.comments = [...this.comments, { id: Date.now().toString(36), file: this.fsel.path, ...this.selAnchor(), text }];
-    else { this.note = "Select a line first (click it; shift-click: a range)"; return cx.notify(); }
-    this.editing = null; this.question = ""; this.input.set_value(""); this.fsel = null;
-    this.fh.focus(); this.persist(cx); cx.notify();
+  // ---- the inline composer (a row of the diff list under the selection; edit: in place of that comment)
+
+  openComposer(cx, edit = null, scroll = false) {
+    if (edit) {
+      const side = edit.old ? "-" : "+";
+      this.editing = edit; this.fsel = { path: edit.file, a: `${side}${edit.start ?? edit.end}`, b: `${side}${edit.end}` };
+      this.draft.set_value(edit.text);
+    } else {
+      this.ensureSel();
+      if (!this.fsel) { this.note = "Select a line first (click its number; shift-click: a range)"; return cx.notify(); }
+      if (this.editing) { this.editing = null; this.draft.set_value(""); }
+    }
+    this.composing = true; this.note = null; this.scrollCompose = scroll;
+    cx.timer.after(0, (cx) => { this.draft.focus(); cx.notify(); }); // its row exists once the list drew it
+    cx.notify();
+  },
+
+  closeComposer(cx) {
+    this.composing = false; this.editing = null; this.draft.set_value(""); this.fh.focus(); cx.notify();
+  },
+
+  // The composer's buttons, left to right: x from the list's left edge (clicks are placed by x, see onItem).
+  composeButtons() {
+    const list = this.editing ? [["Suggestion", 104, "insertSuggestion"], ["Cancel", 80, "closeComposer"], ["Update comment", 140, "addDraft", true]]
+      : [["Suggestion", 104, "insertSuggestion"], ["Cancel", 80, "closeComposer"], ["Add single comment", 160, "singleComment"],
+        [this.comments.length ? "Add review comment" : "Start a review", 160, "addDraft", true]];
+    let x = GUTTER + 16; // the card's 4 px border and 12 px padding
+    return list.map(([label, w, act, primary], i) => { const b = { label, w, act, primary, x: x + (i === 1 ? 24 : 0) }; x = b.x + w + BTN_GAP; return b; });
+  },
+
+  // A ```suggestion block with the selected lines, for GitHub's "Commit suggestion".
+  insertSuggestion() {
+    const f = this.fsel, rows = f && this.rowsFor(f.path), range = rows && rangeOf(rows, f.a, f.b);
+    if (!range) return;
+    const cur = this.draft.value();
+    this.draft.set_value(`${cur}${cur && !cur.endsWith("\n") ? "\n" : ""}${suggestionBlock(rows.slice(range[0], range[1] + 1))}`);
+    this.draft.focus();
+  },
+
+  // The composer's comment: its text with the selection as anchor (file, lines, side, quoted code); null when empty.
+  draftComment() {
+    const text = this.draft.value().trim(), anchor = this.selAnchor();
+    if (!text) return null;
+    if (!anchor) { this.note = "Select a line first (click its number; shift-click: a range)"; return null; }
+    return { id: Date.now().toString(36), file: this.fsel.path, ...anchor, text };
+  },
+
+  // "Start a review" / "Add review comment" / "Update comment" (⌘↩): into the pending review.
+  addDraft(cx) {
+    if (this.editing) {
+      const text = this.draft.value().trim();
+      if (!text) return;
+      this.comments = this.comments.map((c) => (c.id === this.editing.id ? { ...c, text } : c));
+    } else {
+      const c = this.draftComment();
+      if (!c) return cx.notify();
+      this.comments = [...this.comments, c];
+    }
+    this.fsel = null; this.closeComposer(cx); this.persist(cx);
+  },
+
+  // "Add single comment": this one comment alone, now, where reviews go (GitHub: a review with one comment; agent: its prompt).
+  singleComment(cx) {
+    const c = this.draftComment();
+    if (!c) return cx.notify();
+    const done = (cx) => { this.fsel = null; this.closeComposer(cx); };
+    if (this.routeNow() === "github") this.postGh([c], "comment", "", cx, done);
+    else this.deliver(buildReview({ pr: this.pr, base: this.base, comments: [c], lang: this.lang() }), cx, "Comment", done);
+  },
+
+  // ---- where reviews go: GitHub (any PR there) or the PR's agent session (a PR made in a session; branch diffs)
+
+  routes() {
+    const gh = /^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+/.test(this.prSel?.url ?? "");
+    return [...(gh ? ["github"] : []), ...(this.prSel?.session || !gh ? ["agent"] : [])];
+  },
+  routeNow() {
+    const all = this.routes();
+    return all.includes(this.route) ? this.route : all.includes("agent") && this.prSel?.session ? "agent" : all[0];
+  },
+
+  // Submit review (the popover): every pending comment, the verdict and the summary, in one go.
+  submitReview(cx) {
+    const sent = this.comments, summary = this.summary.value();
+    const done = (cx) => {
+      this.comments = this.comments.filter((c) => !sent.includes(c)); this.summary.set_value(""); this.event = "comment";
+      this.persist(cx); this.registerReview(cx, { status: "sent", sentAt: Date.now() });
+    };
+    if (this.routeNow() === "github") return this.postGh(sent, this.event, summary, cx, done);
+    if (!sent.length) { this.note = "Nothing to send: add a comment first"; return cx.notify(); }
+    this.deliver(buildReview({ pr: this.pr, base: this.base, comments: sent, lang: this.lang(), event: this.event, summary }), cx, "Review", (cx) => { done(cx); this.finishOpen = false; });
+  },
+
+  // One GitHub review with these comments (pr.js ghReview), JSON on stdin, as the PR's context (its gh account).
+  // Config "dryRun": true writes the payload to pr-data/review-dry-run.json instead of posting.
+  postGh(comments, event, summary, cx, done) {
+    const pr = this.prSel, m = /github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/.exec(pr?.url ?? "");
+    if (!m || this.sending) return;
+    this.sending = true; this.note = null; this.posted = null;
+    const env = this.ctxEnv(this.ctxId()), sh = (script, ...args) => exec(env[0] ?? "sh", [...env.slice(1), ...(env.length ? ["sh"] : []), "-c", script, ...args], { timeout: 60000 });
+    cx.spawn(async (cx) => {
+      try {
+        if (!this.head) {
+          const v = await sh('gh pr view "$0" --json headRefOid --jq .headRefOid', pr.url);
+          if (v.code !== 0 || !v.stdout.trim()) throw new Error("PR head unknown");
+          this.head = v.stdout.trim();
+        }
+        const { payload, outside } = ghReview({ comments, event, summary, commit: this.head, lines: this.diffLines ?? new Map() });
+        if (!payload.comments.length && !payload.body && payload.event !== "APPROVE") throw new Error("Nothing to post: add a comment or a summary");
+        if (this.cfg?.dryRun) {
+          const file = `${appHome()}/pr-data/review-dry-run.json`, before = await readTextFile(file).catch(() => null);
+          await writeTextFile(file, JSON.stringify({ endpoint: `repos/${m[1]}/pulls/${m[2]}/reviews`, payload }, null, 1), before);
+          this.posted = { dry: file, outside: outside.length };
+          this.note = `Dry run: nothing posted, the payload is in ${file.replace(home(), "~")}`;
+          return;
+        }
+        const r = await sh('printf %s "$1" | gh api -X POST "$0" --input -', `repos/${m[1]}/pulls/${m[2]}/reviews`, JSON.stringify(payload));
+        if (r.code !== 0) {
+          let msg = (r.stderr || "").trim();
+          try { const j = JSON.parse(r.stdout); msg = [j.message, ...(j.errors ?? []).map((e) => (typeof e === "string" ? e : e.message ?? JSON.stringify(e)))].filter(Boolean).join(": "); } catch { /* not JSON */ }
+          const where = payload.comments.map((c) => `${c.path}:${c.start_line ? `${c.start_line}–` : ""}${c.line}`).join(", ");
+          throw new Error(`${msg || "gh api failed"}${/diff|line|position/i.test(msg) && where ? ` (line comments: ${where})` : ""}`);
+        }
+        const url = JSON.parse(r.stdout).html_url ?? pr.url;
+        this.posted = { url }; this.note = `Review posted: ${url}`;
+        done(cx);
+      } catch (e) { this.note = `Not posted: ${String(e).replace(/^Error: /, "")}`; }
+      finally { this.sending = false; cx.notify(); }
+    });
+    cx.notify();
+  },
+
+  // GitHub's review comments on this PR, under their lines (read only; outdated ones, without a line, are left out).
+  loadGhComments(cx) {
+    const pr = this.prSel, m = /github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/.exec(pr?.url ?? "");
+    if (!m || this.cfg?.dryRun) return; // dry run: no network (the demo)
+    const env = this.ctxEnv(this.ctxId()), argv = [...env, "gh", "api", "--paginate", `repos/${m[1]}/pulls/${m[2]}/comments?per_page=100`,
+      "--jq", ".[] | select(.line != null) | {id, path, line, side, user: .user.login, body, at: .created_at}"];
+    cx.spawn(async (cx) => {
+      const r = await exec(argv[0], argv.slice(1), { timeout: 30000 }).catch(() => null);
+      if (r?.code !== 0 || this.prSel?.url !== pr.url) return;
+      this.gh = r.stdout.split("\n").filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+      cx.notify();
+    });
   },
 
   onReviewKey(e, cx) {
-    if (this.typing) { if (e.key === "escape") { this.cancel(cx); cx.stop_propagation(); } return; }
+    if (this.typing) {
+      if (this.typing === "draft" && e.keystroke === "cmd-enter") this.addDraft(cx);
+      else if (e.key === "escape" && this.typing === "summary") { this.finishOpen = false; this.fh.focus(); cx.notify(); }
+      else if (e.key === "escape") this.closeComposer(cx);
+      else return;
+      return cx.stop_propagation();
+    }
     const k = e.keystroke;
     if (k === "j" || k === "k") {
       const d = k === "j" ? 1 : -1;
       if (this.tab === "steps") this.goStep(this.cur + d, cx); else this.goFile(d);
     }
     else if (k === "n" || k === "p") this.goHunk(k === "n" ? 1 : -1, cx);
-    else if (k === "c") { this.ensureSel(); this.input.focus(); }
+    else if (k === "c") this.openComposer(cx, null, true);
+    else if (k === "shift-/" || e.key === "?") this.command("keys", cx);
     else if (k === "a" || k === "x") { const s = this.focusedSug(); if (s) (k === "a" ? this.takeSug(s, cx) : this.dropSug(s, cx)); }
     else if (k === "s" || k === "f") this.tab = k === "s" ? "steps" : "files";
-    else if (k === "escape") { if (this.defFile) this.defFile = null; else if (this.defAt) this.defAt = null; else leave(); }
+    else if (k === "escape") { if (this.finishOpen) this.finishOpen = false; else if (this.composing) this.closeComposer(cx); else if (this.defFile) this.defFile = null; else if (this.defAt) this.defAt = null; else leave(); }
     else return;
     cx.stop_propagation(); cx.notify();
+  },
+
+  // ---- render: Finish your review (opened from the bar's button: the "finish" command)
+
+  finishPopover(t) {
+    const n = this.comments.length, routes = this.routes(), route = this.routeNow(), gh = route === "github";
+    const plan = gh ? ghReview({ comments: this.comments, event: this.event, commit: this.head, lines: this.diffLines ?? new Map() }) : null;
+    const repo = /github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/.exec(this.prSel?.url ?? "");
+    const label = { comment: "Comment", approve: "Approve", request_changes: "Request changes" };
+    const radio = (k, what) => h_flex().id(`rv-ev-${k}`).gap(10).px(6).py(5).rounded(6).items_start().cursor_pointer().hover((s) => s.bg(t.hover))
+      .on_click((_e, cx) => { this.event = k; cx.notify(); })
+      .child(div().w(16).flex_none().text_color(this.event === k ? t.accent : t.muted).child(this.event === k ? "◉" : "○"))
+      .child(v_flex().flex_1().min_w(0).child(div().font_semibold().child(label[k])).child(div().text_size(12).text_color(t.muted).whitespace_normal().child(what)));
+    const where = gh ? plan.payload.comments.map((c) => `${c.path} ${c.start_line ? `lines ${c.start_line}–${c.line}` : `line ${c.line}`}${c.side === "LEFT" ? " (old)" : ""}`) : this.comments.map((c) => `${c.file} ${uiLine(c)}`);
+    const ready = !this.sending && (gh || n > 0); // GitHub: a summary or a verdict alone is a review too
+    return v_flex().id("rv-finish").absolute().top(8).right(12).w(460).p(14).gap(10).rounded(10).border_1().border_color(t.border).bg(t.popover).shadow_lg()
+      .text_size(13).text_color(t.foreground).on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .child(h_flex().items_center().child(div().flex_1().font_semibold().text_size(14).child("Finish your review"))
+        .child(pill("rv-finish-x", t, "✕", (_e, cx) => { this.finishOpen = false; this.fh.focus(); cx.notify(); })))
+      .child(div().id("rv-summary").h(96).px(10).py(6).rounded(6).border_1().border_color(this.typing === "summary" ? t.accent : t.border).bg(t.background).cursor_text()
+        .on_click(() => this.summary.focus()).child(Textarea.new(this.summary).size_full().text_size(13.5).text_color(t.foreground)))
+      .child(v_flex().gap(2)
+        .child(radio("comment", "Submit general feedback without explicit approval."))
+        .child(radio("approve", "Give your approval to merge these changes."))
+        .child(radio("request_changes", "Submit feedback that must be addressed before merging.")))
+      .when(routes.length > 1, (e) => e.child(h_flex().gap(6).items_center().child(div().text_size(12).text_color(t.muted).child("Send to"))
+        .child(pill("rv-route-github", t, "GitHub", (_e, cx) => { this.route = "github"; cx.notify(); }, route === "github"))
+        .child(pill("rv-route-agent", t, "Agent session", (_e, cx) => { this.route = "agent"; cx.notify(); }, route === "agent"))))
+      // What the click sends, before it is sent.
+      .child(v_flex().gap(3).p(8).rounded(6).bg(t.surface).text_size(12)
+        .child(div().text_color(t.foreground).whitespace_normal().child(gh
+          ? `Posts one review to ${repo ? `${repo[1]}#${repo[2]}` : "GitHub"}: ${label[this.event]}, ${plan.payload.comments.length} line ${plan.payload.comments.length === 1 ? "comment" : "comments"}${plan.outside.length ? `, ${plan.outside.length} in the body` : ""}.`
+          : `Sends ${n} ${n === 1 ? "comment" : "comments"} (${label[this.event]}) to the PR's agent session.`))
+        .children(where.slice(0, 6).map((w) => div().truncate().text_color(t.muted).child(`· ${w}`)))
+        .when(where.length > 6, (e) => e.child(div().text_color(t.muted).child(`… and ${where.length - 6} more`)))
+        .when(gh && plan.outside.length > 0, (e) => e.children(plan.outside.slice(0, 3).map((c) => div().truncate().text_color(t.ansi3).child(`· ${c.file} ${uiLine(c) || "(no line)"}: not in the diff, goes into the body`)))))
+      .when(Boolean(this.posted?.url), (e) => e.child(h_flex().gap(8).items_center().text_size(12).text_color(t.ansi2)
+        .child(div().flex_1().min_w(0).truncate().child(`Posted: ${this.posted.url}`)).child(pill("rv-posted-open", t, "Open", () => openUrl(this.posted.url)))))
+      .when(Boolean(this.note) && /^(Not posted|Not sent|Dry run|Nothing)/.test(this.note ?? ""), (e) => e.child(div().text_size(12).whitespace_normal()
+        .text_color(/^Dry run/.test(this.note) ? t.muted : t.ansi1).child(this.note)))
+      .child(h_flex().gap(8).items_center()
+        .when(n > 0, (e) => e.child(pill("rv-rdrop", t, "Discard pending", (_e, cx) => { this.comments = []; this.persist(cx); cx.notify(); })))
+        .child(div().flex_1())
+        .child(div().id("rv-submit").px(14).h(32).flex().items_center().rounded(8).text_size(13).font_semibold().bg(ready ? GH_GREEN : t.raised)
+          .text_color(ready ? "#ffffff" : t.muted).when(ready, (e) => e.cursor_pointer())
+          .on_click((_e, cx) => { if (ready) this.submitReview(cx); }).child(this.sending ? "Submitting…" : "Submit review")));
   },
 
   // ---- render: the bar
 
   renderBar() {
     const t = theme(), pr = shared("review.target"), meta = shared("review.meta") ?? {}, m = model();
-    const shown = meta.url === pr?.url ? meta.shown : null, busy = meta.url === pr?.url ? meta.busy : null;
+    const shown = meta.url === pr?.url ? meta.shown : null, busy = meta.url === pr?.url ? meta.busy : null, pending = meta.url === pr?.url ? meta.pending ?? 0 : 0;
     return h_flex().id("rv-bar").size_full().pl(84).pr(14).gap(10).items_center().bg(t.chrome).text_color(t.foreground).text_size(13.5)
       .child(pill("rv-back", t, "← Back", () => leave()))
       .child(div().flex_1().min_w(0).truncate().font_semibold().text_size(14).child(pr ? `#${pr.number} ${pr.title ?? ""}` : "Review"))
@@ -1040,17 +1288,27 @@ export const ReviewMode = {
         h_flex().gap(6).child("Pre-merge checks").child(div().text_color(t.ansi2).child(`✓ ${meta.checks.ok}`)).child(div().text_color(meta.checks.fail ? t.ansi1 : t.muted).child(`✗ ${meta.checks.fail}`)),
         () => run("pr-review.page:overview"))))
       .child(pill("rv-done", t, "Mark done", () => run("pr-review.done")))
+      .child(div().id("rv-keys").w(26).h(26).flex().items_center().justify_center().rounded_full().border_1().border_color(t.border).text_size(12.5).text_color(t.muted)
+        .cursor_pointer().hover((s) => s.text_color(t.foreground)).on_mouse_down("left", stop).tooltip("Keyboard shortcuts")
+        .on_click(() => openOverlay({ mod: "pr-review", props: { part: "keys" }, kind: "popup", width: 330, height: 250 })).child("?"))
       .child(pill("rv-reviews-btn", t, Object.values(shared("review.reviewers") ?? {}).some((r) => r.busy) ? "Reviews ⋯" : "Reviews ▾",
         () => openOverlay({ mod: "pr-review", props: { part: "reviews" }, kind: "popup", width: 460, height: 250 })))
       .when(Boolean(this.worktree?.path) && !this.trustedPr(), (e) => e.child(div().id("rv-trust-wrap").tooltip("Restricted Mode: someone else's code, so language servers don't run anything from the repository and go-to-definition may find less. Click to trust this PR.")
         .child(pill("rv-trust", t, "Restricted Mode · Trust", (_e, cx) => this.trust("pr", cx), false, t.ansi3))))
       .child(pill("rv-values", t, `Values: ${valuesOn() ? "On" : "Off"}`, () => setShared("review.values", !valuesOn()), valuesOn()))
-      .child(h_flex().flex_none().gap(4).p(3).items_center().rounded(8).border_1().border_color(t.border)
-        .children(Object.entries(MODELS).map(([k, v]) => pill(`rv-m-${k}`, t, v.label, () => setShared("review.model", k), m === k)))
-        .child(div().px(6).text_size(12).text_color(meta.error ? t.ansi1 : t.muted)
+      // Shrinks (its status text truncates) so "Finish your review" stays on screen in a narrow window.
+      .child(h_flex().min_w(0).overflow_hidden().gap(4).p(3).items_center().rounded(8).border_1().border_color(t.border)
+        .children(Object.entries(MODELS).map(([k, v]) => pill(`rv-m-${k}`, t, v.label, () => setShared("review.model", k), m === k).flex_none()))
+        .child(div().min_w(0).truncate().px(6).text_size(12).text_color(meta.error ? t.ansi1 : t.muted)
           .child(busy ? h_flex().gap(6).child(div().child(SPIN[0]).frames(SPIN, 90)).child(`${MODELS[busy]?.label} analyzing…`)
             : shown ? `${MODELS[shown.model]?.label ?? shown.model}${shown.cost != null ? ` · $${shown.cost.toFixed(3)}` : ""}${shown.exact ? "" : " · older diff"}`
-            : meta.error ? "Analysis failed" : "Not analyzed")));
+            : meta.error ? "Analysis failed" : "Not analyzed")))
+      // GitHub's green "Review changes" / "Finish your review", with the pending count; the review copy draws the popover.
+      .child(div().id("rv-finish-btn").flex_none().px(12).h(30).flex().items_center().gap(6).rounded(7).bg(GH_GREEN).text_color("#ffffff").text_size(13).font_semibold()
+        .cursor_pointer().on_mouse_down("left", stop).on_click(() => run("pr-review.finish"))
+        .child(pending ? "Finish your review" : "Review changes")
+        .when(pending > 0, (e) => e.child(div().px(6).rounded_full().bg("#ffffff").text_color(GH_GREEN).text_size(11.5).child(String(pending))))
+        .child("▾"));
   },
 
   // ---- render: the left column
@@ -1494,6 +1752,9 @@ export const ReviewMode = {
     if (it.t === "step") return 66 + 24 * it.s.questions.length;
     if (it.t === "sug") return 44 + 21 * this.lines(it.s.reason);
     if (it.t === "comment") return 44 + 21 * this.lines(it.c.text);
+    if (it.t === "gh") return 44 + 21 * Math.min(6, this.lines(it.g.body));
+    if (it.t === "compose") return COMPOSE;
+    if (it.t === "composeact") return ACT + 4;
     if (it.t === "sugact" || it.t === "cact" || it.t === "fact") return ACT;
     if (it.t === "def") return 190;
     if (it.t === "find") return 44 + 21 * Math.min(3, this.lines(`${it.f.title} ${it.f.detail}`));
@@ -1515,7 +1776,10 @@ export const ReviewMode = {
       return mono(h_flex()).h(ROW).w_full().text_size(13).cursor_pointer()
         .when(Boolean(tone), (e) => e.bg(tint(r.kind) + "1a")).when(on, (e) => e.bg(t.selection))
         .child(div().w(4).h_full().flex_none().when(on, (e) => e.bg(t.accent)).when(!on && Boolean(focus), (e) => e.bg(t.accent + "55")))
-        .child(h_flex().h_full().flex_none().when(Boolean(tone), (e) => e.bg(tint(r.kind) + "40")).child(num(r.o)).child(num(r.n)))
+        .child(h_flex().h_full().flex_none().relative().when(Boolean(tone), (e) => e.bg(tint(r.kind) + "40")).child(num(r.o)).child(num(r.n))
+          // GitHub's "+" on hover: the line numbers are the comment button (onItem: x inside the gutter).
+          .child(h_flex().absolute().inset_0().justify_end().items_center().text_color("#00000000").hover((s) => s.text_color(t.accent_foreground).bg(t.accent + "26"))
+            .child(div().w(18).h(18).mr(2).rounded(4).flex().items_center().justify_center().font_semibold().hover((s) => s.bg(t.accent)).child("+"))))
         .child(div().w(22).flex_none().text_center().font_semibold().text_color(tone ?? t.muted).child(r.kind === " " ? "" : r.kind === "-" ? "−" : "+"))
         .child(div().flex_1().min_w(0).pr(12).truncate().text_color(t.foreground).child(this.code(r, it)))
         .when(Boolean(this.traces?.get(`${it.path}:${r.n}`)) && r.kind !== "-", (e) => e.child(div().flex_none().max_w(460).mr(12).px(8).h(18).flex().items_center()
@@ -1554,16 +1818,47 @@ export const ReviewMode = {
     }
     if (it.t === "comment" || it.t === "cact") {
       const c = it.c, at = Number.parseInt(c.id, 36), time = Number.isFinite(at) ? new Date(at).toTimeString().slice(0, 5) : "";
-      const card = (e) => e.border_l(4).border_r(1).border_color(this.editing?.id === c.id ? t.accent : t.border).bg(t.surface);
+      const card = (e) => e.border_l(4).border_r(1).border_color(t.border).bg(t.surface);
       if (it.t === "cact") {
         return div().w_full().h(ACT).pl(GUTTER).pr(16).pb(6).child(card(h_flex()).size_full().px(12).gap(BTN_GAP).items_center().border_b(1)
           .child(button(t, "Edit", t.border, t.foreground)).child(button(t, "Delete", t.border, t.ansi1)));
       }
+      const out = this.routeNow() === "github" && !inDiff(this.diffLines ?? new Map(), c);
       return div().w_full().h(this.sizeOf(it)).pl(GUTTER).pr(16).pt(6).child(card(v_flex()).size_full().px(12).pt(8).gap(6).border_t(1).text_size(13.5)
         .child(h_flex().h(18).gap(8).items_center().text_size(12)
-          .child(div().font_semibold().text_color(t.foreground).child("You"))
-          .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(`${time} · pending${c.from === "ki" ? " · from AI suggestion" : ""}${it.loose ? ` · ${uiLine(c)}, not shown` : ""}`)))
+          .child(div().font_semibold().text_color(t.foreground).child("You")).child(badge(t, "Pending", t.ansi3))
+          .when(out, (e) => e.child(badge(t, "not in the diff: goes into the review body", t.muted)))
+          .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(`${time}${c.from === "ki" ? " · from AI suggestion" : ""}${it.loose ? ` · ${uiLine(c)}, not shown` : ""}`)))
         .child(div().flex_1().min_h(0).overflow_hidden().line_height(1.55).whitespace_normal().text_color(t.foreground).child(c.text)));
+    }
+    if (it.t === "gh") {
+      const g = it.g;
+      return div().w_full().h(this.sizeOf(it)).pl(GUTTER).pr(16).pt(6).child(v_flex().size_full().px(12).pt(8).gap(6).border_l(4).border_r(1).border_t(1).border_b(1)
+        .border_color(t.border).bg(t.raised).rounded(4).text_size(13.5)
+        .child(h_flex().h(18).gap(8).items_center().text_size(12)
+          .child(div().font_semibold().text_color(t.foreground).child(g.user ?? "?")).child(div().text_color(t.muted).child(`on GitHub · ${g.at ? ago(g.at) : ""}`)))
+        .child(div().flex_1().min_h(0).overflow_hidden().line_height(1.55).whitespace_normal().text_color(t.foreground).child(plain(g.body))));
+    }
+    if (it.t === "compose") {
+      const c = this.editing, a = c ?? this.selAnchor(), out = Boolean(a) && this.routeNow() === "github" && !inDiff(this.diffLines ?? new Map(), { file: this.fsel?.path, ...a });
+      const now = this.routeNow() === "github" ? "Add single comment posts to GitHub now" : "Add single comment sends it to the agent now";
+      return div().w_full().h(COMPOSE).pl(GUTTER).pr(16).pt(6).child(v_flex().size_full().px(12).pt(8).pb(4).gap(6).border_l(4).border_r(1).border_t(1)
+        .border_color(t.accent).bg(t.surface).rounded_tl(4).rounded_tr(4)
+        .child(h_flex().h(18).gap(8).items_center().text_size(12)
+          .child(div().font_semibold().text_color(t.foreground).child(c ? `Edit comment · ${uiLine(c)}` : a ? `Comment on ${uiLine(a)}` : "Comment"))
+          .when(out, (e) => e.child(badge(t, "not in the diff: will go into the review body", t.ansi3)))
+          .child(div().flex_1().min_w(0).truncate().text_right().text_color(t.muted).child(c ? "⌘↩ saves · Esc cancels" : `⌘↩ adds to the review · Esc cancels · ${now}`)))
+        .child(div().flex_1().min_h(0).px(10).py(6).rounded(6).border_1().border_color(this.typing === "draft" ? t.accent : t.border).bg(t.background).cursor_text()
+          .child(Textarea.new(this.draft).size_full().text_size(13.5).text_color(t.foreground))));
+    }
+    if (it.t === "composeact") {
+      const bs = this.composeButtons();
+      return div().w_full().h(ACT + 4).pl(GUTTER).pr(16).pb(6).child(h_flex().size_full().px(12).items_center().border_l(4).border_r(1).border_b(1)
+        .border_color(t.accent).bg(t.surface).rounded_bl(4).rounded_br(4)
+        .children(bs.map((b, i) => div().w(b.w).h(28).flex_none().ml(i === 0 ? 0 : b.x - bs[i - 1].x - bs[i - 1].w)
+          .flex().items_center().justify_center().rounded(6).border_1().border_color(b.primary ? t.solid : t.border).bg(b.primary ? t.solid : t.background)
+          .text_size(12.5).text_color(b.primary ? t.solid_foreground : t.foreground).when(Boolean(b.primary), (e) => e.font_semibold())
+          .child(this.sending && b.act !== "closeComposer" && b.act !== "insertSuggestion" ? "…" : b.label))));
     }
     if (it.t === "file") {
       const f = it.f, closed = this.collapsed.has(f.path), seen = this.prog.seen.has(f.path), [letter, col] = STATUS[f.status];
@@ -1622,6 +1917,7 @@ export const ReviewMode = {
     this.traces = this.traceMap();
     const { items, at } = this.itemsOf(this.tab === "steps" ? "steps" : "files");
     if (this.pendingScroll && at[this.pendingScroll] !== undefined) { this.lists[this.tab === "steps" ? "steps" : "files"].scroll_to_item(at[this.pendingScroll], "top"); this.pendingScroll = null; }
+    if (this.scrollCompose && at.compose !== undefined) { this.lists[this.tab === "steps" ? "steps" : "files"].scroll_to_item(at.compose, "center"); this.scrollCompose = false; }
     this.uiChanged(cx);
     this.syn = colors(t); this.spanMap = new Map();
     for (const it of items) {
@@ -1632,11 +1928,8 @@ export const ReviewMode = {
     const keys = itemKeys(items);
     this.items = items; this.at = at; this.byKey = new Map(keys.map((k, i) => [k, items[i]]));
     const listId = `rv-list-${this.tab === "steps" ? "steps" : "files"}`, sug = this.openSugs().find((s) => s.key === this.sug);
-    const anchor = this.selAnchor();
     const range = this.fsel && rangeOf(this.rowsFor(this.fsel.path), this.fsel.a, this.fsel.b);
     this.selKeys = range ? new Set(this.rowsFor(this.fsel.path).slice(range[0], range[1] + 1).map(lineKey)) : null;
-    const where = this.editing ? "Editing comment" : this.fsel ? `On ${this.fsel.path.split("/").pop()}, ${uiLine(anchor)}` : "Click a line number to comment (shift-click: a range)";
-    const canSend = Boolean((this.root || this.pr) && !this.sending), n = this.comments.length;
     const tabBtn = (id, label) => div().id(`rv-tab-${id}`).flex_1().h(32).flex().items_center().justify_center().rounded(7).text_size(13.5).cursor_pointer()
       .bg(this.tab === id ? t.selected : t.chrome).text_color(this.tab === id ? t.foreground : t.muted).when(this.tab === id, (e) => e.font_semibold()).hover((s) => s.text_color(t.foreground))
       .on_click((_e, cx) => { this.tab = id; cx.notify(); }).child(label);
@@ -1647,7 +1940,7 @@ export const ReviewMode = {
             .child(tabBtn("files", `Files · ${this.shown().patch.length}`)).child(tabBtn("steps", `Layers${this.ai ? ` · ${this.ai.steps.filter((s) => !s.pseudo).length}` : ""}`))
             .child(tabBtn("findings", `Findings${this.find.list.length ? ` · ${this.find.list.filter((x) => ["open", "progress", "recheck"].includes(this.fstatus(x))).length}` : ""}`)))
           .child(this.tab === "steps" ? this.stepsPane(t) : this.tab === "findings" ? this.findingsPane(t) : this.filesPane(t)))
-        .child(v_flex().flex_1().min_w(0).h_full()
+        .child(v_flex().flex_1().min_w(0).h_full().relative()
           .child(div().id("rv-probe").absolute().top(-100).font_family(settings().font_family ?? "JetBrains Mono").text_size(13).whitespace_nowrap()
             .on_size_change((size, cx) => { const w = size.width / PROBE.length; if (w > 0 && Math.abs((this.charW ?? 0) - w) > 0.01) { this.charW = w; cx.notify(); } }).child(PROBE))
           .when(Boolean(this.defFile), (e) => e.child(this.defView(t)))
@@ -1660,7 +1953,8 @@ export const ReviewMode = {
 
           .when(!this.defFile && !(this.tab === "steps" && this.page), (e) => e.child(div().id(`${listId}-wrap`).flex_1().min_h(0).relative()
 
-            .on_mouse_down("left", (e, cx) => { this.press = { x: e.local_position?.x ?? 0, w: e.bounds?.width ?? this.listW ?? 900, shift: e.modifiers.shift, cmd: e.modifiers.platform }; this.fh.focus(); })
+            // With the composer open, onItem decides where the keyboard goes (a press in the textarea keeps it).
+            .on_mouse_down("left", (e, cx) => { this.press = { x: e.local_position?.x ?? 0, w: e.bounds?.width ?? this.listW ?? 900, shift: e.modifiers.shift, cmd: e.modifiers.platform }; if (!this.composing) this.fh.focus(); })
             .child(items.length
               ? v_virtual_list(listId, items.length, items.map((it) => this.sizeOf(it)), (i) => keys[i], (range) => items.slice(range.start, range.end).map((it) => this.item(it, t)))
                 .track_scroll(this.lists[this.tab === "steps" ? "steps" : "files"]).on_item_click((key, cx) => this.onItem(key, cx)).size_full()
@@ -1668,24 +1962,7 @@ export const ReviewMode = {
                 ? h_flex().gap(8).child(div().child(SPIN[0]).frames(SPIN, 90)).child("Loading…") : "No diff")))
             .child(Scrollbar.vertical(listId).absolute().inset_0())))
           .when(Boolean(sug), (e) => e.child(div().flex_none().p(10).border_t(1).border_color(t.border).child(this.sugCard(sug, t, false))))
-          .when(Boolean(this.note), (e) => e.child(div().flex_none().px(14).pt(8).text_size(12.5).text_color(/Could not|Not sent|Select a line/.test(this.note ?? "") ? t.ansi1 : t.muted).child(this.note)))
-          .child(v_flex().flex_none().px(14).py(10).gap(8).border_t(1).border_color(t.border).bg(t.chrome)
-            .child(h_flex().gap(12).items_center()
-              .child(div().flex_1().min_w(0).truncate().text_size(12.5).text_color(this.fsel || this.editing ? t.foreground : t.muted).child(where))
-              .child(h_flex().flex_none().gap(10).items_center().text_size(12).text_color(t.muted)
-                .children([["j", "k", "step"], ["n", "p", "hunk"], ["c", null, "comment"], ["a", "x", "suggestion"], ["⌘", "click", "definition"], ["Esc", null, "back"]].map(([a, b, what]) =>
-                  h_flex().gap(3).items_center().child(kbd(t, a)).when(Boolean(b), (e) => e.child(kbd(t, b))).child(div().pl(2).child(what))))))
-            .child(h_flex().gap(8).items_center()
-              .child(div().id("rv-input").flex_1().min_w(0).h(36).px(12).flex().items_center().rounded(8).border_1().bg(t.background).border_color(this.typing ? t.accent : t.border).cursor_text()
-                .on_mouse_down("left", (_e, cx) => { if (!this.editing) this.ensureSel(); cx.stop_propagation(); })
-                .child(Input.new(this.input).h_full().text_size(13.5).text_color(t.foreground)))
-              .child(pill("rv-comment", t, this.editing ? "Save" : "Comment", (_e, cx) => this.addFull(cx), false, this.question.trim() ? t.foreground : t.muted))
-              .when(Boolean(this.editing), (e) => e.child(pill("rv-cdel", t, "Delete", (_e, cx) => { this.dropComment(this.editing, cx); }, false, t.ansi1)))
-              .child(div().w(1).h(24).bg(t.border))
-              .child(div().flex_none().text_size(13).text_color(t.muted).child(`${n} pending ${n === 1 ? "comment" : "comments"}`))
-              .when(n > 0, (e) => e.child(pill("rv-rdrop", t, "Discard", (_e, cx) => { this.comments = []; this.persist(cx); cx.notify(); })))
-              .child(div().id("rv-send").px(14).h(36).flex().items_center().rounded(8).text_size(13.5).font_semibold().bg(canSend && n ? t.solid : t.raised)
-                .text_color(canSend && n ? t.solid_foreground : t.muted).when(canSend && n > 0, (e) => e.cursor_pointer())
-                .on_click((_e, cx) => this.sendReview(cx)).child(this.sending ? "…" : "Send review"))))));
+          .when(Boolean(this.note), (e) => e.child(div().flex_none().px(14).py(8).border_t(1).border_color(t.border).text_size(12.5).text_color(/Could not|Not sent|Not posted|Select a line/.test(this.note ?? "") ? t.ansi1 : t.muted).child(this.note)))
+          .when(this.finishOpen, (e) => e.child(this.finishPopover(t)))));
   },
 };

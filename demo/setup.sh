@@ -29,8 +29,11 @@ git remote set-head origin main
 home="$here/home"
 mkdir -p "$home/mods" "$home/layouts"
 cp -R "$root/mods/pr-review" "$home/mods/"
-cp "$root/layouts/review.json" "$root/layouts/review.svg" "$here/layouts/demo-panel.json" "$home/layouts/"
+cp "$here/layouts/demo-panel.json" "$home/layouts/"
+# The review layout as the mod installs it on first use (startReview), so the demo can switch to it right away.
+cp "$root/mods/pr-review/review-layout.json" "$home/layouts/review.json"
 printf '{ "appearance": "dark", "telemetry": false }\n' > "$home/settings.json"
-printf '{ "cloneRoot": "%s", "language": "English" }\n' "$here" > "$home/pr-review.config.json"
+# dryRun: "Submit review" writes the GitHub payload to pr-data/review-dry-run.json instead of posting (acme/bookshelf is invented).
+printf '{ "cloneRoot": "%s", "language": "English", "dryRun": true }\n' "$here" > "$home/pr-review.config.json"
 node "$here/seed.mjs" "$home" "$here/bookshelf" "$head"
 echo "demo ready: HERDR_APP_HOME=$home"

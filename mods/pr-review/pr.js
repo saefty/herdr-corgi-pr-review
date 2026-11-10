@@ -76,13 +76,61 @@ export const lineLabel = ({ start, end, old }) => start === undefined ? "" :
 // The row a comment hangs under: its last line, on its side. -1 when that line is no longer in the diff.
 export const anchorRow = (rows, c) => rows.findIndex((r) => r.number === c.end && (c.old ? r.kind === "-" : r.kind === "+" || r.kind === " "));
 
-// All pending comments as one prompt.
-export function buildReview({ pr, base, comments, lang }) {
+// All pending comments as one prompt. event (comment | approve | request_changes) and summary: the Finish-your-review choice.
+const VERDICT = { comment: "", approve: " (approved)", request_changes: " (changes requested)" };
+export function buildReview({ pr, base, comments, lang, event = "comment", summary = "" }) {
   const points = comments.map((c, i) => [`${i + 1}. \`${c.file}\`${c.start === undefined ? "" : " " + lineLabel(c)}`,
     c.hunk ? "```diff\n" + c.hunk + "\n```" : null, c.text.trim()].filter(Boolean).join("\n"));
-  return [`${headOf(pr, base)}: code review with ${comments.length} ${comments.length === 1 ? "point" : "points"}. ` +
+  return [`${headOf(pr, base)}: code review${VERDICT[event] ?? ""} with ${comments.length} ${comments.length === 1 ? "point" : "points"}. ` +
     "Work through the points one by one: answer questions, make the requested changes. At the end, say briefly per point what you did.",
-    ...points].join("\n\n") + answerIn(lang);
+    summary.trim() ? `Overall: ${summary.trim()}` : null, ...points].filter(Boolean).join("\n\n") + answerIn(lang);
+}
+
+// ---- GitHub reviews (review.js "Finish your review", route GitHub)
+
+export const GH_EVENT = { comment: "COMMENT", approve: "APPROVE", request_changes: "REQUEST_CHANGES" };
+
+// The lines GitHub accepts review comments on: per path a Set of "R<new line>" and "L<old line>" (every hunk row).
+export function diffLines(hunks) {
+  const m = new Map();
+  for (const h of hunks) {
+    const s = m.get(h.path) ?? new Set();
+    for (const r of h.rows) { if (r.n !== undefined) s.add(`R${r.n}`); if (r.o !== undefined) s.add(`L${r.o}`); }
+    m.set(h.path, s);
+  }
+  return m;
+}
+
+// Whether a pending comment can be a line comment on GitHub: both ends of its range are in the PR diff.
+export const inDiff = (lines, c) => c.start !== undefined && [c.start, c.end].every((n) => lines.get(c.file)?.has(`${c.old ? "L" : "R"}${n}`));
+
+// One GitHub review (POST repos/{o}/{r}/pulls/{n}/reviews) from the pending comments: line comments for those in the
+// diff, the rest appended to the body with file and line. outside: the comments moved into the body.
+export function ghReview({ comments, event = "comment", summary = "", commit, lines }) {
+  const inline = comments.filter((c) => inDiff(lines, c)), outside = comments.filter((c) => !inDiff(lines, c));
+  const body = [summary.trim(), ...outside.map((c) => `**\`${c.file}\`${c.start === undefined ? "" : " " + lineLabel(c)}**\n\n${c.text.trim()}`)].filter(Boolean).join("\n\n");
+  const payload = { commit_id: commit, event: GH_EVENT[event] ?? "COMMENT", body, comments: inline.map((c) => {
+    const side = c.old ? "LEFT" : "RIGHT";
+    return { path: c.file, line: c.end, side, ...(c.start !== c.end ? { start_line: c.start, start_side: side } : {}), body: c.text.trim() };
+  }) };
+  return { payload, outside };
+}
+
+// The selected rows' code as a GitHub suggestion block (new-side text of added and context lines).
+export const suggestionBlock = (rows) => "```suggestion\n" + rows.filter((r) => r.kind === "+" || r.kind === " ").map((r) => r.text).join("\n") + "\n```";
+
+// The items under one diff row: GitHub's comments on that line, the pending comments ending there (the one being
+// edited replaced by the composer), and the composer when it opens under this row (composeKey: its row's lineKey).
+export function lineThreads(r, comments, { composeKey = null, editId = null, gh = [] } = {}) {
+  const out = [];
+  for (const g of gh) if (atLine(r, g.line, g.side === "LEFT")) out.push({ t: "gh", g });
+  for (const c of comments) {
+    if (!atLine(r, c.end, c.old)) continue;
+    if (c.id === editId) out.push({ t: "compose", c }, { t: "composeact", c });
+    else out.push({ t: "comment", c }, { t: "cact", c });
+  }
+  if (!editId && composeKey && lineKey(r) === composeKey) out.push({ t: "compose" }, { t: "composeact" });
+  return out;
 }
 
 // FNV-1a, 32 bit, hex: a short stable id, not security.
@@ -354,6 +402,8 @@ export function itemKeys(items) {
     else if (it.t === "comment" || it.t === "cact") k = `${it.t}|${it.c.id}`;
     else if (it.t === "find" || it.t === "fact") k = `${it.t}|${it.f.id}`;
     else if (it.t === "def") k = `d|${it.d.key}`;
+    else if (it.t === "compose" || it.t === "composeact") k = `x|${it.t}`;
+    else if (it.t === "gh") k = `gh|${it.g.id}`;
     else k = `n|${it.text ?? i}`;
     const n = seen.get(k) ?? 0;
     seen.set(k, n + 1);
@@ -537,3 +587,22 @@ export function ghTarget(p, { repo, context, cwd = null, source }) {
 export function pruneSources(doc, max = 20) {
   return Object.fromEntries(Object.entries(doc ?? {}).sort((a, b) => (b[1].at ?? 0) - (a[1].at ?? 0)).slice(0, max));
 }
+
+// ---- installing the review layout (startReview): mods/pr-review/review-layout.json into layouts/ on first use
+
+// Whether a layout file is this mod's review layout: a block with the review part of pr-review.
+export function isReviewLayout(text) {
+  try {
+    const walk = (n) => Boolean(n) && ((n.content?.mod === "pr-review" && n.content?.props?.part === "review") || (n.children ?? []).some(walk));
+    return walk(JSON.parse(text));
+  } catch { return false; }
+}
+
+// Which layout name to switch to and whether to write it, from the current layouts/review.json and
+// layouts/pr-review.json (text, or null when missing). Never overwrites a file that is there.
+export function layoutPlan(review, prReview) {
+  if (review == null) return { name: "review", write: true };
+  if (isReviewLayout(review)) return { name: "review", write: false };
+  return { name: "pr-review", write: prReview == null };
+}
+

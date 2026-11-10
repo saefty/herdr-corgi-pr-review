@@ -53,11 +53,12 @@ setShared("pr-review.contexts", {
 | `review.open` | `[{url, number, repo, title, context, status: "in-progress" \| "sent", startedAt, lastTouched, headSha, progress: {steps, stepsChecked, files, filesViewed, comments, findingsOpen}, triage: {priority, why, chips}, target}]` | reviews not done, newest first; on every change |
 | `review.registry` | `{at, touched: url, entries: [same, done ones too]}` | every registry change (1.5 s after the last edit); for plug-ins that mirror reviews elsewhere (a to-do list, a day plan) |
 | `review.target` | a PR (`{url, repo, number, title, headSha?, context?, …}`) | the PR the review layout shows |
-| `review.meta` | `{url, model, busy, error, shown: {model, cost, exact, mergeRisk, effort}}` | the analysis state, for the bar |
+| `review.meta` | `{url, pending, model, busy, error, shown: {model, cost, exact, mergeRisk, effort}}` | the analysis state and the pending comment count, for the bar |
+| `review.layout` | `"review"` or `"pr-review"` | the review layout's name (`"pr-review"` when another layout already had the name `review`) |
 | `review.worktree` | `{url, head, path}` | the checkout of the PR head |
 | `pr-review.setup` | `{at, os, found: {program: path \| null}, auth: {gh, claude}}` | after a Setup check |
 
-**Resume a review from any mod**: `setShared("review.target", entry.target); run("layout.switch", { name: "review" })`.
+**Resume a review from any mod**: `setShared("review.target", entry.target); run("layout.switch", { name: shared("review.layout") ?? "review" })`. The layout is installed into `layouts/` the first time a review is opened from the panel.
 
 ## 3. Go to (optional)
 
