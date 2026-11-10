@@ -11,7 +11,7 @@ rm -rf "$here/bookshelf" "$here/remotes" "$here/home"
 
 git init -q -b main "$here/bookshelf"
 cd "$here/bookshelf"
-git config user.name "Demo"; git config user.email "demo@example.com"
+git config user.name "Demo"; git config user.email "noreply@example.com"
 cp -R "$here/fixtures/repo/base/." .
 git add -A; GIT_COMMITTER_DATE="2026-03-01T10:00:00Z" git commit -q --date "2026-03-01T10:00:00Z" -m "chore: loans and mail"
 git checkout -q -b feat/due-reminders
