@@ -95,6 +95,13 @@ title bar (traffic lights at 12, 16):
   branches sit side by side in their block. Transitions back go up a rounded return lane on the left. Self-loops
   are a small loop on the card edge. Catch/Retry are stubs to the right. Labels read "event [guard] / action".
 
+**Added in 0.3:** the left column is resizable (560 px by default, 340 px to 65% of the window). The header has two
+rows: the title and the actions (Fix selected, Run review, Finish your review), then risk, effort, checks, the model
+dropdown, Values, help and a ⋯ menu. Comments are compact cards (a stripe in the source's colour, one header row, the
+text, replies, Reply). The Architecture page has an Ask button, Fit, and a canvas that scrolls sideways by itself.
+The Ask drawer sits at the right edge (380 px, foldable to a 28 px strip). A Comments tab sits next to Findings.
+Explore shows Overview, Layers, Architecture and Files for a topic, without a diff.
+
 ## How it behaves
 
 - Agent status isn't shown; agents are only targets: the panel's "Send review" and "Ask", the review layout's
@@ -127,6 +134,15 @@ title bar (traffic lights at 12, 16):
   into a chat mod's bubble, PROVIDERS.md).
 - The analysis writes in the `language` setting; prompts are English.
 - Progress (checked layers, seen files, where you were) is kept per PR and restored on Resume.
+
+**Added in 0.3:** Ask (one call, "Review: architecture question") answers with text, the cards and edges it is
+about and file:line evidence; a short thread per PR is kept in pr-data/deep.json. Pin turns an answer into a private
+note on its card, edge or lines; notes never go out. Show details (one call, "Review: drill down") draws a card or a
+layer from the inside, cached per card path and diff head. Explore (one call, "Explore: walkthrough", read-only tools
+in the repo) keeps the newest 20 explorations. Every send to an agent opens a preview first. Fix starts a sub-agent
+(`hc run --parent <PR agent>`) in a worktree on fix/<pr>-<id>; Apply to PR cherry-picks onto a clean checkout. The
+GitHub submit posts only the ticked items. The analysis writes every hunk to its run folder with an index and splits
+big PRs into cohort passes and a merge pass under one cap.
 
 ## Built from
 
@@ -165,6 +181,11 @@ title bar (traffic lights at 12, 16):
 - A column with more than 7 cards keeps barycentre order only (no exhaustive crossing search).
 - Without the Claude `/code-review` command the Claude reviewer runs as a plain prompt.
 - Nothing installs programs: Setup only pre-types commands.
+
+- Explore trusts a folder only when it is your github.com repo or you trusted it; anything else starts in Restricted
+  Mode, like other people's PRs.
+- The comment cards are rows of the diff's virtual list: their clicks are placed by x, so their header buttons sit at
+  fixed positions.
 
 ## Demo data
 

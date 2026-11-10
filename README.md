@@ -50,6 +50,20 @@ what a function gets, what it returns, which branch runs. You read the behavior 
 
 ![The diff with sample values next to the changed lines, an AI suggestion and a finding](docs/screenshots/diff-inline-values.png)
 
+**Ask the diagram, and look inside a card.** Ask about the architecture, a card, a layer or the lines you selected:
+the answer lights up the cards and connections it is about, links its file:line evidence, and stays in a short thread
+per PR in a drawer at the right edge. Pin an answer and it stays on the picture as a private note. Show details opens
+a card or a layer from the inside: its functions and how data flows through them, with sample values, and a
+breadcrumb to go deeper or back.
+
+**Explore code you don't know.** No PR needed: pick a repo, type a topic ("How does the reminder job get scheduled
+and sent?") and get the same walkthrough as for a PR: the question, how it works, layers in reading order, the
+architecture and sample values, each with file:line, and the cited files in a read-only view with go-to-definition.
+
+**Comments that keep going.** Sent and posted comments stay under their lines as threads. The agent answers each one
+in place, GitHub replies show up there too, and Fix hands one comment, or all selected ones, to a sub-agent that works
+in its own worktree. Apply to PR brings its commit over when you are happy with it.
+
 **Security blast radius.** The changed parts in the middle, the existing code that calls into them on the left and
 what they call on the right, each with the reason it matters.
 
@@ -79,13 +93,23 @@ what they call on the right, each with the reason it matters.
 - Diff: syntax highlighting, go-to-definition through real language servers, inline example values, collapsed
   context you can open.
 - Comments as on GitHub: click a line number (shift-click for a range) or press `c` for a comment box under the
-  line, with Suggestion, Add single comment and Start a review. Pending comments show as threads under their lines
-  and survive restarts; GitHub's existing review comments show there too.
-- Finish your review: a summary, Comment / Approve / Request changes, and a preview of what goes out. It posts one
-  GitHub review with all pending comments, or sends them to the PR's agent session when it has one. Comments on
-  lines outside the diff go into the review body.
+  line, with Suggestion, Post now to GitHub (or Send to agent…) and Start a review. Comments are compact cards;
+  sent and posted ones stay as threads with the agent's replies (by comment id) and GitHub's, and survive restarts.
+- A Comments tab lists every comment by file with its state and replies; Show: Mine · AI · Agents · GitHub · Notes
+  decides what appears in the diff.
+- Finish your review: a summary, Comment / Approve / Request changes, and every item that would go out with a tick and
+  inline edit. Only what is ticked is posted; the line above Submit names the gh login and the PR. AI suggestions,
+  findings and notes never go out unless you add them as comments.
+- Nothing is typed into an agent's session without a preview of the exact, editable text.
+- Fix: one comment, the selected ones, or a finding go to a sub-agent (default) in its own worktree on a fix branch,
+  or to the main agent. Apply to PR cherry-picks onto a clean checkout; nothing is pushed.
+- Ask about this, pinned notes and Show details (a card or a layer from the inside), as described above.
+- Explore a topic in existing code without a PR (the panel, the review's ⋯ menu, or `pr-review.explore`).
+- Big PRs: the analysis gets every hunk, inlines what fits, reads the rest itself and splits into passes when it has
+  to; it says what it read in detail and what it only skimmed.
 - Reviewers: Claude code review, security review, Codex (when installed), each finding with Discuss, Fix and Verify.
 - Incremental: "since your last review" view and analysis.
+- A resizable layers column (drag the divider, double-click for the default width).
 - Model per review (Haiku, Sonnet, Opus); LLM calls only on click.
 - Restricted Mode for other people's code (see below).
 - Works with other mods: separate setups (accounts, clone folders), the Go to box and the chat bar.
