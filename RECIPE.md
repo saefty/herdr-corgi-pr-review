@@ -1,6 +1,8 @@
 # PR review
 
-A pull request reviewer for Herdr. On the right of the window, a panel shows the diff of the focused space's
+AI-guided pull request review for Herdr. A walkthrough takes you through the PR risk first, with an architecture map of the change, its security blast radius and a GitHub-style diff you comment on and submit from.
+
+On the right of the window, a panel shows the diff of the focused space's
 branch against its PR base (or any PR you pick) with comments on lines that go to the agent who wrote the code.
 "Review" switches to a full-window layout: the AI's walkthrough of the PR in layers on the left, every diff line
 on the right with suggestions, reviewer findings and comments inline, and pages for the overview, the security
