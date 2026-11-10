@@ -16,7 +16,7 @@ architecture picture, a security blast radius, CI checks, related PRs, and go-to
 as on GitHub: a comment box under the line, pending comments as threads, and "Finish your review" posts one GitHub
 review (Comment, Approve or Request changes) or sends it to the agent session.
 
-![Open a PR, read its layers, the architecture impact and the blast radius, then jump into the diff](docs/screenshots/walkthrough.gif)
+![Open a PR from the panel, read the overview, the layers and the architecture impact, comment under a line in the diff, then Finish your review](docs/screenshots/walkthrough.gif)
 
 | | |
 |---|---|
