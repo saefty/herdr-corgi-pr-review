@@ -1,0 +1,5 @@
+{ "findings": [
+  { "id": "f-sec-1", "reviewer": "security", "file": "src/notify/email.ts", "line": 4, "end": 4, "severity": "medium", "title": "Member address echoed in the error",
+    "detail": "The thrown error contains the full email address and ends up in logs.", "suggestion": "Throw without the address, or mask it." },
+  { "id": "f-cr-1", "reviewer": "claude", "file": "src/loans/reminders.ts", "line": 15, "end": 16, "severity": "high", "title": "Reminder resent when marking fails",
+    "detail": "The email goes out before markReminded(); if marking throws, the next run mails the member again.", "suggestion": "Mark first, or make both one transaction." } ] }

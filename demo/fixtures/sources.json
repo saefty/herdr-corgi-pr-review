@@ -1,0 +1,6 @@
+{ "repo": [
+  { "url": "https://github.com/acme/bookshelf/pull/7", "number": 7, "title": "feat(loans): add due-date reminders", "author": { "login": "ada" }, "isDraft": false, "reviewDecision": "REVIEW_REQUIRED", "additions": 62, "deletions": 1 },
+  { "url": "https://github.com/acme/bookshelf/pull/9", "number": 9, "title": "feat(loans): renewals extend dueAt", "author": { "login": "grace" }, "isDraft": false, "reviewDecision": "CHANGES_REQUESTED", "additions": 40, "deletions": 12 },
+  { "url": "https://github.com/acme/bookshelf/pull/8", "number": 8, "title": "chore(deps): bump vitest", "author": { "login": "deps-bot" }, "isDraft": false, "reviewDecision": "APPROVED", "additions": 3, "deletions": 3 } ],
+  "review": [
+  { "url": "https://github.com/acme/catalog-web/pull/33", "repository": { "nameWithOwner": "acme/catalog-web" }, "number": 33, "title": "fix(a11y): label the search field", "author": { "login": "linus" }, "isDraft": false } ] }

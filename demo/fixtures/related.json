@@ -1,0 +1,4 @@
+{ "open": [ { "number": 9, "title": "feat(loans): renewals extend dueAt", "url": "https://github.com/acme/bookshelf/pull/9", "overlap": 1, "files": ["src/loans/loan.ts"] } ],
+  "merged": [ { "number": 4, "title": "feat(notify): mail queue", "url": "https://github.com/acme/bookshelf/pull/4", "overlap": 1, "files": ["src/notify/email.ts"] } ],
+  "checks": [ { "name": "test", "bucket": "pass" }, { "name": "lint", "bucket": "pass" }, { "name": "terraform plan", "bucket": "pass" } ],
+  "mergeable": "MERGEABLE", "merge_state": "CLEAN" }

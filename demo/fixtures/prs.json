@@ -1,0 +1,7 @@
+{ "prs": [
+  { "url": "https://github.com/acme/bookshelf/pull/7", "repo": "acme/bookshelf", "number": 7, "title": "feat(loans): add due-date reminders", "state": "open", "head": "feat/due-reminders", "base": "main",
+    "session": "4b1c2d3e-0000-4000-8000-000000000007", "sessionTitle": "Due-date reminders", "agent": null },
+  { "url": "https://github.com/acme/bookshelf/pull/5", "repo": "acme/bookshelf", "number": 5, "title": "fix(search): match authors without accents", "state": "merged", "head": "fix/accents", "base": "main",
+    "session": "4b1c2d3e-0000-4000-8000-000000000005", "sessionTitle": "Accent-insensitive search", "agent": null },
+  { "url": "https://github.com/acme/catalog-web/pull/31", "repo": "acme/catalog-web", "number": 31, "title": "feat(ui): show due dates on the loans page", "state": "draft", "head": "feat/due-dates", "base": "main",
+    "session": "4b1c2d3e-0000-4000-8000-000000000031", "sessionTitle": "Due dates in the UI", "agent": "UI follow-up" } ] }

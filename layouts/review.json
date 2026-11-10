@@ -1,0 +1,42 @@
+{
+ "id": "root",
+ "type": "column",
+ "preview": "layouts/review.svg",
+ "background": "canvas",
+ "titlebar": "none",
+ "traffic_lights": [
+  12,
+  16
+ ],
+ "resizable": false,
+ "divider": {
+  "width": 1,
+  "color": "border"
+ },
+ "children": [
+  {
+   "id": "review-bar",
+   "type": "block",
+   "size": {
+    "px": 44
+   },
+   "window_drag": true,
+   "content": {
+    "mod": "pr-review",
+    "props": {
+     "part": "bar"
+    }
+   }
+  },
+  {
+   "id": "review-body",
+   "type": "block",
+   "content": {
+    "mod": "pr-review",
+    "props": {
+     "part": "review"
+    }
+   }
+  }
+ ]
+}

@@ -1,0 +1,11 @@
+{
+ "id": "root",
+ "type": "row",
+ "background": "canvas",
+ "padding": 8,
+ "gap": 8,
+ "children": [
+  { "id": "demo-pr", "type": "block", "size": { "px": 460 }, "content": { "mod": "pr-review" } },
+  { "id": "demo-review", "type": "block", "content": { "mod": "pr-review", "props": { "part": "bar" } } }
+ ]
+}

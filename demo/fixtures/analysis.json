@@ -1,0 +1,82 @@
+{
+ "title": "Members get an email two days before a loan is due",
+ "summary": "Loans now carry a due date and a reminded-at mark. A daily job finds open loans due within two days, emails the member once and marks the loan, so a reminder is never sent twice. A CloudWatch rule runs the job at 08:00 UTC.",
+ "behavior": "Members who still have a book two days before its due date get one email with the date. Invalid member addresses now fail loudly instead of bouncing later.",
+ "merge_risk": { "level": "medium", "why": "A daily job that sends email to every member with a loan due soon: a bug here mails people repeatedly." },
+ "effort": { "score": 2, "why": "Small and well tested, but the once-only guard deserves a careful read." },
+ "rule_checks": [
+  { "rule": "New behaviour has a test", "source": "CONTRIBUTING.md", "status": "pass", "where": "test/reminders.test.ts:5", "why": "The once-only reminder is covered." },
+  { "rule": "Jobs are idempotent", "source": "CONTRIBUTING.md", "status": "pass", "where": "src/loans/reminders.ts:13", "why": "remindedAt is checked before sending." },
+  { "rule": "Infrastructure changes are tagged", "source": "CONTRIBUTING.md", "status": "fail", "where": "infra/main.tf:5", "why": "The new event rule has no tags block." }
+ ],
+ "architecture": {
+  "groups": [ { "id": "jobs", "label": "Scheduler", "kind": "Runtime" }, { "id": "loans", "label": "Loans service", "kind": "Service" }, { "id": "mail", "label": "Notifications", "kind": "Service" }, { "id": "aws", "label": "AWS", "kind": "Infrastructure" } ],
+  "nodes": [
+   { "id": "rule", "group": "jobs", "label": "Daily event rule", "description": "Fires every day at 08:00 UTC.", "type": "service", "status": "new", "at": "infra/main.tf:5" },
+   { "id": "job", "group": "jobs", "label": "due-reminders job", "description": "Runs sendDueReminders once a day.", "type": "job", "status": "new", "at": "src/jobs/scheduler.ts:13" },
+   { "id": "rem", "group": "loans", "label": "sendDueReminders", "description": "Finds open loans due within two days, emails each member once and marks the loan.", "type": "component", "status": "new", "at": "src/loans/reminders.ts:9" },
+   { "id": "loan", "group": "loans", "label": "Loan model", "description": "Adds dueAt, remindedAt and dueSoon().", "type": "data", "status": "changed", "at": "src/loans/loan.ts:6" },
+   { "id": "store", "group": "loans", "label": "Loan store", "description": "Lists open loans and saves the reminded-at mark.", "type": "data", "status": "unchanged" },
+   { "id": "email", "group": "mail", "label": "sendEmail", "description": "Now rejects invalid addresses before sending.", "type": "service", "status": "changed", "at": "src/notify/email.ts:4" },
+   { "id": "sqs", "group": "aws", "label": "Mail queue", "description": "bookshelf-mail SQS queue.", "type": "queue", "status": "unchanged" }
+  ],
+  "edges": [
+   { "from": "rule", "to": "job", "label": "triggers daily", "status": "new" },
+   { "from": "job", "to": "rem", "label": "runs", "status": "new" },
+   { "from": "rem", "to": "loan", "label": "dueSoon(loan, now)", "status": "new" },
+   { "from": "rem", "to": "store", "label": "open() and markReminded()", "status": "new" },
+   { "from": "rem", "to": "email", "label": "sends the reminder", "status": "new" },
+   { "from": "email", "to": "sqs", "label": "enqueues mail" }
+  ]
+ },
+ "blast_radius": {
+  "units": [
+   { "id": "u1", "label": "sendDueReminders", "type": "component", "status": "added", "files": ["src/loans/reminders.ts"], "spots": 1 },
+   { "id": "u2", "label": "Loan model", "type": "data", "status": "changed", "files": ["src/loans/loan.ts"], "spots": 2 },
+   { "id": "u3", "label": "sendEmail", "type": "service", "status": "changed", "files": ["src/notify/email.ts"], "spots": 1 }
+  ],
+  "context": [
+   { "id": "c1", "file": "src/jobs/scheduler.ts", "direction": "upstream", "relation": "schedules the reminders once a day for every open loan", "links_to": "u1" },
+   { "id": "c2", "file": "src/loans/store.ts", "direction": "upstream", "relation": "creates loans without dueAt today: old rows need a migration", "links_to": "u2" },
+   { "id": "c3", "file": "src/notify/mailer.ts", "direction": "downstream", "relation": "puts the email on the mail queue; member addresses leave the service here", "links_to": "u3" }
+  ]
+ },
+ "asks": [
+  { "text": "Remind members before a loan is due", "coverage": "seen", "hunks": ["@src/loans/reminders.ts"] },
+  { "text": "Only one reminder per loan", "coverage": "seen", "hunks": ["@src/loans/reminders.ts"] },
+  { "text": "Configurable reminder window", "coverage": "absent", "hunks": [] },
+  { "text": "Email address validation", "coverage": "extra", "hunks": ["@src/notify/email.ts"] }
+ ],
+ "steps": [
+  { "title": "Loan due dates", "risk": "medium", "reading_order": 1, "hunks": ["@src/loans/loan.ts"],
+    "why_it_matters": "Everything else hangs on dueAt and the reminded-at mark.",
+    "explanation": "Loan gains dueAt and remindedAt, and dueSoon() says whether an open loan is due within a window (two days by default). Existing loans have no dueAt yet.",
+    "check_questions": ["What does dueSoon do for loans created before dueAt existed?"],
+    "suggestions": [ { "hunk": "@src/loans/loan.ts", "line": 18, "side": "new", "severity": "medium", "text": "Loans saved before this change have no dueAt: getTime() on undefined throws here." } ],
+    "visual": { "kind": "state_machine", "title": "A loan's life", "nodes": [ { "id": "open", "label": "Open" }, { "id": "due", "label": "Due soon", "changed": true, "note": "new: within 2 days of dueAt" }, { "id": "rem", "label": "Reminded", "changed": true }, { "id": "ret", "label": "Returned" } ],
+      "edges": [ { "from": "open", "to": "due", "label": "2 days left", "changed": true }, { "from": "due", "to": "rem", "label": "email sent", "changed": true }, { "from": "rem", "to": "ret", "label": "book back" }, { "from": "open", "to": "ret", "label": "book back" } ] } },
+  { "title": "Sending reminders", "risk": "high", "reading_order": 2, "hunks": ["@src/loans/reminders.ts"],
+    "why_it_matters": "This decides who gets mailed and makes sure nobody gets mailed twice.",
+    "explanation": "sendDueReminders loads open loans, skips those not due soon or already reminded, emails the member with the due date and marks the loan. It returns how many were sent.",
+    "check_questions": ["If sendEmail succeeds but markReminded fails, is the member mailed again tomorrow?", "Does loading every open loan scale?"],
+    "suggestions": [ { "hunk": "@src/loans/reminders.ts", "line": 15, "side": "new", "severity": "high", "text": "Mark the loan before sending, or a failed markReminded() sends the same reminder every day." } ],
+    "flows": [ { "function": "sendDueReminders", "at": "src/loans/reminders.ts:9",
+      "inputs": [ { "name": "store", "type": "LoanStore", "example": "{ open: () => [loan l1], markReminded }" }, { "name": "now", "type": "Date", "example": "2026-03-10T08:00:00Z" } ],
+      "output": { "type": "Promise<number>", "example": "1" }, "side_effects": ["one email per loan due soon", "sets remindedAt"], "calls": ["dueSoon", "sendEmail", "markReminded"],
+      "trace": [
+       { "path": "src/loans/reminders.ts", "line": 10, "values": "loans = [l1 (due 2026-03-11)]" },
+       { "path": "src/loans/reminders.ts", "line": 13, "values": "dueSoon = true, remindedAt = undefined" },
+       { "path": "src/loans/reminders.ts", "line": 14, "values": "due = \"2026-03-11\"" },
+       { "path": "src/loans/reminders.ts", "line": 17, "values": "sent = 1" } ] } ],
+    "visual": { "kind": "sequence", "title": "One run", "nodes": [ { "id": "job", "label": "Job" }, { "id": "rem", "label": "sendDueReminders", "changed": true }, { "id": "store", "label": "LoanStore" }, { "id": "mail", "label": "sendEmail" } ],
+      "edges": [ { "from": "job", "to": "rem", "label": "run" }, { "from": "rem", "to": "store", "label": "open()" }, { "from": "rem", "to": "mail", "label": "reminder", "changed": true }, { "from": "rem", "to": "store", "label": "markReminded()", "changed": true } ] } },
+  { "title": "Daily schedule", "risk": "medium", "reading_order": 3, "hunks": ["@src/jobs/scheduler.ts", "@infra/main.tf"],
+    "why_it_matters": "Runs the reminders every day, in the app and in AWS.",
+    "explanation": "The scheduler registers a due-reminders job every 24 hours, and Terraform adds a CloudWatch event rule at 08:00 UTC.",
+    "check_questions": ["Do both the in-process timer and the event rule run the job, sending twice a day?"] },
+  { "title": "Address check", "risk": "low", "reading_order": 4, "hunks": ["@src/notify/email.ts"],
+    "why_it_matters": "Fails early on addresses that would bounce.", "explanation": "sendEmail rejects addresses that are not name@domain.", "check_questions": [] },
+  { "title": "Tests", "risk": "skim", "reading_order": 5, "hunks": ["@test/reminders.test.ts", "@tsconfig.json"],
+    "why_it_matters": "Covers the once-only reminder.", "explanation": "One test: a loan due tomorrow gets one reminder and is marked.", "check_questions": [] }
+ ]
+}
