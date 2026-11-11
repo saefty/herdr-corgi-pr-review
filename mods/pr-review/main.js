@@ -20,7 +20,7 @@ import { diffRows, buildPrompt, splitPatch, selection, nextChange, lineLabel, an
 import { parsePrRef, ghTarget, pruneSources } from "./pr.js";
 import * as C from "./context.js";
 import { setupBanner, renderSetup, loadSetup, runSetup, openUrl, readConfig } from "./setup-view.js";
-import { chip } from "./stack.js";
+import { chip, triageTip, PRIORITY_TIP } from "./stack.js";
 import { panelState, bodyTab, capped, IN_PROGRESS_MAX } from "./views.js";
 import { ReviewMode, startReview, startExplore, saveKey, flowCard, modelPills, renderReviews, renderAgentBar, renderKeys, renderCardMenu } from "./review.js";
 import { highlightRows, langOf, colors, renderLine, editorSyntax } from "./syntax.js";
@@ -47,6 +47,7 @@ const TRIAGE_MAX = 40; // open PRs triaged in the list
 // PR sources (the picking list): your session PRs, the active space's repo, review requests. gh lists are cached per source and
 // repo in pr-data/sources.json for SOURCE_MS (↻ asks again), the newest SOURCE_KEEP kept.
 const SOURCES = [["mine", "Mine"], ["repo", "This repo"], ["review", "Review requested"]];
+const SRC_TIP = { mine: "PRs found in your Claude sessions", repo: "Open PRs in this space's repository", review: "Open PRs waiting for your review" };
 const sourcesFile = () => `${appHome()}/pr-data/sources.json`;
 const SOURCE_MS = 3 * 60 * 1000, SOURCE_KEEP = 20, PICKED_KEEP = 20;
 const GH_FIELDS = "number,title,author,headRefName,headRefOid,baseRefName,updatedAt,isDraft,reviewDecision,additions,deletions,url";
@@ -68,7 +69,7 @@ const shownIn = (pr) => C.shown(ctxDoc(), prCtx(pr), shared);
 // The view's key for remembering the picked PR: the contexts it shows.
 const viewKey = () => Object.keys(ctxDoc()?.contexts ?? {}).filter((id) => C.shown(ctxDoc(), id, shared)).join(",") || "all";
 // A context tag (only with two or more contexts): label in its colour.
-export const ctxTag = (t, id) => div().flex_none().px(5).rounded(4).border_1().border_color(C.colorOf(ctxDoc(), id, t)).text_size(10).text_color(C.colorOf(ctxDoc(), id, t)).child(C.labelOf(ctxDoc(), id));
+export const ctxTag = (t, id, key = null) => div().flex_none().px(5).rounded(4).border_1().border_color(C.colorOf(ctxDoc(), id, t)).text_size(10).text_color(C.colorOf(ctxDoc(), id, t)).when(Boolean(key), (e) => e.id(`ctx-${key}`).tooltip("Context this PR belongs to")).child(C.labelOf(ctxDoc(), id));
 
 const find = (node, id) => node?.id === id ? node : (node?.children ?? []).map((c) => find(c, id)).find(Boolean) ?? null;
 // Shown: the right panel is open and its stack has this tab up.
@@ -88,7 +89,8 @@ function dock(view, el, mode, cx, from = 12) {
     .transition("left", { duration: 180, easing: "ease-out" }).transition("opacity", { duration: 160, easing: "ease-out" });
 }
 
-const pill = (id, t, label, click, on = false) => div().id(id).px(6).py(1).rounded(4).border_1().border_color(on ? t.accent : t.border).text_size(10)
+// tip: hover explanation; alt: screen-reader label for a glyph-only pill.
+const pill = (id, t, label, click, on = false, tip = "", alt = "") => div().id(id).when(Boolean(tip), (e) => e.tooltip(tip)).when(Boolean(alt), (e) => e.accessibility_label(alt)).px(6).py(1).rounded(4).border_1().border_color(on ? t.accent : t.border).text_size(10)
   .text_color(on ? t.foreground : t.muted).cursor_pointer().hover((s) => s.text_color(t.foreground)).on_click(click).child(label);
 
 export default class PrReview extends View {
@@ -541,7 +543,7 @@ export default class PrReview extends View {
       return scroll(v_flex().p(14).gap(10).text_color(t.dim)
         .child(div().whitespace_normal().child(this.sourceKey() ? `No ${MODELS[walkModel()].label} analysis for this diff yet. The walkthrough is the review's AI analysis in reading order.` : "No diff."))
         .when(Boolean(this.pr?.url), (e) => e.child(h_flex().flex_wrap().gap(8).child(modelPills(t, `walk-m0-${this.uid}`))
-          .child(pill(`walk-make-${this.uid}`, t, "Analyze in review ↗", (_e, cx) => this.openWalk(cx, true))))));
+          .child(pill(`walk-make-${this.uid}`, t, "Analyze in review ↗", (_e, cx) => this.openWalk(cx, true), false, "Open the review layout, where you start the AI analysis yourself")))));
     }
     const covered = new Set(w.steps.flatMap((s) => s.hunks));
     const left = [...now.values()].filter((h) => !covered.has(h.id));
@@ -557,27 +559,27 @@ export default class PrReview extends View {
         .child(h_flex().gap(8).items_center().text_size(11).text_color(t.dim)
           .child(div().flex_1().min_w(0).truncate().child(`${done} of ${w.steps.length} read · ${MODELS[w.model]?.label ?? "Haiku"}${w.cost != null ? ` · $${w.cost.toFixed(3)}` : ""}${w.cut?.length ? ` · ${w.cut.length} hunks cut` : ""}`))
           .when(Boolean(this.walkBusy), (e) => e.child(div().child(SPIN[0]).frames(SPIN, 90)))
-          .child(pill(`walk-more-${this.uid}`, t, "⋯", (_e, cx) => { this.walkMore = !this.walkMore; cx.notify(); }, this.walkMore)))
+          .child(pill(`walk-more-${this.uid}`, t, "⋯", (_e, cx) => { this.walkMore = !this.walkMore; cx.notify(); }, this.walkMore, "Show or hide the model choice and more options", "More walkthrough options")))
         .when(Boolean(this.walkMore), (e) => e.child(h_flex().flex_wrap().gap(8).items_center().pt(2)
           .child(modelPills(t, `walk-m-${this.uid}`))
-          .when(Boolean(this.pr?.url), (e) => e.child(pill(`walk-redo-${this.uid}`, t, "Open review ↗", (_e, cx) => this.openWalk(cx, true))))))
+          .when(Boolean(this.pr?.url), (e) => e.child(pill(`walk-redo-${this.uid}`, t, "Open review ↗", (_e, cx) => this.openWalk(cx, true), false, "Open this PR in the review layout")))))
         .when(Boolean(this.walkError), (e) => e.child(div().text_size(11).text_color(t.ansi1).whitespace_normal().child(this.walkError))))
       .child(v_flex().px(6).py(4).border_t(1).border_b(1).border_color(t.border).children(steps.map((s, i) =>
-        h_flex().id(`step-${i}-${this.uid}`).h(24).flex_none().px(8).gap(8).items_center().rounded(6).cursor_pointer().text_size(12.5)
+        h_flex().id(`step-${i}-${this.uid}`).h(24).flex_none().px(8).gap(8).items_center().rounded(6).cursor_pointer().text_size(12.5).tooltip("Show this step and mark it read (✓ read, ○ unread)")
           .when(cur === s, (e) => e.bg(t.selected)).hover((st) => st.bg(t.hover))
           .on_click((_e, cx) => { this.step = i; if (i < w.steps.length) this.read.add(i); cx.notify(); })
           .child(div().w(12).flex_none().text_color(this.read.has(i) ? t.ansi2 : t.dim).child(i >= w.steps.length ? "·" : this.read.has(i) ? "✓" : "○"))
           .child(div().flex_1().min_w(0).truncate().text_color(s.stale ? t.dim : t.foreground).child(s.title))
-          .when(Boolean(s.stale), (e) => e.child(div().text_size(10.5).text_color(t.ansi3).child("outdated")))
-          .when(Boolean(WEIGHT[s.weight]), (e) => e.child(div().text_size(10.5).text_color(t[WEIGHT[s.weight]?.[1]]).child(WEIGHT[s.weight]?.[0] ?? ""))))))
+          .when(Boolean(s.stale), (e) => e.child(div().id(`step-o-${i}-${this.uid}`).tooltip("The code changed since this step was written").text_size(10.5).text_color(t.ansi3).child("outdated")))
+          .when(Boolean(WEIGHT[s.weight]), (e) => e.child(div().id(`step-w-${i}-${this.uid}`).tooltip(s.weight === "key" ? "Key step: worth reading closely" : "Minor step: a skim is enough").text_size(10.5).text_color(t[WEIGHT[s.weight]?.[1]]).child(WEIGHT[s.weight]?.[0] ?? ""))))))
       .child(div().px(14).py(10).text_size(12.5).whitespace_normal().child(cur?.text ?? ""))
       .children((cur?.flows ?? []).map((f, k) => div().px(12).pb(6).child(flowCard(f, t, `wf-${this.uid}-${this.step}-${k}`))))
       .children((cur?.asks ?? []).map((a, i) => h_flex().id(`ask-${i}`).px(14).py(3).gap(8).text_size(12)
-        .child(div().w(70).flex_none().text_color(t[COVER[a.coverage]?.[1]] ?? t.dim).child(COVER[a.coverage]?.[0] ?? a.coverage))
+        .child(div().id(`ask-${i}-cov`).tooltip("How well this diff covers the requirement from the task").w(70).flex_none().text_color(t[COVER[a.coverage]?.[1]] ?? t.dim).child(COVER[a.coverage]?.[0] ?? a.coverage))
         .child(div().flex_1().min_w(0).whitespace_normal().child(a.text))))
       .children((cur?.hunks ?? []).filter((id) => now.has(id)).flatMap((id) => {
         const h = now.get(id);
-        return [div().id(`wh-${id}`).px(12).pt(8).pb(2).text_size(11).text_color(t.muted).truncate().child(h.path),
+        return [div().id(`wh-${id}`).tooltip(h.path).px(12).pt(8).pb(2).text_size(11).text_color(t.muted).truncate().child(h.path),
           v_flex().font_family(settings().font_family ?? "JetBrains Mono").text_size(11)
             .children(diffRows(h.lines.slice(0, 400)).map((r, i) => this.diffRow(r, `${id}-${i}`, t, true)))];
       })));
@@ -743,16 +745,16 @@ export default class PrReview extends View {
 
   picker(t) {
     const src = this.sourceNow(), list = this.listNow(), sl = this.srcLists[src];
-    const item = (id, on, top, sub, state, tag, click, pr) => v_flex().id(id).flex_none().px(8).py(4).rounded(7).cursor_pointer()
+    const item = (id, on, top, sub, state, tag, click, pr) => v_flex().id(id).flex_none().px(8).py(4).rounded(7).cursor_pointer().tooltip(pr ? "Select this PR to see its diff" : "Use the diff of the focused pane's branch")
       .when(on, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover)).on_click(click)
-      .child(h_flex().gap(6).child(div().flex_1().min_w(0).truncate().child(top)).when(Boolean(state), (e) => e.child(div().flex_none().text_size(10.5).text_color(t[STATE[state]] ?? t.dim).child(state)))
-        .when(Boolean(pr), (e) => e.child(pill(`${id}-rv`, t, "Review", (_e, cx) => { cx.stop_propagation(); this.pickTarget(pr, cx, true); }))))
-      .when(Boolean(sub), (e) => e.child(h_flex().gap(6).text_size(11).text_color(t.dim).child(div().flex_1().min_w(0).truncate().child(sub))
-        .when(Boolean(tag), (e) => e.child(div().flex_none().max_w(140).truncate().px(5).rounded(4).bg(t.raised).text_size(10).child(tag)))))
+      .child(h_flex().gap(6).child(div().flex_1().min_w(0).truncate().child(top)).when(Boolean(state), (e) => e.child(div().id(`${id}-st`).tooltip(`PR state: ${state}`).flex_none().text_size(10.5).text_color(t[STATE[state]] ?? t.dim).child(state)))
+        .when(Boolean(pr), (e) => e.child(pill(`${id}-rv`, t, "Review", (_e, cx) => { cx.stop_propagation(); this.pickTarget(pr, cx, true); }, false, "Open this PR in the review layout"))))
+      .when(Boolean(sub), (e) => e.child(h_flex().gap(6).text_size(11).text_color(t.dim).child(div().id(`${id}-sub`).tooltip(src === "mine" ? "Repository and the session that opened it" : "Author, review status, lines added and removed, last update").flex_1().min_w(0).truncate().child(sub))
+        .when(Boolean(tag), (e) => e.child(div().id(`${id}-tg`).tooltip("Agent that opened this PR").flex_none().max_w(140).truncate().px(5).rounded(4).bg(t.raised).text_size(10).child(tag)))))
       .when(Boolean(pr && this.triage?.get(pr.url)), (e) => { // the triage card: compact; the why shows on the picked PR
         const tri = this.triage.get(pr.url);
-        return e.child(h_flex().flex_wrap().gap(4).pt(2).child(chip(t, `● P${tri.priority}`, tri.priority === 1 ? t.ansi1 : tri.priority === 2 ? t.ansi3 : t.muted))
-          .children(tri.chips.map((c) => chip(t, c, /security/i.test(c) ? t.ansi1 : t.muted))))
+        return e.child(h_flex().flex_wrap().gap(4).pt(2).child(chip(t, `● P${tri.priority}`, tri.priority === 1 ? t.ansi1 : tri.priority === 2 ? t.ansi3 : t.muted, false, `${id}-pri`, PRIORITY_TIP))
+          .children(tri.chips.map((c, k) => chip(t, c, /security/i.test(c) ? t.ansi1 : t.muted, false, `${id}-tc${k}`, triageTip(c)))))
           .when(on && Boolean(tri.why), (e) => e.child(div().mt(3).pl(8).border_l(3).border_color(t.accent).text_size(11.5).line_height(1.4).whitespace_normal().text_color(t.foreground).child(tri.why)));
       });
     // A PR you didn't open: author, draft, review decision, +/−, age; its repo for review requests.
@@ -761,21 +763,21 @@ export default class PrReview extends View {
     return v_flex().flex_none().p(6)
         .child(h_flex().flex_none().px(4).py(2).gap(6).items_center()
           .child(h_flex().gap(2).p(2).rounded(7).border_1().border_color(t.border).children(SOURCES.map(([k, label]) =>
-            div().id(`pr-src-${k}-${this.uid}`).px(8).h(22).flex().items_center().rounded(5).cursor_pointer().text_size(11.5)
+            div().id(`pr-src-${k}-${this.uid}`).tooltip(SRC_TIP[k]).px(8).h(22).flex().items_center().rounded(5).cursor_pointer().text_size(11.5)
               .bg(src === k ? t.selected : t.chrome).text_color(src === k ? t.foreground : t.muted)
               .on_click((_e, cx) => { setShared("pr.source", k); this.loadSource(cx); cx.notify(); }).child(label))))
-          .child(div().flex_1().min_w(0).truncate().text_size(10.5).text_color(t.dim)
+          .child(div().id(`pr-srcinfo-${this.uid}`).tooltip(src === "repo" ? "Repository these PRs come from" : "How long ago this list was fetched from GitHub").flex_1().min_w(0).truncate().text_size(10.5).text_color(t.dim)
             .child(src === "repo" ? this.spaceSlug?.slug ?? "" : sl?.loading ? "loading…" : sl?.at ? `${age(new Date(sl.at).toISOString())} ago` : ""))
-          .when(src !== "mine", (e) => e.child(pill(`pr-src-reload-${this.uid}`, t, sl?.loading ? "…" : "↻", (_e, cx) => this.loadSource(cx, true)))))
+          .when(src !== "mine", (e) => e.child(pill(`pr-src-reload-${this.uid}`, t, sl?.loading ? "…" : "↻", (_e, cx) => this.loadSource(cx, true), false, "Fetch this list from GitHub again", "Reload PR list"))))
         .child(h_flex().flex_none().px(4).py(2).gap(6).items_center()
-          .child(div().id(`pr-openref-${this.uid}`).flex_1().min_w(0).h(26).px(8).flex().items_center().rounded(6).border_1().border_color(t.border).cursor_text()
+          .child(div().id(`pr-openref-${this.uid}`).flex_1().min_w(0).h(26).px(8).flex().items_center().rounded(6).border_1().border_color(t.border).cursor_text().tooltip("Paste a PR URL or owner/repo#123, then Open")
             .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Input.new(this.openRefInput).h_full().text_size(11.5).text_color(t.foreground)))
-          .child(pill(`pr-openref-go-${this.uid}`, t, "Open", (_e, cx) => this.openRef(cx))))
+          .child(pill(`pr-openref-go-${this.uid}`, t, "Open", (_e, cx) => this.openRef(cx), false, "Open the PR typed on the left")))
         .when(Boolean(sl?.error) && src !== "mine", (e) => e.child(div().px(8).py(4).text_size(11).text_color(t.ansi1).whitespace_normal().child(sl.error)))
         .child(h_flex().flex_none().px(8).py(4).gap(6).items_center()
-          .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.dim).child(this.triage?.size ? `${this.triage.size} open PRs triaged from cached data` : "Triage: loading…"))
-          .child(pill(`pr-triage-${this.uid}`, t, this.triaging ? "Triaging…" : "Triage PRs", (_e, cx) => this.runTriage(cx)))
-          .child(pill(`pr-setup-${this.uid}`, t, "Setup", (_e, cx) => { this.picking = false; this.view = "setup"; runSetup(this, cx, false); cx.notify(); })))
+          .child(div().id(`pr-triage-info-${this.uid}`).tooltip("Priority and chips come from cached data; no GitHub or AI call").flex_1().min_w(0).truncate().text_size(11).text_color(t.dim).child(this.triage?.size ? `${this.triage.size} open PRs triaged from cached data` : "Triage: loading…"))
+          .child(pill(`pr-triage-${this.uid}`, t, this.triaging ? "Triaging…" : "Triage PRs", (_e, cx) => this.runTriage(cx), false, "Rank the listed open PRs with one small AI call per context"))
+          .child(pill(`pr-setup-${this.uid}`, t, "Setup", (_e, cx) => { this.picking = false; this.view = "setup"; runSetup(this, cx, false); cx.notify(); }, false, "Check which programs this mod needs are installed")))
         .child(item("pick-branch", Boolean(this.branchPicked && !this.prSel), "Current branch", "Diff of the focused pane", null, null, (_e, cx) => this.choose(null, cx)))
         .children(list.map((p) => (src === "mine"
           ? item(`pick-${p.url}`, this.prSel?.url === p.url, `#${p.number} ${p.title ?? ""}`,
@@ -809,8 +811,8 @@ export default class PrReview extends View {
     return v_flex().id(`c-${c.id}`).flex_none().mx(12).my(3).px(8).py(5).gap(2).rounded(6).border_1().border_color(this.editing?.id === c.id ? t.accent : t.border).bg(t.surface)
       .font_family(settings().ui_font ?? "Geist").text_size(12)
       .child(h_flex().gap(8).text_size(10.5).text_color(t.dim).child(div().flex_1().min_w(0).truncate().child(label ?? uiLine(c)))
-        .child(div().id(`ce-${c.id}`).cursor_pointer().hover((s) => s.text_color(t.foreground)).on_click((_e, cx) => this.editComment(c, cx)).child("Edit"))
-        .child(div().id(`cd-${c.id}`).cursor_pointer().hover((s) => s.text_color(t.ansi1)).on_click((_e, cx) => this.dropComment(c, cx)).child("Delete")))
+        .child(div().id(`ce-${c.id}`).tooltip("Edit this comment").cursor_pointer().hover((s) => s.text_color(t.foreground)).on_click((_e, cx) => this.editComment(c, cx)).child("Edit"))
+        .child(div().id(`cd-${c.id}`).tooltip("Delete this comment; it has not been sent").cursor_pointer().hover((s) => s.text_color(t.ansi1)).on_click((_e, cx) => this.dropComment(c, cx)).child("Delete")))
       .child(div().whitespace_normal().child(c.text));
   }
 
@@ -821,14 +823,14 @@ export default class PrReview extends View {
     const list = (shared("review.open") ?? []).filter(shownIn), { shown, more } = capped(list, this.allOpen);
     return v_flex().flex_none().px(10).pt(8).pb(4).gap(2).border_b(1).border_color(t.border)
       .child(h_flex().px(4).gap(8).items_center().child(div().flex_1().text_size(11).font_semibold().text_color(t.muted).child("In progress"))
-        .when(Boolean(this.allOpen) && list.length > IN_PROGRESS_MAX, (e) => e.child(pill(`pr-open-less-${this.uid}`, t, "Show fewer", (_e, cx) => { this.allOpen = false; cx.notify(); }))))
+        .when(Boolean(this.allOpen) && list.length > IN_PROGRESS_MAX, (e) => e.child(pill(`pr-open-less-${this.uid}`, t, "Show fewer", (_e, cx) => { this.allOpen = false; cx.notify(); }, false, "Show only the most recent reviews"))))
       .children(shown.map((r) => h_flex().id(`pr-open-${r.url}`).gap(8).px(4).py(3).rounded(6).items_center().hover((s) => s.bg(t.hover))
         .child(v_flex().flex_1().min_w(0)
           .child(div().truncate().text_size(12.5).child(`#${r.number} ${r.title ?? ""}`))
           .child(div().truncate().text_size(11).text_color(t.muted).child([r.status === "sent" ? "sent" : null, progressLine(r.progress), ago(r.lastTouched)].filter(Boolean).join(" · "))))
-        .when(C.tagged(ctxDoc()), (e) => e.child(ctxTag(t, prCtx(r))))
-        .child(pill(`pr-resume-${r.url}`, t, "Resume", () => startReview(r.target ?? r)))))
-      .when(more > 0, (e) => e.child(div().id(`pr-open-all-${this.uid}`).px(4).py(3).text_size(11.5).text_color(t.accent).cursor_pointer()
+        .when(C.tagged(ctxDoc()), (e) => e.child(ctxTag(t, prCtx(r), r.url)))
+        .child(pill(`pr-resume-${r.url}`, t, "Resume", () => startReview(r.target ?? r), false, "Continue this review where you left it"))))
+      .when(more > 0, (e) => e.child(div().id(`pr-open-all-${this.uid}`).px(4).py(3).text_size(11.5).text_color(t.accent).cursor_pointer().tooltip("List every review in progress")
         .hover((s) => s.text_color(t.foreground)).on_click((_e, cx) => { this.allOpen = true; cx.notify(); }).child(`Show all (${list.length})`)));
   }
 
@@ -894,24 +896,24 @@ export default class PrReview extends View {
         .child(div().id(`pr-back-${this.uid}`).flex_none().w(26).h(26).flex().items_center().justify_center().rounded(6).cursor_pointer().text_color(t.muted)
           .hover((s) => s.bg(t.hover).text_color(t.foreground)).tooltip("All PRs").on_click(back).child("←"))
         .child(div().flex_1().min_w(0).truncate().font_semibold().child(title))
-        .child(pill(`pr-reload-${this.uid}`, t, this.loading ? "…" : "↻", (_e, cx) => { if (this.prSel) this.heads.delete(this.prSel.url); this.refresh(cx, true); }))
-        .when(Boolean(this.pr?.url), (e) => e.child(pill(`pr-rv-${this.uid}`, t, "Review", () => startReview(this.prSel ?? this.branchTarget()))))
-        .when(Boolean(this.pr), (e) => e.child(pill("pr-web", t, "GitHub ↗", () => openUrl(this.pr.url))))
+        .child(pill(`pr-reload-${this.uid}`, t, this.loading ? "…" : "↻", (_e, cx) => { if (this.prSel) this.heads.delete(this.prSel.url); this.refresh(cx, true); }, false, "Reload this PR's diff and details", "Reload PR"))
+        .when(Boolean(this.pr?.url), (e) => e.child(pill(`pr-rv-${this.uid}`, t, "Review", () => startReview(this.prSel ?? this.branchTarget()), false, "Open this PR in the review layout")))
+        .when(Boolean(this.pr), (e) => e.child(pill("pr-web", t, "GitHub ↗", () => openUrl(this.pr.url), false, "Open this PR on GitHub in the browser")))
       : h_flex().h(42).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
         .child(div().flex_1().min_w(0).truncate().font_semibold().child(state === "setup" ? "Setup" : "Pull requests"))
-        .when(state === "picking", (e) => e.child(pill(`pr-explore-${this.uid}`, t, "Explore a topic…", () => startExplore(location().cwd ?? null))))
-        .when(state === "picking" && Boolean(this.prSel ?? this.branchPicked), (e) => e.child(pill(`pr-pick-done-${this.uid}`, t, `Back to ${chosen} →`, (_e, cx) => { this.picking = false; cx.notify(); })));
+        .when(state === "picking", (e) => e.child(pill(`pr-explore-${this.uid}`, t, "Explore a topic…", () => startExplore(location().cwd ?? null), false, "Ask about a topic in this repo's code, in the review layout")))
+        .when(state === "picking" && Boolean(this.prSel ?? this.branchPicked), (e) => e.child(pill(`pr-pick-done-${this.uid}`, t, `Back to ${chosen} →`, (_e, cx) => { this.picking = false; cx.notify(); }, false, `Return to the selected ${chosen}`)));
     // The selected PR's tabs: Diff | Walkthrough, its size; a branch diff also offers its files as they are now.
-    const seg = (k, label, click) => div().id(`pr-tab-${k}-${this.uid}`).px(10).h(22).flex().items_center().rounded(5).cursor_pointer().text_size(12)
+    const seg = (k, label, click) => div().id(`pr-tab-${k}-${this.uid}`).px(10).h(22).flex().items_center().rounded(5).cursor_pointer().text_size(12).tooltip(k === "diff" ? "Changed files and the diff; click a line to comment" : "The review's AI analysis in reading order, if you ran it")
       .bg(tab === k ? t.selected : t.chrome).text_color(tab === k ? t.foreground : t.muted).on_click(click).child(label);
     const tabs = h_flex().flex_none().flex_wrap().px(10).py(6).gap(8).items_center().border_b(1).border_color(t.border)
       .child(h_flex().flex_none().p(2).gap(2).rounded(7).border_1().border_color(t.border)
         .child(seg("diff", "Diff", (_e, cx) => { this.view = "diff"; cx.notify(); }))
         .child(seg("walk", "Walkthrough", (_e, cx) => this.openWalk(cx, false))))
-      .child(h_flex().flex_1().gap(6).items_center().text_size(11).child(div().text_color(t.ansi2).child(`+${add}`)).child(div().text_color(t.ansi1).child(`−${del}`)))
+      .child(h_flex().flex_1().gap(6).items_center().text_size(11).child(div().id(`pr-add-${this.uid}`).tooltip("Lines added in this diff").text_color(t.ansi2).child(`+${add}`)).child(div().id(`pr-del-${this.uid}`).tooltip("Lines removed in this diff").text_color(t.ansi1).child(`−${del}`)))
       .when(tab === "diff" && Boolean(this.open && !this.patch), (e) => e
-        .child(pill(`mode-${this.uid}`, t, this.mode === "file" ? "Diff view" : "File view", (_e, cx) => this.setMode(this.mode === "file" ? "diff" : "file", cx)))
-        .child(pill(`vscode-${this.uid}`, t, "VS Code ↗", () => exec("code", ["-g", `${this.root}/${this.open}:${(this.sel !== null && this.rows[this.sel]?.number) || 1}`]))));
+        .child(pill(`mode-${this.uid}`, t, this.mode === "file" ? "Diff view" : "File view", (_e, cx) => this.setMode(this.mode === "file" ? "diff" : "file", cx), false, "Switch between the diff and the whole file"))
+        .child(pill(`vscode-${this.uid}`, t, "VS Code ↗", () => exec("code", ["-g", `${this.root}/${this.open}:${(this.sel !== null && this.rows[this.sel]?.number) || 1}`]), false, "Open this file at the selected line in VS Code")));
     // Picking: reviews in progress and the sources' list in one scroll, so nothing stacks over anything.
     const pickId = `pr-pick-${this.uid}`;
     const pickBody = div().flex_1().min_h(0).relative()
@@ -926,12 +928,12 @@ export default class PrReview extends View {
     const files = div().flex_none().h(Math.max(44, Math.min(this.files.length * 28 + 12, 200))).relative().border_b(1).border_color(t.border)
       .child(v_flex().id(`pr-files-${this.uid}`).absolute().inset_0().overflow_y_scroll().p(6).children(this.files.map((f) => {
         const parts = f.path.split("/"), name = parts.pop(), n = this.comments.filter((c) => c.file === f.path).length;
-        return h_flex().id(`f-${f.path}`).h(28).flex_none().px(8).gap(8).items_center().rounded(7).cursor_pointer()
+        return h_flex().id(`f-${f.path}`).h(28).flex_none().px(8).gap(8).items_center().rounded(7).cursor_pointer().tooltip(f.path)
           .when(this.open === f.path, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover)).on_click((_e, cx) => { this.fh.focus(); this.askTop = false; this.pick(f.path, cx); })
           .child(h_flex().flex_1().min_w(0).child(div().text_color(t.dim).truncate().child(parts.length ? parts.join("/") + "/" : "")).child(div().min_w(0).truncate().child(name)))
-          .when(n > 0, (e) => e.child(div().text_size(10.5).text_color(t.accent).child(`● ${n}`)))
-          .when(f.add > 0, (e) => e.child(div().text_size(11).text_color(t.ansi2).child(`+${f.add}`)))
-          .when(f.del > 0, (e) => e.child(div().text_size(11).text_color(t.ansi1).child(`−${f.del}`)));
+          .when(n > 0, (e) => e.child(div().id(`f-c-${f.path}`).tooltip(`${n} pending ${n === 1 ? "comment" : "comments"} on this file`).text_size(10.5).text_color(t.accent).child(`● ${n}`)))
+          .when(f.add > 0, (e) => e.child(div().id(`f-a-${f.path}`).tooltip("Lines added in this file").text_size(11).text_color(t.ansi2).child(`+${f.add}`)))
+          .when(f.del > 0, (e) => e.child(div().id(`f-d-${f.path}`).tooltip("Lines removed in this file").text_size(11).text_color(t.ansi1).child(`−${f.del}`)));
       })).when(!this.files.length, (e) => e.child(div().p(8).text_color(this.error ? t.ansi1 : t.dim).child(this.error || (this.loading ? Spin(t, "Loading…") : "No changes against the base")))))
       .child(Scrollbar.vertical(`pr-files-${this.uid}`).absolute().inset_0());
     const diffBody = this.mode === "file"
@@ -942,10 +944,10 @@ export default class PrReview extends View {
       : div().flex_1().min_h(0).relative().font_family(settings().font_family ?? "JetBrains Mono").text_size(11)
         // ponytail: plain list, capped at 1500 rows; the virtual list drew nothing here
         .child(v_flex().id(diffId).absolute().inset_0().overflow_y_scroll()
-          .when(this.from > 0, (e) => e.child(div().id(`pr-above-${this.uid}`).px(12).h(22).flex_none().flex().items_center().text_color(t.dim).cursor_pointer()
+          .when(this.from > 0, (e) => e.child(div().id(`pr-above-${this.uid}`).px(12).h(22).flex_none().flex().items_center().text_color(t.dim).cursor_pointer().tooltip("Show the rows above, back to the top of the diff")
             .hover((s) => s.text_color(t.foreground)).on_click((_e, cx) => { this.from = 0; cx.notify(); }).child(`▲ Show ${this.from} lines above`)))
           .when(Boolean(this.open) && composeAt !== "top", (e) => e.child(div().id(`pr-ask-file-${this.uid}`).px(12).h(24).flex_none().flex().items_center()
-            .font_family(settings().ui_font ?? "Geist").text_size(11.5).text_color(t.dim).cursor_pointer().hover((s) => s.text_color(t.foreground))
+            .font_family(settings().ui_font ?? "Geist").text_size(11.5).text_color(t.dim).cursor_pointer().tooltip("Write a comment or question about the whole file (c)").hover((s) => s.text_color(t.foreground))
             .on_click((_e, cx) => { this.sel = null; this.selEnd = null; this.askTop = true; this.focusInput(cx); cx.notify(); })
             .child(`+ Comment or ask about ${this.open?.split("/").pop() ?? "this file"} (or click a line)`)))
           .when(composeAt === "top", (e) => e.child(this.composer(t, where)))
@@ -962,8 +964,8 @@ export default class PrReview extends View {
       .when(state === "selected", (e) => e
         .when(Boolean(this.prSel && !shownIn(this.prSel)), (e) => e.child(h_flex().flex_none().flex_wrap().px(14).py(6).gap(8).items_center().bg(t.ansi3 + "1c").border_b(1).border_color(t.border).text_size(12)
           .child(div().flex_1().min_w(0).child(`This PR belongs to ${C.nameOf(ctxDoc(), prCtx(this.prSel))}.`))
-          .when(Boolean(C.revealOf(ctxDoc(), prCtx(this.prSel))), (e) => e.child(pill(`pr-acc-${this.uid}`, t, `Switch to ${C.labelOf(ctxDoc(), prCtx(this.prSel))}`, () => { const r = C.revealOf(ctxDoc(), prCtx(this.prSel)); setShared(r.key, r.value); })))
-          .child(pill(`pr-clear-${this.uid}`, t, "Clear", (_e, cx) => this.choose(null, cx)))))
+          .when(Boolean(C.revealOf(ctxDoc(), prCtx(this.prSel))), (e) => e.child(pill(`pr-acc-${this.uid}`, t, `Switch to ${C.labelOf(ctxDoc(), prCtx(this.prSel))}`, () => { const r = C.revealOf(ctxDoc(), prCtx(this.prSel)); setShared(r.key, r.value); }, false, "Switch the view to the context this PR belongs to")))
+          .child(pill(`pr-clear-${this.uid}`, t, "Clear", (_e, cx) => this.choose(null, cx), false, "Drop this PR selection"))))
         .child(tabs)
         .when(tab === "walk", (e) => e.child(this.walkView(t)))
         .when(tab === "diff", (e) => e.child(files).child(diffBody)))
@@ -971,15 +973,15 @@ export default class PrReview extends View {
       .when(state === "selected" && this.comments.length > 0, (e) => e.child(h_flex().flex_none().m(8).px(10).h(32).gap(8).items_center().rounded(8).bg(t.surface).border_1().border_color(t.border)
         .child(div().flex_1().min_w(0).truncate().text_size(12).child(`Review: ${this.comments.length} ${this.comments.length === 1 ? "comment" : "comments"}`
           + ` in ${new Set(this.comments.map((c) => c.file)).size} ${new Set(this.comments.map((c) => c.file)).size === 1 ? "file" : "files"}`))
-        .child(pill(`rv-drop-${this.uid}`, t, "Discard", (_e, cx) => { this.comments = []; this.persist(cx); cx.notify(); }))
-        .child(div().id(`rv-send-${this.uid}`).flex_none().px(10).h(22).flex().items_center().rounded(6).text_size(11.5).bg(canSend ? t.solid : t.raised).text_color(canSend ? t.solid_foreground : t.dim)
+        .child(pill(`rv-drop-${this.uid}`, t, "Discard", (_e, cx) => { this.comments = []; this.persist(cx); cx.notify(); }, false, "Delete all pending comments without sending them"))
+        .child(div().id(`rv-send-${this.uid}`).tooltip("Send all pending comments to the coding agent as one prompt").flex_none().px(10).h(22).flex().items_center().rounded(6).text_size(11.5).bg(canSend ? t.solid : t.raised).text_color(canSend ? t.solid_foreground : t.dim)
           .when(canSend, (e) => e.cursor_pointer()).on_click((_e, cx) => this.sendReview(cx)).child(this.sending ? "…" : "Send review"))));
   }
 
   // The inline composer (GitHub style, one at a time): where it points, the presets, the field, Cancel / Comment / Ask.
   composer(t, where) {
     const canSend = Boolean((this.root || this.pr) && !this.sending), ready = Boolean(this.question.trim() && canSend);
-    const btn = (id, label, on, click, solid = false) => div().id(`${id}-${this.uid}`).flex_none().h(26).px(10).flex().items_center().rounded(6).text_size(12)
+    const btn = (id, label, on, click, solid = false, tip = "") => div().id(`${id}-${this.uid}`).tooltip(tip).flex_none().h(26).px(10).flex().items_center().rounded(6).text_size(12)
       .when(solid, (e) => e.bg(on ? t.solid : t.raised).text_color(on ? t.solid_foreground : t.dim))
       .when(!solid, (e) => e.border_1().border_color(t.border).text_color(on ? t.foreground : t.dim))
       .when(on, (e) => e.cursor_pointer()).on_click(click).child(label);
@@ -987,13 +989,13 @@ export default class PrReview extends View {
       .font_family(settings().ui_font ?? "Geist").text_size(12)
       .child(h_flex().flex_wrap().gap(6).items_center()
         .child(div().flex_1().min_w(80).truncate().text_size(11).text_color(t.dim).child(this.editing ? "Editing comment (Esc: cancel)" : `On ${where}`))
-        .when(!this.editing, (e) => e.children(PRESETS.map(([label, q], i) => pill(`preset-${i}-${this.uid}`, t, label, (_e, cx) => this.ask(cx, q))))))
-      .child(div().id("pr-question").h(30).px(8).flex().items_center().rounded(6).border_1().border_color(this.typing ? t.accent : t.border).cursor_text()
+        .when(!this.editing, (e) => e.children(PRESETS.map(([label, q], i) => pill(`preset-${i}-${this.uid}`, t, label, (_e, cx) => this.ask(cx, q), false, `Send this question to the agent now: ${q}`)))))
+      .child(div().id("pr-question").tooltip("Type a comment or a question about the selected lines").h(30).px(8).flex().items_center().rounded(6).border_1().border_color(this.typing ? t.accent : t.border).cursor_text()
         .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Input.new(this.input).h_full().text_size(12).text_color(t.foreground)))
       .child(h_flex().gap(6).justify_end()
-        .child(btn("pr-cancel", "Cancel", true, (_e, cx) => this.closeAsk(cx)))
-        .child(btn("pr-comment", this.editing ? "Save" : "Comment", Boolean(this.question.trim() && this.open), (_e, cx) => this.addComment(cx)))
-        .when(!this.editing, (e) => e.child(btn("pr-ask", this.sending ? "…" : "Ask", ready, (_e, cx) => this.ask(cx), true))));
+        .child(btn("pr-cancel", "Cancel", true, (_e, cx) => this.closeAsk(cx), false, "Close without saving (Esc)"))
+        .child(btn("pr-comment", this.editing ? "Save" : "Comment", Boolean(this.question.trim() && this.open), (_e, cx) => this.addComment(cx), false, this.editing ? "Save the changed comment" : "Add to the pending review; nothing is sent yet"))
+        .when(!this.editing, (e) => e.child(btn("pr-ask", this.sending ? "…" : "Ask", ready, (_e, cx) => this.ask(cx), true, "Send this question to the coding agent now"))));
   }
 }
 

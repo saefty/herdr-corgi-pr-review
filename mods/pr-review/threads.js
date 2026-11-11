@@ -186,7 +186,7 @@ export const applyPrompt = ({ branch, head, path }) => `The reviewer's fix is re
 
 // ---- the Comments tab and the Show switch
 
-export const SHOW_KINDS = [["mine", "Mine"], ["ai", "AI"], ["agents", "Agents"], ["github", "GitHub"], ["notes", "Notes"]];
+export const SHOW_KINDS = [["mine", "Yours"], ["ai", "AI"], ["agents", "Agents"], ["github", "GitHub"], ["notes", "Notes"]];
 export const showOf = (s) => Object.fromEntries(SHOW_KINDS.map(([k]) => [k, s?.[k] !== false])); // all on by default
 // Every comment of the PR as a row for the Comments tab: pending ones, sent threads (with their state and replies),
 // other people's GitHub comments, notes. state: pending | waiting | replied | fixed | declined | github | note.

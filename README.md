@@ -95,7 +95,7 @@ what they call on the right, each with the reason it matters.
 - Comments as on GitHub: click a line number (shift-click for a range) or press `c` for a comment box under the
   line, with Suggestion, Post now to GitHub (or Send to agent…) and Start a review. Comments are compact cards;
   sent and posted ones stay as threads with the agent's replies (by comment id) and GitHub's, and survive restarts.
-- A Comments tab lists every comment by file with its state and replies; Show: Mine · AI · Agents · GitHub · Notes
+- A Comments tab lists every comment by file with its state and replies; Show: Yours · AI · Agents · GitHub · Notes
   decides what appears in the diff.
 - Finish your review: a summary, Comment / Approve / Request changes, and every item that would go out with a tick and
   inline edit. Only what is ticked is posted; the line above Submit names the gh login and the PR. AI suggestions,

@@ -52,7 +52,7 @@ export function setupBanner(view, t) {
   if (!b.length || view.view === "setup") return null;
   return h_flex().flex_none().px(14).py(6).gap(8).items_center().bg(t.ansi1 + "1c").border_b(1).border_color(t.border).text_size(12)
     .child(div().flex_1().min_w(0).whitespace_normal().child(`Needs ${b.map((x) => `${x.id}${x.status === "logged-out" ? " (logged out)" : ""}`).join(", ")} to work.`))
-    .child(div().id("pr-setup-banner").px(8).py(1).rounded(5).border_1().border_color(t.border).cursor_pointer().hover((s) => s.bg(t.hover))
+    .child(div().id("pr-setup-banner").tooltip("Show which programs are missing and how to install them").px(8).py(1).rounded(5).border_1().border_color(t.border).cursor_pointer().hover((s) => s.bg(t.hover))
       .on_click((_e, cx) => { view.view = "setup"; cx.notify(); }).child("Open Setup"));
 }
 
@@ -64,16 +64,16 @@ function install(view, row, cx) {
 
 export function renderSetup(view, t) {
   const s = shared(SETUP_KEY), r = rows();
-  const btn = (id, label, click, strong = false) => div().id(id).flex_none().px(8).h(22).flex().items_center().rounded(5).border_1()
+  const btn = (id, label, click, strong = false, tip = "") => div().id(id).tooltip(tip).flex_none().px(8).h(22).flex().items_center().rounded(5).border_1()
     .border_color(strong ? t.accent : t.border).text_size(11).text_color(strong ? t.foreground : t.muted).cursor_pointer()
     .hover((st) => st.text_color(t.foreground)).on_click(click).child(label);
   const line = (x) => v_flex().flex_none().px(8).py(5).gap(2).rounded(6).hover((st) => st.bg(t.hover))
     .child(h_flex().gap(8).items_center()
-      .child(div().flex_none().w(84).text_size(11).text_color(t[MARK[x.status][1]]).child(MARK[x.status][0]))
+      .child(div().id(`setup-st-${x.id}`).tooltip("Whether this program was found on this machine").flex_none().w(84).text_size(11).text_color(t[MARK[x.status][1]]).child(MARK[x.status][0]))
       .child(div().flex_1().min_w(0).truncate().font_semibold().text_size(12).child(x.id))
       .when(Boolean(x.install), (e) => e
-        .child(btn(`setup-copy-${x.id}`, "Copy", (_e, cx) => { copyText(x.install); view.note = `Copied: ${x.install}`; cx.notify(); }))
-        .child(btn(`setup-run-${x.id}`, x.status === "logged-out" ? "Log in in terminal" : "Install in terminal", (_e, cx) => install(view, x, cx), x.need === "required"))))
+        .child(btn(`setup-copy-${x.id}`, "Copy", (_e, cx) => { copyText(x.install); view.note = `Copied: ${x.install}`; cx.notify(); }, false, "Copy the install command to the clipboard"))
+        .child(btn(`setup-run-${x.id}`, x.status === "logged-out" ? "Log in in terminal" : "Install in terminal", (_e, cx) => install(view, x, cx), x.need === "required", "Open a terminal with the command typed in, not run: press Enter there"))))
     .child(div().pl(92).text_size(11).text_color(t.muted).whitespace_normal().child(x.what))
     .when(Boolean(x.install), (e) => e.child(div().pl(92).text_size(11).text_color(t.dim).font_family("JetBrains Mono").child(x.install)))
     .when(!x.install && x.status !== "ok", (e) => e.child(div().pl(92).text_size(11).text_color(t.dim).child("See the project's install page for this OS.")));
@@ -82,8 +82,8 @@ export function renderSetup(view, t) {
       .child(h_flex().flex_none().gap(8).items_center()
         .child(div().flex_1().min_w(0).text_size(12).text_color(t.muted).whitespace_normal()
           .child(view.setupBusy ? "Checking…" : s ? `Checked ${new Date(s.at).toLocaleTimeString()}. A mod can't install programs; Install opens a terminal with the command typed in, not run.` : "Not checked yet."))
-        .child(btn("setup-check", view.setupBusy ? "…" : "Check again", (_e, cx) => runSetup(view, cx, true)))
-        .child(btn("setup-close", "Close", (_e, cx) => { view.view = "diff"; cx.notify(); })))
+        .child(btn("setup-check", view.setupBusy ? "…" : "Check again", (_e, cx) => runSetup(view, cx, true), false, "Look for the programs again"))
+        .child(btn("setup-close", "Close", (_e, cx) => { view.view = "diff"; cx.notify(); }, false, "Leave Setup and go back")))
       .children(r ? GROUPS.map(([need, title]) => v_flex().flex_none().gap(2)
         .child(div().px(8).pt(4).text_size(11).font_semibold().text_color(t.muted).child(title.toUpperCase()))
         .children(r.filter((x) => x.need === need).map(line))) : []))

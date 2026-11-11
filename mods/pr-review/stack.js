@@ -18,8 +18,16 @@ export const specTag = (t, id) => div().id(id).flex_none().px(4).rounded(4).bord
 export const sourceLegend = (t) => h_flex().gap(10).text_size(11.5).text_color(t.muted).children([["Implemented", t.accent, false], ["Existing", t.muted, false], ["Spec only", t.ansi5, true]]
   .map(([label, c, dashed]) => h_flex().gap(4).items_center().child(div().w(16).h(0).border_t(2).border_color(c).when(dashed, (e) => e.border_dashed())).child(label)));
 
-export const chip = (t, label, color, solid = false) => div().flex_none().px(6).py(1).rounded(5).border_1().border_color(color)
-  .when(solid, (e) => e.bg(color + "26")).text_size(11).font_semibold().text_color(color).child(label);
+// id + tip (optional): a hover explanation; the id must be unique on the page.
+export const chip = (t, label, color, solid = false, id = null, tip = null) => div().flex_none().px(6).py(1).rounded(5).border_1().border_color(color)
+  .when(Boolean(id && tip), (e) => e.id(id).tooltip(tip)).when(solid, (e) => e.bg(color + "26")).text_size(11).font_semibold().text_color(color).child(label);
+
+// What a triage chip (pr.js triageOf) means, for its tooltip.
+const TRIAGE_TIP = { "High security risk": "Open high-severity security findings, or a high merge risk", "Security risk": "Open security findings on this PR",
+  "Deep review": "Size or risk suggests reading this closely", "Quick look": "Small and low risk: a quick look should do",
+  "Low effort": "Estimated review effort: low", "Medium effort": "Estimated review effort: medium", "High effort": "Estimated review effort: high" };
+export const triageTip = (c) => TRIAGE_TIP[c] ?? "Kind of change, from the PR title prefix";
+export const PRIORITY_TIP = "Review priority: P1 is the most urgent, P3 the least";
 
 // A bar of segments [{weight, color}] in one row (CodeRabbit's stat cards).
 export const segBar = (t, parts, h = 6) => h_flex().w_full().h(h).gap(2).children(parts.filter((p) => p.weight > 0)
@@ -38,6 +46,7 @@ export function statCard(t, id, label, big, bar, foot) {
 export function foldCard(t, id, title, right, open, toggle, body) {
   return v_flex().id(id).flex_none().rounded(10).border_1().border_color(t.border).bg(t.surface)
     .child(h_flex().id(`${id}-h`).px(12).py(10).gap(8).items_center().cursor_pointer().on_click(toggle)
+      .tooltip(open ? "Collapse this section" : "Expand this section").accessibility_label(`${open ? "Collapse" : "Expand"} ${title}`)
       .child(div().w(12).text_color(t.muted).child(open ? "▾" : "▸"))
       .child(div().flex_1().min_w(0).truncate().font_semibold().text_size(14).child(title))
       .children(right ?? []))
@@ -121,9 +130,9 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
       .when(!opts.onFocus && open, (e) => e.cursor_pointer().hover((s) => s.bg(t.hover)).on_click((ev, cx) => onNode(n, ev, cx)))
       .when(Boolean(opts.onHover), (e) => e.on_hover((on, cx) => opts.onHover(on ? n.id : null, cx)))
       .child(h_flex().gap(6).items_start().text_size(12.5)
-        .child(div().flex_none().h(17).text_color(t.muted).child(GLYPH[n.type] ?? "◇"))
+        .child(div().id(`${id}-gl${i}`).flex_none().h(17).text_color(t.muted).when(Boolean(n.type), (e) => e.tooltip(`Type: ${n.type}`).accessibility_label(`Type: ${n.type}`)).child(GLYPH[n.type] ?? "◇"))
         .child(div().flex_1().min_w(0).h(n.titleLines * 17).overflow_hidden().whitespace_normal().line_height(1.35).font_semibold().child(n.title))
-        .when(n.spots > 0, (e) => e.child(div().flex_none().text_size(11).text_color(t.muted).child(`</> ${n.spots}`)))
+        .when(n.spots > 0, (e) => e.child(div().id(`${id}-sn${i}`).flex_none().tooltip(`${n.spots} changed ${n.spots === 1 ? "spot" : "spots"} in the code`).text_size(11).text_color(t.muted).child(`</> ${n.spots}`)))
         .when(Boolean(st.chip), (e) => e.child(specTag(t, `${id}-sp${i}`))))
       .when(n.descLines > 0, (e) => e.child(div().flex_none().h(n.descLines * 15).overflow_hidden().text_size(11).line_height(1.35).whitespace_normal().text_color(t.muted).child(n.desc)))
       .children(decorate ? decorate(n) : [])
@@ -131,13 +140,13 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
       .child(h_flex().gap(6).items_center().text_size(10.5)
         .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(n.type ?? ""))
         .when(open && Boolean(opts.onFocus), (e) => e.child(div().id(`${id}-o${i}`).flex_none().px(4).rounded(4).text_color(t.accent).cursor_pointer().hover((s) => s.bg(t.hover))
-          .child("Open ↗").on_click((ev, cx) => { onNode(n, ev, cx); cx.stop_propagation(); })))
-        .when(Boolean(n.status), (e) => e.child(chip(t, n.status === "new" ? "ADDED" : n.status.toUpperCase(), c)))), dimN(n));
+          .tooltip("Open this place in the code").child("Open ↗").on_click((ev, cx) => { onNode(n, ev, cx); cx.stop_propagation(); })))
+        .when(Boolean(n.status), (e) => e.child(chip(t, n.status === "new" ? "ADDED" : n.status.toUpperCase(), c, false, `${id}-st${i}`, `Status in this PR: ${n.status === "new" ? "added" : n.status}`)))), dimN(n));
   });
   // An orchestrator's states: a lane down the card, one row each; a state that calls a component ends in "→" where its
   // line leaves the card.
   const states = L.nodes.flatMap((n, i) => (n.stateTop === null || n.stateTop === undefined ? [] : [dim(v_flex().id(`${id}-s${i}`).absolute()
-    .left(n.x + 10).top(n.y + n.stateTop).w(n.w - 14).children(n.states.map((s, k) => h_flex().id(`${id}-s${i}-${k}`).h(ARCH.ROW).gap(6).items_center().text_size(11)
+    .left(n.x + 10).top(n.y + n.stateTop).w(n.w - 14).children(n.states.map((s, k) => h_flex().id(`${id}-s${i}-${k}`).h(ARCH.ROW).gap(6).items_center().text_size(11).tooltip(`${s.type ?? "state"}: ${s.name}${s.calls ? " (calls a component)" : ""}`)
       .child(div().flex_none().w(14).text_color(s.source !== "existing" && (s.status === "new" || s.status === "changed") ? t.accent : t.muted).child(STATE_GLYPH[s.type] ?? "▭"))
       .child(div().flex_1().min_w(0).truncate().text_color(s.source === "spec" || s.source === "existing" ? t.muted : t.foreground).child(s.name))
       .when(s.source === "spec", (e) => e.child(specTag(t, `${id}-s${i}-${k}-sp`)))
@@ -168,7 +177,7 @@ export function archLegend(L, t, id, title, opts = {}, big = false) {
   if (!L.paths.length) return div();
   return v_flex().id(id).flex_none().gap(2).p(big ? 12 : 10).rounded(10).border_1().border_color(t.border).bg(t.surface)
     .child(div().pb(4).text_size(big ? 13 : 12).font_semibold().text_color(t.muted).child(title))
-    .children(L.paths.map((p) => h_flex().id(`${id}-r${p.num}`).gap(8).items_start().px(6).py(3).rounded(6)
+    .children(L.paths.map((p) => h_flex().id(`${id}-r${p.num}`).gap(8).items_start().px(6).py(3).rounded(6).tooltip("Hover to highlight this connection in the picture")
       .when(opts.hl === p.num, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover)).when(Boolean(F) && !F.paths.has(p.num), (e) => e.opacity(0.4))
       .when(Boolean(opts.onHl), (e) => e.on_hover((on, cx) => opts.onHl(on ? p.num : null, cx)))
       .child(div().flex_none().mt(1).w(18).h(18).flex().items_center().justify_center().rounded_full().border_1()
@@ -196,7 +205,7 @@ export function visualsCard(visuals, t, id, onJump, tab = 0, onTab = null) {
   const k = Math.min(tab, visuals.length - 1);
   return v_flex().gap(6).when(sources, (e) => e.child(sourceLegend(t)))
     .child(h_flex().flex_wrap().gap(4).children(visuals.map((v, j) => div().id(`${id}-t${j}`).px(8).h(22).flex().items_center().rounded(5).cursor_pointer().text_size(11.5)
-      .bg(j === k ? t.selected : t.chrome).text_color(j === k ? t.foreground : t.muted).max_w(180).child(div().truncate().child(visualName(v)))
+      .bg(j === k ? t.selected : t.chrome).text_color(j === k ? t.foreground : t.muted).max_w(180).tooltip(`Show: ${visualName(v)}`).child(div().truncate().child(visualName(v)))
       .on_click((_e, cx) => { onTab(j, cx); cx.stop_propagation(); }))))
     .child(visualCard(visuals[k], t, `${id}-${k}`, onJump));
 }
@@ -204,7 +213,7 @@ export function visualsCard(visuals, t, id, onJump, tab = 0, onTab = null) {
 export function visualCard(v, t, id, onJump) {
   const name = new Map(v.nodes.map((n) => [n.id, n.label ?? n.id])), c = (x) => (x?.changed && x?.source !== "existing" ? t.accent : t.border);
   const box = (n, k) => v_flex().id(`${id}-b${k}`).flex_none().max_w(180).px(8).py(4).gap(2).rounded(6).border_1().border_color(c(n)).when(n.source === "spec", (e) => e.border_dashed().tooltip(SPEC_TIP)).bg(t.background)
-    .when(Boolean(n.at && onJump), (e) => e.cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => { onJump(n.at, cx); cx.stop_propagation(); }))
+    .when(Boolean(n.at && onJump), (e) => e.cursor_pointer().hover((s) => s.bg(t.hover)).tooltip(n.source === "spec" ? `${SPEC_TIP}\nClick to jump to the related code` : "Jump to this place in the code").on_click((_e, cx) => { onJump(n.at, cx); cx.stop_propagation(); }))
     .child(h_flex().gap(4).items_center().child(div().text_size(12).font_semibold().text_color(n.source === "existing" ? t.muted : n.changed ? t.accent : t.foreground).child(n.label ?? n.id))
       .when(n.source === "spec", (e) => e.child(specTag(t, `${id}-b${k}-sp`))))
     .when(Boolean(n.note), (e) => e.child(div().px(5).rounded(5).bg(t.accent + "1f").text_size(10.5).text_color(t.foreground).whitespace_normal().child(n.note)));
@@ -259,12 +268,12 @@ export function stateView(L, t, id, onJump) {
     if (b.text) els.push(div().id(`${id}-rl${i}`).absolute().left(b.laneX + 4).top(b.ty + 3).max_w(near - b.laneX - 6).text_size(10.5).text_color(b.changed ? t.accent : t.muted).tooltip(b.text).child(div().truncate().child(b.text)));
   });
   const nodes = L.nodes.map((n, i) => {
-    if (n.kind === "start") return div().id(`${id}-n${i}`).absolute().left(n.x + 1).top(n.y + 1).w(12).h(12).rounded_full().bg(t.foreground);
-    if (n.kind === "end") return div().id(`${id}-n${i}`).absolute().left(n.x).top(n.y).w(14).h(14).rounded_full().border_1().border_color(t.foreground).flex().items_center().justify_center()
+    if (n.kind === "start") return div().id(`${id}-n${i}`).absolute().left(n.x + 1).top(n.y + 1).w(12).h(12).rounded_full().bg(t.foreground).tooltip("Start state").accessibility_label("Start state");
+    if (n.kind === "end") return div().id(`${id}-n${i}`).absolute().left(n.x).top(n.y).w(14).h(14).rounded_full().border_1().border_color(t.foreground).flex().items_center().justify_center().tooltip("End state").accessibility_label("End state")
       .child(div().w(8).h(8).rounded_full().bg(t.foreground));
     const st = sourceStyle(n.source), lit = n.changed && st.tone !== "muted";
     const card = v_flex().id(`${id}-n${i}`).absolute().left(n.x).top(n.y).w(n.w).h(n.h).px(8).py(5).gap(1).rounded(6).border_1().border_color(lit ? t.accent : t.border).when(st.dashed, (e) => e.border_dashed()).bg(t.background)
-      .when(Boolean(n.at && onJump), (e) => e.cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => { onJump(n.at, cx); cx.stop_propagation(); }))
+      .when(Boolean(n.at && onJump), (e) => e.cursor_pointer().hover((s) => s.bg(t.hover)).tooltip("Jump to this place in the code").on_click((_e, cx) => { onJump(n.at, cx); cx.stop_propagation(); }))
       .child(h_flex().gap(5).items_center().text_size(12).child(div().flex_none().text_color(t.muted).child(SM_GLYPH[n.type] ?? "▭"))
         .child(div().flex_1().min_w(0).truncate().font_semibold().text_color(lit ? t.accent : st.tone === "muted" ? t.muted : t.foreground).child(n.label ?? n.id))
         .when(Boolean(st.chip), (e) => e.child(specTag(t, `${id}-n${i}-sp`)))
@@ -274,7 +283,7 @@ export function stateView(L, t, id, onJump) {
     return card;
   });
   const kids = L.nodes.flatMap((n, i) => (n.children ?? []).flatMap((k, j, list) => {
-    const out = [div().id(`${id}-k${i}-${j}`).absolute().left(k.x).top(k.y).w(k.w).h(k.h).px(6).flex().items_center().rounded(5).border_1().border_color(k.changed ? t.accent : t.border).when(k.source === "spec", (e) => e.border_dashed().tooltip(SPEC_TIP)).bg(t.surface)
+    const out = [div().id(`${id}-k${i}-${j}`).absolute().left(k.x).top(k.y).w(k.w).h(k.h).px(6).flex().items_center().rounded(5).border_1().border_color(k.changed ? t.accent : t.border).when(k.source === "spec", (e) => e.border_dashed().tooltip(SPEC_TIP)).bg(t.surface).tooltip(k.label ?? k.id)
       .text_size(11).text_color(k.changed ? t.accent : t.foreground).child(div().truncate().child(k.label ?? k.id))];
     const nxt = list[j + 1];
     if (nxt && nxt.branch === k.branch) out.push(vline(`${id}-kl${i}-${j}`, k.x + k.w / 2, k.y + k.h, nxt.y, t.muted));
@@ -295,9 +304,9 @@ export function stateView(L, t, id, onJump) {
 export function triageCard(t, id, pr, tri, onClick) {
   return v_flex().id(id).flex_none().px(8).py(6).gap(5).rounded(8).border_1().border_color(t.border).bg(t.surface).cursor_pointer().hover((s) => s.bg(t.hover)).on_click(onClick)
     .child(h_flex().gap(6).items_center()
-      .child(chip(t, `● P${tri.priority}`, tri.priority === 1 ? t.ansi1 : tri.priority === 2 ? t.ansi3 : t.muted))
+      .child(chip(t, `● P${tri.priority}`, tri.priority === 1 ? t.ansi1 : tri.priority === 2 ? t.ansi3 : t.muted, false, `${id}-p`, PRIORITY_TIP))
       .child(div().flex_1().min_w(0).truncate().font_semibold().text_size(12).child(pr.title ?? `#${pr.number}`)))
     .when(Boolean(tri.why), (e) => e.child(div().pl(8).border_l(3).border_color(t.accent).text_size(11.5).line_height(1.4).text_color(t.foreground).whitespace_normal().child(tri.why)))
-    .child(h_flex().flex_wrap().gap(4).children(tri.chips.map((c) => chip(t, c, /security/i.test(c) ? t.ansi1 : t.muted))))
-    .child(div().text_size(10.5).text_color(t.dim).child(`${pr.repo} #${pr.number}`));
+    .child(h_flex().flex_wrap().gap(4).children(tri.chips.map((c, k) => chip(t, c, /security/i.test(c) ? t.ansi1 : t.muted, false, `${id}-ch${k}`, triageTip(c)))))
+    .child(div().id(`${id}-rp`).text_size(10.5).text_color(t.dim).tooltip("Repository and PR number").child(`${pr.repo} #${pr.number}`));
 }
