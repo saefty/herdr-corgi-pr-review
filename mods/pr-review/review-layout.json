@@ -4,10 +4,7 @@
  "preview": "mods/pr-review/review-layout.svg",
  "background": "canvas",
  "titlebar": "none",
- "traffic_lights": [
-  12,
-  16
- ],
+ "traffic_lights": [12, 20],
  "resizable": false,
  "divider": {
   "width": 1,
@@ -18,7 +15,7 @@
    "id": "review-bar",
    "type": "block",
    "size": {
-    "px": 44
+    "px": 52
    },
    "window_drag": true,
    "content": {

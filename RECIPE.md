@@ -45,7 +45,7 @@ corners and a 1 px `border`:
 **The review layout** (`mods/pr-review/review-layout.json`, written to `layouts/` on first use): a column, no system
 title bar (traffic lights at 12, 16):
 
-- The bar (44 px, `chrome`, draggable; the mod with `{part: "bar"}`, left padding 84 px): `← Back`, `#n title`
+- The bar (52 px, `chrome`, draggable; the mod with `{part: "bar"}`, left padding 84 px): `← Back`, `#n title`
   (14 px semibold), `owner/repo#n`, a state badge, a context tag (only with several contexts), merge risk and
   review effort badges, `Pre-merge checks ✓ n ✗ n`, `Mark done`, a round `?` (the keys popup), `Reviews ▾`,
   `Values: On`, the model picker (Haiku / Sonnet / Opus) and the shown analysis' model and cost (it truncates first
@@ -147,7 +147,7 @@ big PRs into cohort passes and a merge pass under one cap.
 ## Built from
 
 - `mods/pr-review/review-layout.json` (installed as `layouts/review.json`): `root` column (`titlebar: "none"`,
-  `traffic_lights: [12, 16]`, `resizable: false`, 1 px `border` divider) with `review-bar` (44 px, `window_drag`,
+  `traffic_lights: [12, 20]`, `resizable: false`, 1 px `border` divider) with `review-bar` (52 px, `window_drag`,
   `{mod: "pr-review", props: {part: "bar"}}`) and `review-body` (`{part: "review"}`).
 - `mods/pr-review`: `main.js` (the panel; mixes in `review.js` for the layout parts and the `reviews` popup and
   `agentbar` window title), `pr.js` (pure: diff parsing, prompts, registry, triage, pre-merge checks),

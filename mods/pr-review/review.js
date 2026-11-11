@@ -1882,8 +1882,8 @@ export const ReviewMode = {
   // The switch as chips: what shows in the diff, with counts.
   showChips(t, id) {
     const show = this.show(), counts = this.showCountsNow();
-    return h_flex().flex_none().gap(4).items_center().child(div().text_size(12).text_color(t.muted).child("Show"))
-      .children(TH.SHOW_KINDS.map(([k, label]) => div().id(`${id}-${k}`).px(7).h(20).flex().items_center().gap(4).rounded(10).border_1().cursor_pointer().text_size(11.5)
+    return h_flex().flex_none().gap(6).items_center().child(div().text_size(12.5).text_color(t.muted).child("Show"))
+      .children(TH.SHOW_KINDS.map(([k, label]) => div().id(`${id}-${k}`).px(10).h(24).flex().items_center().gap(5).rounded(12).border_1().cursor_pointer().text_size(12)
         .border_color(show[k] ? t[SOURCE[k]] ?? t.accent : t.border).text_color(show[k] ? t.foreground : t.dim).hover((s) => s.bg(t.hover))
         .on_click((_e, cx) => { this.toggleShow(k); cx.notify(); }).child(label).child(div().text_color(t.muted).child(String(counts[k] ?? 0)))));
   },
@@ -1956,20 +1956,20 @@ export const ReviewMode = {
     const title = pr ? `#${pr.number} ${pr.title ?? ""}` : "Review";
     const runs = Object.values(shared("review.reviewers") ?? {}), openRuns = () => openOverlay({ mod: "pr-review", props: { part: "reviews" }, kind: "popup", width: 460, height: 250 });
     const runLabel = runs.some((r) => r.busy) ? "Reviews running ⋯" : "Run review ▾";
-    return h_flex().id("rv-bar").size_full().pl(84).pr(14).gap(10).items_center().bg(t.chrome).text_color(t.foreground).text_size(13.5)
+    return h_flex().id("rv-bar").size_full().pl(84).pr(16).gap(12).items_center().bg(t.chrome).text_color(t.foreground).text_size(13.5)
       .child(pill("rv-back", t, "← Back", () => leave()).flex_none())
       .child(div().id("rv-title").flex_1().min_w(0).truncate().font_semibold().text_size(14).tooltip(title).child(title))
       .when(Boolean(pr), (e) => e.child(div().flex_none().text_size(12).text_color(t.muted).child(`${pr.repo ?? ""}#${pr.number ?? ""}`))
         .child(badge(t, pr.state ?? "?", t[{ open: "ansi2", draft: "dim", merged: "ansi5", closed: "ansi1" }[pr.state]] ?? t.dim))
         .when(C.tagged(ctxDoc()), (e) => e.child(badge(t, C.labelOf(ctxDoc(), prCtx(pr)), C.colorOf(ctxDoc(), prCtx(pr), t)))))
-      .when(selected > 0, (e) => e.child(div().id("rv-bar-fixsel").flex_none().px(12).h(30).flex().items_center().rounded(7).bg(t.accent).text_color(t.accent_foreground)
+      .when(selected > 0, (e) => e.child(div().id("rv-bar-fixsel").flex_none().px(14).h(32).flex().items_center().rounded(7).bg(t.accent).text_color(t.accent_foreground)
         .text_size(13).font_semibold().cursor_pointer().on_mouse_down("left", stop).on_click(() => run("pr-review.fix")).child(`✦ Fix selected (${selected})`)))
       // Until a reviewer ran, the deep review is the button to find: green, like Finish your review.
       .child(runs.some((r) => r.at || r.busy) ? pill("rv-reviews-btn", t, runLabel, openRuns).flex_none()
-        : div().id("rv-reviews-btn").flex_none().px(12).h(30).flex().items_center().rounded(7).bg(GH_GREEN).text_color("#ffffff").text_size(13).font_semibold()
+        : div().id("rv-reviews-btn").flex_none().px(14).h(32).flex().items_center().rounded(7).bg(GH_GREEN).text_color("#ffffff").text_size(13).font_semibold()
           .cursor_pointer().on_mouse_down("left", stop).on_click(openRuns).child(runLabel))
       // GitHub's green "Review changes" / "Finish your review", with the pending count; the review copy draws the popover.
-      .child(div().id("rv-finish-btn").flex_none().px(12).h(30).flex().items_center().gap(6).rounded(7).bg(GH_GREEN).text_color("#ffffff").text_size(13).font_semibold()
+      .child(div().id("rv-finish-btn").flex_none().px(14).h(32).flex().items_center().gap(6).rounded(7).bg(GH_GREEN).text_color("#ffffff").text_size(13).font_semibold()
         .cursor_pointer().on_mouse_down("left", stop).on_click(() => run("pr-review.finish"))
         .child(pending ? "Finish your review" : "Review changes")
         .when(pending > 0, (e) => e.child(div().px(6).rounded_full().bg("#ffffff").text_color(GH_GREEN).text_size(11.5).child(String(pending))))
@@ -1981,7 +1981,7 @@ export const ReviewMode = {
   metaRow(t) {
     const ai = this.ai, m = model(), checks = this.prSel ? this.checksNow() : [], ok = checks.filter((c) => c.ok === true).length, bad = checks.filter((c) => c.ok === false).length;
     const sep = () => div().flex_none().text_color(t.dim).child("·"), cap = (x) => x[0].toUpperCase() + x.slice(1);
-    const link = (id, child, click) => h_flex().id(id).flex_none().gap(4).items_center().px(4).h(22).rounded(5).cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground)).on_click(click).child(child);
+    const link = (id, child, click) => h_flex().id(id).flex_none().gap(4).items_center().px(6).h(26).rounded(6).cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground)).on_click(click).child(child);
     const menu = (id, items, w = 230) => (_e, cx) => { openOverlay({ mod: "pr-review", props: { part: "cmenu", key: id, items }, kind: "popup", width: w, height: 12 + 30 * items.length }); cx.stop_propagation(); };
     const facts = [
       ai?.mergeRisk && div().id("rv-mr").flex_none().tooltip(ai.mergeRisk.why || "").child(h_flex().gap(4).child("Merge risk:").child(div().text_color(t[SEVERITY_COLOR[ai.mergeRisk.level]] ?? t.muted).child(cap(ai.mergeRisk.level)))),
@@ -1990,7 +1990,7 @@ export const ReviewMode = {
         (_e, cx) => { this.tab = "steps"; this.page = "overview"; cx.notify(); }),
     ].filter(Boolean);
     const modelText = this.aiBusy ? `${MODELS[this.aiBusy.model]?.label} analyzing…` : `${MODELS[m].label}${ai?.cost != null && ai.model === m ? ` · $${Number(ai.cost).toFixed(2)}` : ""}`;
-    return h_flex().id("rv-meta").flex_none().flex_wrap().min_h(28).px(14).gap(8).items_center().border_b(1).border_color(t.border).bg(t.chrome).text_size(12).text_color(t.muted)
+    return h_flex().id("rv-meta").flex_none().flex_wrap().min_h(40).px(16).py(6).gap(10).items_center().border_b(1).border_color(t.border).bg(t.chrome).text_size(12.5).text_color(t.muted)
       .children(facts.flatMap((f, k) => (k ? [sep(), f] : [f])))
       .child(div().flex_1())
       .child(this.showChips(t, "rv-show")).child(sep())
@@ -2525,7 +2525,7 @@ export const ReviewMode = {
   // The bar in Explore: back, the topic, the repo, Restricted Mode, a new topic.
   renderExploreBar(ex) {
     const t = theme(), title = ex.topic ? `Explore: ${ex.topic}` : "Explore a topic", trusted = this.exploreTrusted(ex);
-    return h_flex().id("rv-bar").size_full().pl(84).pr(14).gap(10).items_center().bg(t.chrome).text_color(t.foreground).text_size(13.5)
+    return h_flex().id("rv-bar").size_full().pl(84).pr(16).gap(12).items_center().bg(t.chrome).text_color(t.foreground).text_size(13.5)
       .child(pill("rv-back", t, "← Back", () => { setShared("review.explore", null); if (!shared("review.target")) leave(); }).flex_none())
       .child(div().id("rv-title").flex_1().min_w(0).truncate().font_semibold().text_size(14).tooltip(title).child(title))
       .when(Boolean(ex.repo), (e) => e.child(div().flex_none().text_size(12).text_color(t.muted).child(ex.repo)))
