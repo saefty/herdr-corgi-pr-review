@@ -1010,6 +1010,10 @@ export const ReviewMode = {
   // ---- the diff as list items (one virtual list per tab)
 
   pushRows(items, at, rows, path, hunkOf) {
+    // ponytail: gpui-kit's virtual list holds at most 10000 items; past the budget a file's lines fold to one note
+    // (collapse other files to open it) instead of crashing the render. A paged list would lift the limit.
+    const cap = this.rowCap ?? 9000;
+    if (items.length + rows.length > cap) { items.push({ t: "note", text: `${rows.length} lines not shown: the view holds about ${cap} lines at once. Collapse other files (click their header) to open this one.` }); return []; }
     const sugs = this.openSugs(path), cms = this.comments.filter((c) => c.file === path), used = new Set();
     const finds = this.find.list.filter((f) => f.file === path && ["open", "progress", "recheck"].includes(this.fstatus(f)));
     const own = this.ghOwn(), gh = this.gh.filter((g) => g.path === path && !own(g)), f = this.fsel, range = this.composing && f?.path === path && rangeOf(rows, f.a, f.b);
@@ -1069,6 +1073,7 @@ export const ReviewMode = {
 
   filesItems() {
     const items = [], at = {}, sh = this.shown();
+    this.rowCap = Math.max(1000, 9700 - 2 * sh.patch.length); // room for every file's header and one note
     for (const f of sh.patch) {
       at[f.path] = items.length;
       items.push({ t: "file", f });
@@ -3228,6 +3233,7 @@ export const ReviewMode = {
       if (lang) (this.hlQueue ??= new Map()).set(inf, { shown, lang, hkey: `${head}:${it.path}`, inf });
     }
     if (this.hlQueue?.size && !this.hlBusy) { this.hlBusy = true; cx.timer.after(0, (cx) => this.drainHighlight(cx)); }
+    if (items.length > 9990) items.length = 9990; // the virtual list's hard limit is 10000
     const keys = itemKeys(items);
     this.items = items; this.at = at; this.byKey = new Map(keys.map((k, i) => [k, items[i]]));
     const listId = `rv-list-${this.tab === "steps" ? "steps" : "files"}`, sug = this.openSugs().find((s) => s.key === this.sug);
