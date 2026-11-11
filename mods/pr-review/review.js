@@ -20,6 +20,7 @@ import { lookup, warm, contents, vscodeArgs, where, setTrusted } from "./defs.js
 import { diffRows, hunksOf, selection, uiLine, lineKey, rangeOf, MODELS, reviewRequest, mapReview, suspectComment, stepKey, fileRows, fileTree, atLine, splitPatch } from "./pr.js";
 import { ghTarget, lowValue, markReviewed, sinceBase, verifyCandidates, applyVerification, blastArch, preMergeChecks, mergeBlockers, triageOf } from "./pr.js";
 import { diffLines, inDiff, ghReview, lineThreads, suggestionBlock, buildReview, layoutPlan, specElements, diagramsState } from "./pr.js";
+import { wheelStep } from "./views.js";
 import { archView, archModel, archLegend, visualsCard, visualCard, statCard, segBar, foldCard, chip, legend, specTag, sourceLegend, SEVERITY_COLOR } from "./stack.js";
 import { hasSources, archLayout } from "./arch.js";
 import * as TH from "./threads.js";
@@ -2047,7 +2048,7 @@ export const ReviewMode = {
           .child(div().flex_none().text_color(t.accent).child("?"))
           .child(div().flex_1().min_w(0).child(TextView.markdown(`rv-q-${stepKey(s)}-${k}`, this.asked(s, q))))))))
       .when(on && s.visuals?.length > 0, (e) => e.child(div().pl(26).child(this.diagramsBar(t, `rv-dia-${i}`, "Refresh this view"))).child(div().pl(26).child(visualsCard(s.visuals, t, `rv-vis-${i}`, (at, cx) => this.jumpTo(at, cx),
-        this.visTab?.[i] ?? 0, (k, cx) => { this.visTab = { ...this.visTab, [i]: k }; cx.notify(); }))))
+        this.visTab?.[i] ?? 0, (k, cx) => { this.visTab = { ...this.visTab, [i]: k }; cx.notify(); }, this.wrapX()))))
       .when(on && !s.pseudo && Boolean(this.ai), (e) => e.child(h_flex().pl(26).gap(6).child(pill(`rv-ask-l${i}`, t, "Ask about this layer", (_e, cx) => {
         const k = (this.ai?.steps ?? []).indexOf(s); this.setDrawer("open", cx, k >= 0 ? { layer: k } : null); cx.stop_propagation(); }).tooltip("Ask one model question about this layer; the answer stays private"))
         .child(pill(`rv-drill-l${i}`, t, "Show details", (_e, cx) => { this.showDetails(this.layerSubject(s), `layer:${stepKey(s)}`, cx); cx.stop_propagation(); }).tooltip("One model call breaks this layer down further")))
@@ -2294,15 +2295,11 @@ export const ReviewMode = {
     const a = this.ai?.arch;
     const seg = (k, label) => div().id(`rv-av-${k}`).tooltip((k === "diff" ? "What changed in the architecture" : k === "before" ? "The architecture before this PR" : "The architecture after this PR")).px(10).h(24).flex().items_center().rounded(5).cursor_pointer().text_size(12.5)
       .bg(this.archMode === k ? t.selected : t.chrome).text_color(this.archMode === k ? t.foreground : t.muted).on_click((_e, cx) => { this.archMode = k; cx.notify(); }).child(label);
-    const more = () => visualsCard(this.ai.visuals, t, "rv-arch-vis", (at, cx) => this.jumpTo(at, cx), this.archVisTab ?? 0, (k, cx) => { this.archVisTab = k; cx.notify(); });
+    const more = () => visualsCard(this.ai.visuals, t, "rv-arch-vis", (at, cx) => this.jumpTo(at, cx), this.archVisTab ?? 0, (k, cx) => { this.archVisTab = k; cx.notify(); }, this.wrapX());
     if (!a) return v_flex().gap(12).child(this.diagramsBar(t, "rv-dia-arch", "Refresh diagrams")).child(div().text_size(13.5).text_color(t.muted).child(this.ai ? "This analysis has no architecture picture (older analysis, or the PR touches no architecture). Re-analyze for one." : "No analysis yet: Analyze in the left column."))
       .when(this.ai?.visuals?.length > 0, (e) => e.child(div().max_w(760).child(more())));
     const groups = new Set(a.nodes.map((n) => n.group)).size, L = this.archL(), fit = this.archFitOn();
     const opts = this.archOpts("arch");
-    // The canvas scrolls sideways by itself (archWheel, a bar under it, drag to pan): clipped at its own box, 40 px of
-    // room after the last column.
-    const viewW = this.archViewW ?? 800, contentW = L.width + 4 + 40, maxX = Math.max(0, contentW - viewW), x = Math.min(this.archX ?? 0, maxX);
-    this.archGeom = { maxX, contentW, viewW };
     return v_flex().gap(12)
       .child(h_flex().gap(12).items_center().flex_wrap().child(div().text_size(20).font_semibold().child("Architecture impact")).child(this.diagramsBar(t, "rv-dia-arch", "Refresh diagrams"))
         .when(this.drawerState() !== "open", (e) => e.child(pill("rv-ask-open", t, "Ask", (_e, cx) => this.setDrawer("open", cx, null)).tooltip("Ask one model question about the architecture picture")))
@@ -2314,15 +2311,9 @@ export const ReviewMode = {
         .when(hasSources(a) || (this.ai.visuals ?? []).some(hasSources), (e) => e.child(div().flex_none().child(sourceLegend(t))))
         .child(h_flex().flex_none().gap(2).p(2).rounded(7).border_1().border_color(t.border).child(seg("diff", "Structural diff")).child(seg("before", "Before")).child(seg("after", "After")))
         .child(div().id("rv-av-fit").flex_none().px(10).h(28).flex().items_center().rounded(7).border_1().border_color(fit ? t.accent : t.border).cursor_pointer().text_size(12.5)
-          .text_color(fit ? t.foreground : t.muted).tooltip("Narrow cards, so a wide picture fits the view").on_click((_e, cx) => { this.archFit = !fit; this.archX = 0; cx.notify(); }).child("Fit")))
-      .child(div().id("rv-arch-canvas").w_full().h(L.height + 4).relative().overflow_hidden().when(maxX > 0, (e) => e.cursor_grab())
-        .on_size_change((size, cx) => { if (Math.abs((this.archViewW ?? 0) - size.width) > 2) { this.archViewW = size.width; cx.notify(); } })
-        .on_scroll_wheel((e, cx) => this.archWheel(e, cx))
-        .on_mouse_down("left", (e) => { if (maxX > 0) this.archPan = { x0: e.position.x, from: x }; })
-        .child(div().absolute().top(0).left(-x).w(contentW).h(L.height + 4).child(archView(L, t, "rv-arch", (n, _e, cx) => this.jumpTo(n.at, cx), null, opts)).children(this.pinNotes(t, L))))
-      .when(maxX > 0, (e) => e.child(div().id("rv-arch-hbar").tooltip("Scroll bar for the picture").w_full().h(10).relative().rounded(5).bg(t.raised)
-        .child(div().id("rv-arch-thumb").tooltip("Drag to scroll the picture sideways").absolute().top(1).left(Math.round((x / contentW) * viewW)).w(Math.max(30, Math.round((viewW * viewW) / contentW))).h(8).rounded(4).bg(t.muted).cursor_pointer()
-          .on_mouse_down("left", (ev, cx) => { this.archThumb = { x0: ev.position.x, from: x }; cx.stop_propagation(); }))))
+          .text_color(fit ? t.foreground : t.muted).tooltip("Narrow cards, so a wide picture fits the view").on_click((_e, cx) => { this.archFit = !fit; this.hsOf("rv-arch-canvas").x = 0; cx.notify(); }).child("Fit")))
+      // 40 px of room after the last column.
+      .child(this.hscroll("rv-arch-canvas", L.width + 4 + 40, L.height + 4, [archView(L, t, "rv-arch", (n, _e, cx) => this.jumpTo(n.at, cx), null, opts), ...this.pinNotes(t, L)], t))
       .child(this.drillPanel(t, "arch"))
       .child(archLegend(L, t, "rv-arch-edges", "Edges", opts))
       .when(this.ai?.visuals?.length > 0, (e) => e.child(div().pt(6).text_size(13).font_semibold().text_color(t.muted).child("More views"))
@@ -2333,7 +2324,7 @@ export const ReviewMode = {
   archFitOn() {
     if (this.archFit !== undefined) return this.archFit;
     const a = this.ai?.arch;
-    return Boolean(a) && archModel(a, this.archMode).width > 1.3 * (this.archViewW ?? 1e9); // auto: much wider than the view
+    return Boolean(a) && archModel(a, this.archMode).width > 1.3 * (this.hs?.get("rv-arch-canvas")?.viewW || 1e9); // auto: much wider than the view
   },
   archL() {
     const a = this.ai?.arch;
@@ -2342,18 +2333,37 @@ export const ReviewMode = {
     if (this.fitMemo?.key !== key) this.fitMemo = { key, L: archLayout(a, this.archMode, () => 0, true) };
     return this.fitMemo.L;
   },
-  // Wheel and trackpad over the picture: each gesture keeps the axis it starts with (mostly sideways: only the canvas
-  // moves, the page stays; mostly down: the page scrolls). A gesture ends after 150 ms without a wheel event.
-  archWheel(e, cx) {
-    const g = this.archGeom, now = Date.now(), dx = e.delta?.x ?? 0, dy = e.delta?.y ?? 0;
-    if (!g || g.maxX <= 0) return;
-    if (e.touch_phase === "started" || now - (this.wheelAt ?? 0) > 150) this.wheelAxis = null;
-    this.wheelAt = now;
-    if (!this.wheelAxis && (dx || dy)) this.wheelAxis = Math.abs(dx) > Math.abs(dy) || e.modifiers?.shift ? "x" : "y";
-    if (this.wheelAxis !== "x") return;
-    const d = dx || (e.modifiers?.shift ? dy : 0);
-    this.archX = Math.max(0, Math.min(g.maxX, (this.archX ?? 0) - d));
-    cx.stop_propagation(); cx.notify();
+  // ---- sideways scrollers inside the scrolling page (the architecture canvas, the flow, state-machine and blast
+  // pictures): clipped at their box, the content moved by left(-x); wheel and trackpad through wheelStep (one axis per
+  // gesture, so page and picture never move together; shift+wheel sideways), drag to pan, a thumb bar when wider than
+  // the view. Per id in this.hs: {x, viewW, maxX, contentW}; one gesture (this.gesture) and one drag (this.hsDrag).
+  hsOf(id) { const m = (this.hs ??= new Map()); if (!m.has(id)) m.set(id, { x: 0, viewW: 0, maxX: 0, contentW: 0 }); return m.get(id); },
+  wrapX() { return (this.wrapXFn ??= (id, w, h, el) => this.hscroll(id, w, h, el)); }, // stack.js visualsCard's wrapX
+  hscroll(id, contentW, h, content, t = theme()) {
+    const s = this.hsOf(id), viewW = s.viewW || 800, maxX = Math.max(0, contentW - viewW), x = Math.min(s.x, maxX);
+    s.maxX = maxX; s.contentW = contentW; // for the wheel and drag handlers
+    return v_flex().w_full().gap(4)
+      .child(div().id(id).w_full().h(h).relative().overflow_hidden().when(maxX > 0, (e) => e.cursor_grab())
+        .on_size_change((size, cx) => { if (Math.abs(s.viewW - size.width) > 2) { s.viewW = size.width; cx.notify(); } })
+        .on_scroll_wheel((e, cx) => this.hsWheel(id, e, cx))
+        .on_mouse_down("left", (e) => { if (maxX > 0) this.hsDrag = { id, x0: e.position.x, from: x }; })
+        .child(div().absolute().top(0).left(-x).w(contentW).h(h).children([].concat(content))))
+      .when(maxX > 0, (e) => e.child(div().id(`${id}-hbar`).tooltip("Scroll bar for the picture").w_full().h(10).relative().rounded(5).bg(t.raised)
+        .child(div().id(`${id}-thumb`).tooltip("Drag to scroll the picture sideways").absolute().top(1).left(Math.round((x / contentW) * viewW)).w(Math.max(30, Math.round((viewW * viewW) / contentW))).h(8).rounded(4).bg(t.muted).cursor_pointer()
+          .on_mouse_down("left", (ev, cx) => { this.hsDrag = { id, x0: ev.position.x, from: x, thumb: true }; cx.stop_propagation(); }))));
+  },
+  hsWheel(id, e, cx) {
+    const s = this.hsOf(id), r = wheelStep(this.gesture, { dx: e.delta?.x ?? 0, dy: e.delta?.y ?? 0, t: Date.now(), phase: e.touch_phase, shift: Boolean(e.modifiers?.shift) }, s.x, s.maxX);
+    this.gesture = r.g;
+    if (!r.used) return;
+    s.x = r.x; cx.stop_propagation(); cx.notify();
+  },
+  // A drag on a picture (pan) or its thumb, from the root's mouse move; the root's mouse up ends it.
+  hsMove(e, cx) {
+    const p = this.hsDrag, s = p && this.hs?.get(p.id);
+    if (!s) return;
+    const d = e.position.x - p.x0;
+    s.x = Math.max(0, Math.min(s.maxX, p.thumb ? p.from + (d * s.contentW) / (s.viewW || 1) : p.from - d)); cx.notify();
   },
 
   // The two deep looks, side by side on a fresh review: the analysis (understanding) and the code review (findings).
@@ -2618,7 +2628,7 @@ export const ReviewMode = {
       .child(h_flex().gap(6).child(pill(`rv-exask-${i}`, t, "Ask about this layer", (_e, cx) => this.setDrawer("open", cx, { layer: this.exAi.steps.indexOf(s) })).tooltip("Ask one model question about this layer; the answer stays private"))
         .child(pill(`rv-exdrill-${i}`, t, "Show details", (_e, cx) => this.showDetails({ id: `layer:${i}`, label: plain(s.title), kind: "layer", why: plain(s.why), text: s.text, files: (s.evidence ?? []).map(pathOf), evidence: s.evidence ?? [] }, `exlayer:${i}`, cx)).tooltip("One model call breaks this layer down further")))
       .child(this.drillPanel(t, `exlayer:${i}`))
-      .when(s.visuals?.length > 0, (e) => e.child(div().max_w(760).child(visualsCard(s.visuals, t, `rv-exvis-${i}`, (at, cx) => this.jumpTo(at, cx), this.visTab?.[`x${i}`] ?? 0, (k, cx) => { this.visTab = { ...this.visTab, [`x${i}`]: k }; cx.notify(); }))))
+      .when(s.visuals?.length > 0, (e) => e.child(div().max_w(760).child(visualsCard(s.visuals, t, `rv-exvis-${i}`, (at, cx) => this.jumpTo(at, cx), this.visTab?.[`x${i}`] ?? 0, (k, cx) => { this.visTab = { ...this.visTab, [`x${i}`]: k }; cx.notify(); }, this.wrapX()))))
       .children((s.flows ?? []).map((f, k) => div().max_w(760).child(flowCard(f, t, `rv-exflow-${i}-${k}`, (_e, cx) => { this.jumpTo(f.at, cx); cx.stop_propagation(); }))));
   },
 
@@ -2810,7 +2820,7 @@ export const ReviewMode = {
     const go = (n, _e, cx) => { const h = this.fileHunks?.get(n.file)?.[0]; if (h) this.jumpTo(`${n.file}:${h.rows.find((r) => r.n)?.n ?? ""}`, cx); else if (n.file) { this.note = `${n.file} is not in the diff (related context)`; cx.notify(); } };
     return v_flex().gap(12)
       .child(header.child(div().text_size(13).font_semibold().child(`${b.counts.added} Added | ${b.counts.changed} Changed | ${b.counts.up} Upstream | ${b.counts.down} Downstream`)))
-      .child(div().id("rv-blast-scroll").w_full().overflow_x_scroll().pb(8).child(archView(L, t, "rv-blast", go, deco, opts)))
+      .child(this.hscroll("rv-blast-scroll", L.width + 4, L.height + 4, archView(L, t, "rv-blast", go, deco, opts), t))
       .child(archLegend(L, t, "rv-blast-edges", "How the context links to the changes", opts, true))
       .when(this.blastOpen, (e) => e.children((blast.units ?? []).flatMap((u) => (u.files ?? []).flatMap((file) => (this.fileHunks?.get(file) ?? []).map((h) => this.hunkBlock(h, t, `${u.id}`))))));
   },
@@ -3162,8 +3172,8 @@ export const ReviewMode = {
       if (this.exStart !== ex) { if (ex.start && this.exStart?.at !== ex.at) this.exRoot = null; this.enterExplore(ex, cx); }
       const root = v_flex().id("rv-root").size_full().bg(t.background).text_color(t.foreground).text_size(13.5)
         .on_size_change((size, cx) => { if (Math.abs((this.winW ?? 0) - size.width) > 8) { this.winW = size.width; cx.notify(); } })
-        .on_mouse_move((e, cx) => { if (this.drag) { this.dragW = leftWidth(e.local_position?.x ?? e.position.x, this.winW); cx.notify(); } const g = this.archGeom, p = this.archPan ?? this.archThumb; if (g && p) { const d = e.position.x - p.x0; this.archX = Math.max(0, Math.min(g.maxX, this.archThumb ? p.from + (d * g.contentW) / g.viewW : p.from - d)); cx.notify(); } })
-        .on_mouse_up("left", (_e, cx) => { this.archPan = null; this.archThumb = null; if (this.drag) { this.drag = false; if (this.dragW !== null && this.dragW !== undefined) setShared("review.leftWidth", this.dragW); this.dragW = null; cx.notify(); } })
+        .on_mouse_move((e, cx) => { if (this.drag) { this.dragW = leftWidth(e.local_position?.x ?? e.position.x, this.winW); cx.notify(); } this.hsMove(e, cx); })
+        .on_mouse_up("left", (_e, cx) => { this.hsDrag = null; if (this.drag) { this.drag = false; if (this.dragW !== null && this.dragW !== undefined) setShared("review.leftWidth", this.dragW); this.dragW = null; cx.notify(); } })
         .track_focus(this.fh).on_key_down((e, cx) => this.onReviewKey(e, cx));
       return this.renderExplore(cx, ex, root);
     }
@@ -3185,10 +3195,9 @@ export const ReviewMode = {
       // ponytail: a release outside the window keeps dragging until the next release here.
       .on_mouse_move((e, cx) => {
         if (this.drag) { this.dragW = leftWidth(e.local_position?.x ?? e.position.x, this.winW); cx.notify(); }
-        const g = this.archGeom, p = this.archPan ?? this.archThumb;
-        if (g && p) { const d = e.position.x - p.x0; this.archX = Math.max(0, Math.min(g.maxX, this.archThumb ? p.from + (d * g.contentW) / g.viewW : p.from - d)); cx.notify(); }
+        this.hsMove(e, cx);
       })
-      .on_mouse_up("left", (_e, cx) => { this.archPan = null; this.archThumb = null; if (this.drag) { this.drag = false; if (this.dragW !== null && this.dragW !== undefined) setShared("review.leftWidth", this.dragW); this.dragW = null; cx.notify(); } })
+      .on_mouse_up("left", (_e, cx) => { this.hsDrag = null; if (this.drag) { this.drag = false; if (this.dragW !== null && this.dragW !== undefined) setShared("review.leftWidth", this.dragW); this.dragW = null; cx.notify(); } })
       .track_focus(this.fh).on_key_down((e, cx) => this.onReviewKey(e, cx));
     if (!target || other) {
       return root.items_center().justify_center().gap(12).text_color(t.muted)

@@ -1,6 +1,6 @@
 // Run: node test_views.mjs  (the panel's picking / selected state, the in-progress cap, a flow visual as archLayout input)
 import assert from "node:assert/strict";
-import { panelState, bodyTab, capped, flowArch, IN_PROGRESS_MAX } from "./views.js";
+import { panelState, bodyTab, capped, flowArch, IN_PROGRESS_MAX, wheelStep, GESTURE_MS } from "./views.js";
 import { archLayout } from "./arch.js";
 
 // Picking until something is chosen; PRs ▾ goes back to picking without dropping the choice.
@@ -50,3 +50,18 @@ assert.equal(g.nodes[0].group, "api");
 assert.equal(g.edges.length, 1);
 assert.equal(archLayout(flowArch({})).nodes.length, 0);
 console.log("views: ok");
+
+// Sideways scrollers: one axis per gesture, the offset clamped to [0, max].
+{
+  const run = (events, x = 0, max = 100) => { let g = null, used = []; for (const e of events) { const r = wheelStep(g, e, x, max); g = r.g; x = r.x; used.push(r.used); } return { axis: g?.axis, x, used }; };
+  assert.deepEqual(run([{ dx: -10, dy: 2, t: 0 }, { dx: -5, dy: 30, t: 20 }]), { axis: "x", x: 15, used: [true, true] }, "starts sideways: stays sideways, the page gets nothing");
+  assert.deepEqual(run([{ dx: 1, dy: 10, t: 0 }, { dx: -40, dy: 0, t: 20 }]), { axis: "y", x: 0, used: [false, false] }, "starts down: the picture never moves in that gesture");
+  assert.deepEqual(run([{ dx: 1, dy: 10, t: 0 }, { dx: -40, dy: 0, t: GESTURE_MS + 1 }]), { axis: "x", x: 40, used: [false, true] }, "a pause ends the gesture");
+  assert.deepEqual(run([{ dx: 1, dy: 10, t: 0 }, { dx: -40, dy: 0, t: 10, phase: "started" }]), { axis: "x", x: 40, used: [false, true] }, "a new touch ends it too");
+  assert.deepEqual(run([{ dy: -30, t: 0, shift: true }]), { axis: "x", x: 30, used: [true] }, "shift+wheel is sideways");
+  assert.equal(run([{ dx: -500, t: 0 }]).x, 100, "clamped at max");
+  assert.equal(run([{ dx: 500, t: 0 }], 20).x, 0, "clamped at 0");
+  assert.deepEqual(run([{ dx: -10, t: 0 }], 0, 0), { axis: "x", x: 0, used: [false] }, "nothing to scroll: the page keeps the event");
+  assert.equal(run([], 300).x, 300); assert.equal(wheelStep(null, { dy: 5, t: 0 }, 300, 100).x, 100, "an offset beyond a shrunk max is clamped");
+  console.log("wheel ok");
+}

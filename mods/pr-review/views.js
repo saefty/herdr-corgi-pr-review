@@ -30,3 +30,15 @@ export function flowArch(v) {
       status: status(e), source: e.source, evidence: e.evidence, dashed: e.dashed })),
   };
 }
+
+// One wheel/trackpad event over a sideways scroller inside the scrolling page (review.js hscroll). g: the gesture so
+// far ({axis, at} | null); a gesture keeps the axis it starts with (mostly sideways: only the picture moves; mostly
+// down: the page scrolls) and ends after GESTURE_MS without an event or on a new touch; shift+wheel is sideways.
+// Gives the gesture, the offset clamped to [0, max] and used (the picture took the event: the page must not).
+export const GESTURE_MS = 150;
+export function wheelStep(g, { dx = 0, dy = 0, t, phase, shift = false }, x, max) {
+  let axis = phase === "started" || !g || t - g.at > GESTURE_MS ? null : g.axis;
+  if (!axis && (dx || dy)) axis = Math.abs(dx) > Math.abs(dy) || shift ? "x" : "y";
+  const used = axis === "x" && max > 0, clamp = (v) => Math.max(0, Math.min(max, v));
+  return { g: { axis, at: t }, x: clamp(used ? x - (dx || (shift ? dy : 0)) : x), used };
+}

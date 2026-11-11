@@ -198,19 +198,21 @@ export const legend = (t) => h_flex().gap(10).text_size(11.5).text_color(t.muted
 export const KIND_NAME = { architecture: "Architecture", flow: "Flow", sequence: "Sequence", state_machine: "State diagram", steps: "Steps" };
 export const visualName = (v) => `${KIND_NAME[v.kind] ?? v.kind}${v.title ? `: ${v.title}` : ""}`;
 
-// visuals: [visual]; tab / onTab(k, cx): the shown one when there are tabs.
-export function visualsCard(visuals, t, id, onJump, tab = 0, onTab = null) {
+// visuals: [visual]; tab / onTab(k, cx): the shown one when there are tabs. wrapX(id, width, height, el): the caller's
+// sideways scroller for wide pictures (review.js hscroll), else a native overflow_x_scroll.
+export function visualsCard(visuals, t, id, onJump, tab = 0, onTab = null, wrapX = null) {
   const sources = visuals.some(hasSources);
-  if (visuals.length <= 2 || !onTab) return v_flex().gap(8).when(sources, (e) => e.child(sourceLegend(t))).children(visuals.map((v, k) => visualCard(v, t, `${id}-${k}`, onJump)));
+  if (visuals.length <= 2 || !onTab) return v_flex().gap(8).when(sources, (e) => e.child(sourceLegend(t))).children(visuals.map((v, k) => visualCard(v, t, `${id}-${k}`, onJump, wrapX)));
   const k = Math.min(tab, visuals.length - 1);
   return v_flex().gap(6).when(sources, (e) => e.child(sourceLegend(t)))
     .child(h_flex().flex_wrap().gap(4).children(visuals.map((v, j) => div().id(`${id}-t${j}`).px(8).h(22).flex().items_center().rounded(5).cursor_pointer().text_size(11.5)
       .bg(j === k ? t.selected : t.chrome).text_color(j === k ? t.foreground : t.muted).max_w(180).tooltip(`Show: ${visualName(v)}`).child(div().truncate().child(visualName(v)))
       .on_click((_e, cx) => { onTab(j, cx); cx.stop_propagation(); }))))
-    .child(visualCard(visuals[k], t, `${id}-${k}`, onJump));
+    .child(visualCard(visuals[k], t, `${id}-${k}`, onJump, wrapX));
 }
 
-export function visualCard(v, t, id, onJump) {
+const nativeX = (id, _w, _h, el, pb = 0) => div().id(id).w_full().overflow_x_scroll().pb(pb).child(el);
+export function visualCard(v, t, id, onJump, wrapX = null) {
   const name = new Map(v.nodes.map((n) => [n.id, n.label ?? n.id])), c = (x) => (x?.changed && x?.source !== "existing" ? t.accent : t.border);
   const box = (n, k) => v_flex().id(`${id}-b${k}`).flex_none().max_w(180).px(8).py(4).gap(2).rounded(6).border_1().border_color(c(n)).when(n.source === "spec", (e) => e.border_dashed().tooltip(SPEC_TIP)).bg(t.background)
     .when(Boolean(n.at && onJump), (e) => e.cursor_pointer().hover((s) => s.bg(t.hover)).tooltip(n.source === "spec" ? `${SPEC_TIP}\nClick to jump to the related code` : "Jump to this place in the code").on_click((_e, cx) => { onJump(n.at, cx); cx.stop_propagation(); }))
@@ -225,15 +227,15 @@ export function visualCard(v, t, id, onJump) {
   if (v.kind === "sequence") {
     body = v_flex().gap(6).child(h_flex().flex_wrap().gap(4).children(v.nodes.map(box))).children(edges.map((e, k) => edge(e, k, `${k + 1}. `)));
   } else if (v.kind === "state_machine") {
-    body = div().id(`${id}-sm`).w_full().overflow_x_scroll().child(stateView(stateLayout(v), t, `${id}-sv`, onJump));
+    const S = stateLayout(v);
+    body = (wrapX ?? nativeX)(`${id}-sm`, S.width, S.height + 2, stateView(S, t, `${id}-sv`, onJump));
   } else if (v.kind === "steps") {
     const lv = levels(v.nodes, edges), order = [...v.nodes].sort((a, b) => lv.get(a.id) - lv.get(b.id));
     body = v_flex().gap(4).children(order.map((n, k) => h_flex().gap(6).items_start().child(div().w(16).flex_none().text_size(12).text_color(t.muted).child(`${k + 1}.`)).child(box(n, k))));
   } else {
     const L = flowModel(v);
     body = v_flex().gap(6)
-      .child(div().id(`${id}-fs`).w_full().overflow_x_scroll().pb(6)
-        .child(archView(L, t, `${id}-av`, onJump ? (n, _e, cx) => { onJump(n.at, cx); cx.stop_propagation(); } : null, null, {})))
+      .child((wrapX ?? nativeX)(`${id}-fs`, L.width + 4, L.height + 4, archView(L, t, `${id}-av`, onJump ? (n, _e, cx) => { onJump(n.at, cx); cx.stop_propagation(); } : null, null, {}), 6))
       // ponytail: the layer column is about 420 px; a wider picture says so instead of being scaled down.
       .when(L.width > FLOW_FITS, (e) => e.child(div().text_size(10.5).text_color(t.dim).child("Scroll sideways for the whole picture →")))
       .child(archLegend(L, t, `${id}-lg`, "Edges"));
