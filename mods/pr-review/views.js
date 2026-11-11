@@ -66,3 +66,45 @@ export function filesToDiff(files) {
 const LOCK = /(^|\/)(package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?|Cargo\.lock|poetry\.lock|uv\.lock|Pipfile\.lock|Gemfile\.lock|composer\.lock|go\.sum|flake\.lock|gradle\.lockfile|[^/]*\.lock|[^/]*\.min\.(js|css)|[^/]*\.map)$/;
 export const FOLD_LINES = 400;
 export const foldOnOpen = (patch) => (patch ?? []).filter((f) => LOCK.test(f.path) || (f.add ?? 0) + (f.del ?? 0) > FOLD_LINES).map((f) => f.path);
+
+// ---- the Files list's room (review.js filesItems): gpui-kit's virtual list holds at most 10000 items, so a big PR
+// opens the files around where you read and folds the rest; each folded file keeps its height as one tall item, so
+// the scrollbar spans the whole PR and nothing jumps when files open or fold while you scroll.
+// files: the files that could open, in document order: {path, i (place in the PR), n (rows)}. Which fold
+// (overBudget): the file at `center` first, then the ones you opened last (the newest RECENT), then the nearest
+// to `center`, below before above on a tie; what doesn't fit in `cap` rows folds.
+export const RECENT = 8;
+export function allocate({ files, center = 0, recent = [], cap }) {
+  const rank = new Map(recent.slice(0, RECENT).map((p, i) => [p, i]));
+  const key = (f) => (f.i === center ? 0 : rank.has(f.path) ? 1 + rank.get(f.path) : 1e6 + 2 * Math.abs(f.i - center) + (f.i < center ? 1 : 0));
+  const over = new Set();
+  let used = 0;
+  for (const f of [...files].sort((a, b) => key(a) - key(b))) { if (used + f.n > cap) over.add(f.path); else used += f.n; }
+  return over;
+}
+
+// Index of the last sorted value <= x (0 when none): the file whose header is at or above an item.
+export function lastAtOrBelow(sorted, x) {
+  let lo = 0, hi = sorted.length - 1, k = 0;
+  while (lo <= hi) { const m = (lo + hi) >> 1; if (sorted[m] <= x) { k = m; lo = m + 1; } else hi = m - 1; }
+  return k;
+}
+
+// Whether to open the files around the view again, and around which file (null: leave it). heads: the item index
+// of each file's header, in order; top: each item's y (top[i], one past the last too); folds: [top, bottom] of the
+// folded files' items, in order; start..end: the items on screen; center: the file the room was given around.
+// Only when a folded file is within `margin` px of the view and you have moved to another file: scrolling inside
+// the open part changes nothing, so it doesn't reshuffle while you read.
+export function recenter({ heads, top, folds, start, end, center, margin }) {
+  if (!folds.length || !heads.length) return null;
+  const at = lastAtOrBelow(heads, start);
+  if (at === center) return null;
+  const y0 = top[start] - margin, y1 = top[Math.min(end, top.length - 1)] + margin;
+  let lo = 0, hi = folds.length; // the first fold that ends below y0
+  while (lo < hi) { const m = (lo + hi) >> 1; if (folds[m][1] < y0) lo = m + 1; else hi = m; }
+  return lo < folds.length && folds[lo][0] <= y1 ? at : null;
+}
+
+// A sideways scroller's visible width (review.js hscroll): its measured width less what the Ask drawer covers at the
+// right, so the scroll reaches the picture's last columns; never under 100 px.
+export const hsVisible = (measured, covered = 0) => Math.max(100, measured - covered);

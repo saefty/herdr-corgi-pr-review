@@ -93,3 +93,47 @@ assert.ok(filesToDiff([{ filename: "i.png", status: "modified" }]).includes("No 
   assert.deepEqual(out, ["package-lock.json", "web/yarn.lock", "Cargo.lock", "go.sum", "dist/app.min.js", "src/big.ts"]);
   assert.deepEqual(foldOnOpen(null), []);
 }
+
+// The Files list's room: the file in view first, the newest opened next, then nearest (below first); the cap holds.
+{
+  const { allocate, recenter, lastAtOrBelow, RECENT } = await import("./views.js");
+  const files = ["a", "b", "c", "d", "e"].map((path, i) => ({ path, i, n: 10 }));
+  const open = (o) => files.map((f) => f.path).filter((p) => !o.has(p));
+  assert.deepEqual(open(allocate({ files, center: 2, cap: 30 })), ["b", "c", "d"]); // centre, then d (below) before b
+  assert.deepEqual(open(allocate({ files, center: 2, cap: 20 })), ["c", "d"]);
+  assert.deepEqual(open(allocate({ files, center: 0, cap: 30 })), ["a", "b", "c"]); // the top: in order
+  assert.deepEqual(open(allocate({ files, center: 4, cap: 20 })), ["d", "e"]);
+  assert.deepEqual(open(allocate({ files, center: 2, recent: ["a"], cap: 20 })), ["a", "c"]); // opened by you: before the neighbours
+  const many = Array.from({ length: RECENT + 1 }, (_, k) => `r${k}`);
+  assert.equal(allocate({ files: [{ path: many[RECENT], i: 9, n: 10 }, { path: "x", i: 1, n: 10 }], center: 0, recent: many, cap: 10 }).has("x"), false); // only the newest RECENT jump the queue
+  assert.deepEqual([...allocate({ files: files.filter((f) => f.path !== "c"), center: 2, cap: 20 })].sort(), ["a", "e"]); // a collapsed file isn't offered, never in the set
+  const big = allocate({ files: [{ path: "a", i: 0, n: 5 }, { path: "b", i: 1, n: 50 }, { path: "c", i: 2, n: 5 }], center: 0, cap: 20 });
+  assert.deepEqual([...big], ["b"]); // the cap holds; smaller files further away still fit
+  assert.equal(allocate({ files: [{ path: "a", i: 0, n: 50 }], center: 0, cap: 20 }).has("a"), true);
+
+  assert.equal(lastAtOrBelow([0, 5, 9], 0), 0); assert.equal(lastAtOrBelow([0, 5, 9], 7), 1); assert.equal(lastAtOrBelow([0, 5, 9], 99), 2);
+  // Items 20 px each; files start at items 0, 50, 100, 150; file 3 (items 150..) is folded: one item 150..151.
+  const top = Array.from({ length: 153 }, (_, i) => i * 20), heads = [0, 50, 100, 150], folds = [[3000, 3020]];
+  const at = (start, center, margin = 500) => recenter({ heads, top, folds, start, end: start + 10, center, margin });
+  assert.equal(at(10, 0), null); // the file the room was given around: nothing changes
+  assert.equal(at(55, 0), null); // another file, but the fold is far below (3000 > 65*20+500)
+  assert.equal(at(120, 0), 2); // near the fold: open around file 2
+  assert.equal(at(120, 2), null); // already there
+  assert.equal(at(120, 0, 0), null); // margin 0: the fold isn't on screen yet
+  assert.equal(recenter({ heads, top, folds: [], start: 120, end: 130, center: 0, margin: 500 }), null); // nothing folded
+  assert.equal(recenter({ heads, top, folds: [[0, 20]], start: 55, end: 65, center: 3, margin: 500 }), null); // fold far above
+  assert.equal(recenter({ heads, top, folds: [[0, 20]], start: 52, end: 62, center: 3, margin: 1500 }), 1); // fold above, near
+  console.log("room ok");
+}
+
+// Under the Ask drawer: the scroll's max counts only the visible width.
+{
+  const { hsVisible } = await import("./views.js");
+  const max = (contentW, measured, covered) => Math.max(0, contentW - hsVisible(measured, covered));
+  assert.equal(max(1500, 1000, 0), 500);
+  assert.equal(max(1500, 1000, 380), 880); // drawer open over the picture: 380 px more to scroll
+  assert.equal(max(1500, 1000, 28), 528); // folded strip
+  assert.equal(max(500, 1000, 380), 0); // fits beside the drawer
+  assert.equal(hsVisible(300, 380), 100);
+  console.log("hscroll ok");
+}

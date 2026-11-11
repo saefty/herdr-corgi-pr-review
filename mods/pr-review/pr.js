@@ -415,6 +415,7 @@ export function itemKeys(items) {
     if (it.t === "row") { const r = it.src[it.ri]; k = `r|${it.path}|${lineKey(r) ?? `@${r.text}`}`; }
     else if (it.t === "gap") k = `g|${it.path}|${it.r.gap}`;
     else if (it.t === "file") k = `f|${it.f.path}`;
+    else if (it.t === "fold") k = `z|${it.path}`;
     else if (it.t === "path") k = `p|${it.h.id}`;
     else if (it.t === "step") k = `s|${it.i}`;
     else if (it.t === "sug" || it.t === "sugact") k = `${it.t}|${it.s.key}`;

@@ -20,7 +20,7 @@ import { lookup, warm, contents, vscodeArgs, where, setTrusted } from "./defs.js
 import { diffRows, hunksOf, selection, uiLine, lineKey, rangeOf, MODELS, reviewRequest, mapReview, suspectComment, stepKey, fileRows, fileTree, atLine, splitPatch } from "./pr.js";
 import { ghTarget, lowValue, markReviewed, sinceBase, verifyCandidates, applyVerification, blastArch, preMergeChecks, mergeBlockers, triageOf } from "./pr.js";
 import { diffLines, inDiff, ghReview, lineThreads, suggestionBlock, buildReview, layoutPlan, specElements, diagramsState } from "./pr.js";
-import { wheelStep, foldOnOpen } from "./views.js";
+import { wheelStep, foldOnOpen, allocate, recenter, hsVisible } from "./views.js";
 import { archView, archModel, archLegend, visualsCard, visualCard, statCard, segBar, foldCard, chip, legend, specTag, sourceLegend, SEVERITY_COLOR } from "./stack.js";
 import { hasSources, archLayout } from "./arch.js";
 import * as TH from "./threads.js";
@@ -34,6 +34,7 @@ const GH_GREEN = "#238636"; // GitHub's "Review changes" button
 const STATUS = { added: ["A", "ansi2"], deleted: ["D", "ansi1"], renamed: ["R", "ansi4"], modified: ["M", "ansi3"] };
 const SPIN = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 // Diff column geometry: clicks inside the virtual list are placed by x (one click handler per list).
+const FOLD_MARGIN = 1500 * 22; // px: open the files around the view again this close to a folded one
 const SPLIT = 6, ROW = 22, GUTTER = 4 + 48 + 48 + 22, GAP_SEG = 110, BTN = 110, BTN_GAP = 8, ACT = 44;
 const FILE_CHEV = 30, FILE_SEEN = 100, FILE_WHOLE = 124;
 const MORE = 20; // lines per ↑/↓ click
@@ -1076,20 +1077,21 @@ export const ReviewMode = {
   filesItems() {
     const items = [], at = {}, sh = this.shown();
     const cap = this.rowCap = Math.max(1000, 9700 - 2 * sh.patch.length); // room for every file's header and one note
-    // The virtual list holds at most 10000 items: files you opened last get the room first, then the rest in order;
-    // what doesn't fit shows folded (overBudget) and opens with a click, folding the files opened longest ago.
-    const rank = new Map((this.recentOpen ?? []).map((p, i) => [p, i])), open = [];
-    sh.patch.forEach((f, i) => { if (!this.collapsed.has(f.path) && !f.binary && sh.fileHunks?.get(f.path)?.length) open.push({ f, i, r: rank.get(f.path) ?? 1e9 }); });
-    open.sort((a, b) => a.r - b.r || a.i - b.i);
-    let used = 0; this.overBudget = new Set();
-    for (const { f } of open) {
-      const n = this.memoRows(`0\0${f.path}`, f.path, sh.fileHunks.get(f.path), Array.isArray(this.full[f.path]) ? this.full[f.path] : null, f).length;
-      if (used + n > cap) this.overBudget.add(f.path); else used += n;
-    }
+    // The virtual list holds at most 10000 items: the files around the one you read (this.center, autoFold) and the
+    // ones you opened last get the room (views.js allocate); the rest fold to one item of their height (overBudget).
+    const rowsOf = new Map(), open = [], heads = []; // not `rows`: the loop below has its own
+    sh.patch.forEach((f, i) => {
+      if (this.collapsed.has(f.path) || f.binary || !sh.fileHunks?.get(f.path)?.length) return;
+      rowsOf.set(f.path, this.memoRows(`0\0${f.path}`, f.path, sh.fileHunks.get(f.path), Array.isArray(this.full[f.path]) ? this.full[f.path] : null, f));
+      open.push({ path: f.path, i, n: rowsOf.get(f.path).length });
+    });
+    this.overBudget = allocate({ files: open, center: this.center ?? 0, recent: this.recentOpen ?? [], cap });
     for (const f of sh.patch) {
       at[f.path] = items.length;
+      heads.push(items.length);
       items.push({ t: "file", f });
-      if (this.collapsed.has(f.path) || this.overBudget.has(f.path)) continue;
+      if (this.overBudget.has(f.path)) { items.push({ t: "fold", path: f.path, n: rowsOf.get(f.path).length, h: this.foldH(f.path, rowsOf.get(f.path)) }); continue; }
+      if (this.collapsed.has(f.path)) continue;
       const hs = sh.fileHunks?.get(f.path) ?? [], full = Array.isArray(this.full[f.path]) ? this.full[f.path] : null;
       if (typeof this.full[f.path] === "string") items.push({ t: "note", text: this.full[f.path] });
       if (f.binary) { items.push({ t: "note", text: "Binary file" }); continue; }
@@ -1101,7 +1103,24 @@ export const ReviewMode = {
         else items.push(...this.cardItems("c", c, true));
       }
     }
-    return { items, at };
+    return { items, at, heads };
+  },
+  // A folded file's height: what it took when last open (renderReview keeps openH), else its rows'.
+  foldH(path, rows) {
+    const o = this.openH?.get(path);
+    if (o?.rows === rows) return o.h;
+    const memo = (this.rowsH ??= new WeakMap());
+    if (!memo.has(rows)) memo.set(rows, rows.reduce((h, r) => h + (r.kind === "@" || r.kind === "gap" ? 30 : ROW), 0));
+    return memo.get(rows);
+  },
+  // Scrolled near a folded file in another file than the room was given around: give it around this one, keeping
+  // the item at the top of the view where it is (renderReview: anchor).
+  autoFold(cx) {
+    const L = this.filesList, v = this.vis;
+    if (!L || !v || this.tab === "steps") return;
+    const c = recenter({ heads: L.heads, top: L.top, folds: L.folds, start: v.start, end: v.end, center: this.center ?? 0, margin: FOLD_MARGIN });
+    if (c === null) return;
+    this.center = c; this.anchor = { key: L.keys[v.start], y: L.top[v.start] }; cx.notify();
   },
 
 
@@ -1158,7 +1177,8 @@ export const ReviewMode = {
       if (x >= FILE_CHEV && x < FILE_CHEV + FILE_SEEN) this.toggleSeen(p, cx);
       else if (x >= FILE_CHEV + FILE_SEEN && x < FILE_CHEV + FILE_SEEN + FILE_WHOLE && this.shown().fileHunks?.has(p)) this.toggleWhole(p, cx);
       else if (this.collapsed.has(p) || this.overBudget?.has(p)) this.unfold(p); else this.collapsed.add(p);
-    } else if (it.t === "step") this.goStep(it.i, cx, false);
+    } else if (it.t === "fold") this.unfold(it.path);
+    else if (it.t === "step") this.goStep(it.i, cx, false);
     else if (it.t === "path") this.visit(it.h.id, cx);
     cx.notify();
   },
@@ -2349,9 +2369,9 @@ export const ReviewMode = {
   },
   archL() {
     const a = this.ai?.arch;
-    if (!a || !this.archFitOn()) return a ? archModel(a, this.archMode) : null;
-    const key = `${this.archMode}|${JSON.stringify(a)}`;
-    if (this.fitMemo?.key !== key) this.fitMemo = { key, L: archLayout(a, this.archMode, () => 0, true) };
+    if (!a) return null;
+    const fit = this.archFitOn(), key = `${fit}|${this.archMode}|${JSON.stringify(a)}`; // per render: memoized, both kinds
+    if (this.fitMemo?.key !== key) this.fitMemo = { key, L: fit ? archLayout(a, this.archMode, () => 0, true) : archModel(a, this.archMode) };
     return this.fitMemo.L;
   },
   // ---- sideways scrollers inside the scrolling page (the architecture canvas, the flow, state-machine and blast
@@ -2361,15 +2381,16 @@ export const ReviewMode = {
   hsOf(id) { const m = (this.hs ??= new Map()); if (!m.has(id)) m.set(id, { x: 0, viewW: 0, maxX: 0, contentW: 0 }); return m.get(id); },
   wrapX() { return (this.wrapXFn ??= (id, w, h, el) => this.hscroll(id, w, h, el)); }, // stack.js visualsCard's wrapX
   hscroll(id, contentW, h, content, t = theme()) {
-    const s = this.hsOf(id), viewW = s.viewW || 800, maxX = Math.max(0, contentW - viewW), x = Math.min(s.x, maxX);
-    s.maxX = maxX; s.contentW = contentW; // for the wheel and drag handlers
+    // viewW: what shows of the picture, the part under the Ask drawer (drawerCover) left out.
+    const s = this.hsOf(id), viewW = hsVisible(s.viewW || 800, this.drawerCover()), maxX = Math.max(0, contentW - viewW), x = Math.min(s.x, maxX);
+    s.maxX = maxX; s.contentW = contentW; s.visW = viewW; // for the wheel and drag handlers
     return v_flex().w_full().gap(4)
       .child(div().id(id).w_full().h(h).relative().overflow_hidden().when(maxX > 0, (e) => e.cursor_grab())
         .on_size_change((size, cx) => { if (Math.abs(s.viewW - size.width) > 2) { s.viewW = size.width; cx.notify(); } })
         .on_scroll_wheel((e, cx) => this.hsWheel(id, e, cx))
         .on_mouse_down("left", (e) => { if (maxX > 0) this.hsDrag = { id, x0: e.position.x, from: x }; })
         .child(div().absolute().top(0).left(-x).w(contentW).h(h).children([].concat(content))))
-      .when(maxX > 0, (e) => e.child(div().id(`${id}-hbar`).tooltip("Scroll bar for the picture").w_full().h(10).relative().rounded(5).bg(t.raised)
+      .when(maxX > 0, (e) => e.child(div().id(`${id}-hbar`).tooltip("Scroll bar for the picture").w(viewW).h(10).relative().rounded(5).bg(t.raised)
         .child(div().id(`${id}-thumb`).tooltip("Drag to scroll the picture sideways").absolute().top(1).left(Math.round((x / contentW) * viewW)).w(Math.max(30, Math.round((viewW * viewW) / contentW))).h(8).rounded(4).bg(t.muted).cursor_pointer()
           .on_mouse_down("left", (ev, cx) => { this.hsDrag = { id, x0: ev.position.x, from: x, thumb: true }; cx.stop_propagation(); }))));
   },
@@ -2377,14 +2398,16 @@ export const ReviewMode = {
     const s = this.hsOf(id), r = wheelStep(this.gesture, { dx: e.delta?.x ?? 0, dy: e.delta?.y ?? 0, t: Date.now(), phase: e.touch_phase, shift: Boolean(e.modifiers?.shift) }, s.x, s.maxX);
     this.gesture = r.g;
     if (!r.used) return;
-    s.x = r.x; cx.stop_propagation(); cx.notify();
+    s.x = r.x; cx.stop_propagation();
+    // One render per frame at most: a trackpad sends more events than frames.
+    if (!this.hsFlush) { this.hsFlush = true; cx.timer.after(16, (cx) => { this.hsFlush = false; cx.notify(); }); }
   },
   // A drag on a picture (pan) or its thumb, from the root's mouse move; the root's mouse up ends it.
   hsMove(e, cx) {
     const p = this.hsDrag, s = p && this.hs?.get(p.id);
     if (!s) return;
     const d = e.position.x - p.x0;
-    s.x = Math.max(0, Math.min(s.maxX, p.thumb ? p.from + (d * s.contentW) / (s.viewW || 1) : p.from - d)); cx.notify();
+    s.x = Math.max(0, Math.min(s.maxX, p.thumb ? p.from + (d * s.contentW) / (s.visW || 1) : p.from - d)); cx.notify();
   },
 
   // The two deep looks, side by side on a fresh review: the analysis (understanding) and the code review (findings).
@@ -2693,6 +2716,8 @@ export const ReviewMode = {
     this.updateDeep(cx, (d) => ({ ...d, drawer: { ...d.drawer, [key]: state } }));
     cx.notify();
   },
+  // Px of the right column the drawer lies on (not when it squeezes the column): open 380, folded strip 28.
+  drawerCover() { const d = this.drawerState(); return d === "open" ? (this.drawerSqueezes() ? 0 : 380) : d === "collapsed" ? 28 : 0; },
   drawerSqueezes() { return this.drawerState() === "open" && !(this.tab === "steps" && this.page) && (this.winW ?? 0) - this.leftW() - SPLIT >= 1100; },
 
   askNow(cx) {
@@ -3023,6 +3048,7 @@ export const ReviewMode = {
     if (it.t === "step") return 66 + 24 * it.s.questions.length;
     if (it.t === "sug") return 44 + 21 * this.lines(it.s.reason);
     if (it.t === "pad") return 60;
+    if (it.t === "fold") return it.h;
     if (it.t === "hidden") return 24;
     if (it.t === "ch") return this.cardOf(it).folded ? 28 + 2 * CARD_GAP : CARD_HEAD;
     if (it.t === "cb") { const c = this.cardOf(it), w = this.cardW(c); return 12 + 20 * this.cardLines(c.text, w) + c.replies.reduce((n, r) => n + 26 + 19 * Math.min(8, this.cardLines(r.text, w - 22)), 0) + (it.k === "th" ? 0 : CARD_GAP); }
@@ -3154,6 +3180,7 @@ export const ReviewMode = {
         .children(s.questions.map((q) => div().h(24).truncate().text_size(13.5).text_color(t.muted).child(`?  ${plain(this.asked(s, q))}`)));
     }
     if (it.t === "def") return this.defItem(it, t);
+    if (it.t === "fold") return div().h(it.h).w_full().pl(GUTTER).pt(8).text_size(12.5).text_color(t.muted).cursor_pointer().child(`${it.n} lines folded to keep the list fast · they open as you scroll here, or click`);
     if (it.t === "path") return mono(h_flex()).h(30).w_full().px(16).items_center().text_size(12.5).text_color(t.muted).truncate().child(it.h.path);
     return div().h(30).w_full().px(16).flex().items_center().text_size(12.5).text_color(t.ansi3).child(it.text);
   },
@@ -3180,6 +3207,22 @@ export const ReviewMode = {
   // The left column's width: while dragging the pointer's, else the kept one (default 560, 340 to 65% of the window).
   leftW() { return leftWidth(this.dragW ?? shared("review.leftWidth"), this.winW); },
   // The 6 px divider between the column and the diff: drag to resize, double-click for the default width.
+  // The Files list's geometry for autoFold (item tops, file headers, folded spans), each open file's height for
+  // foldH, and the anchor: after the room moved, the item that was at the top of the view goes back there.
+  layFiles(items, keys, sizes, heads) {
+    const top = new Float64Array(items.length + 1), folds = [], openH = (this.openH ??= new Map());
+    for (let i = 0; i < items.length; i++) top[i + 1] = top[i] + sizes[i];
+    const n = items.at(-1)?.t === "pad" ? items.length - 1 : items.length; // the selection toolbar's room isn't a file's
+    heads.forEach((h, k) => {
+      const end = heads[k + 1] ?? n, it = items[h + 1];
+      if (it?.t === "fold") folds.push([top[h + 1], top[h + 2]]);
+      else if (it?.t === "row") openH.set(it.path, { rows: it.src, h: top[end] - top[h + 1] }); // rows first: no "Loading file…" note
+    });
+    this.filesList = { heads, top, folds, keys };
+    const a = this.anchor;
+    if (a) { this.anchor = null; const i = keys.indexOf(a.key); if (i >= 0 && top[i] !== a.y) this.lists.files.scroll_to_item(i, "top"); }
+  },
+
   splitter(t) {
     return h_flex().id("rv-split").tooltip("Drag to resize the left column; double-click to reset").w(SPLIT).h_full().flex_none().justify_center().cursor_col_resize().bg(this.drag ? t.accent + "33" : t.chrome).hover((s) => s.bg(t.accent + "33"))
       .on_mouse_down("left", (_e, cx) => { this.drag = true; cx.stop_propagation(); cx.notify(); })
@@ -3226,8 +3269,11 @@ export const ReviewMode = {
           : 'No PR selected: click "Review" on a PR in the PR panel.'))
         .child(pill("rv-empty-back", t, "← Back (Esc)", () => leave()).tooltip("Leave the review (Esc)"));
     }
-    this.traces = this.traceMap();
-    const { items, at } = this.itemsOf(this.tab === "steps" ? "steps" : "files");
+    // A page (Overview, Architecture…) or a definition covers the list: skip building it (a big PR's diff is the bulk
+    // of a render, and a picture's sideways scroll renders per wheel event); this.items/at/byKey keep the last list.
+    const listShown = !this.defFile && !(this.tab === "steps" && this.page);
+    if (listShown) this.traces = this.traceMap();
+    const { items, at, heads } = listShown ? this.itemsOf(this.tab === "steps" ? "steps" : "files") : { items: [], at: {} };
     if (this.selected().length) items.push({ t: "pad" }); // room for the selection toolbar
     if (this.pendingScroll && at[this.pendingScroll] !== undefined) { this.lists[this.tab === "steps" ? "steps" : "files"].scroll_to_item(at[this.pendingScroll], "top"); this.pendingScroll = null; }
     if (this.scrollCompose && at.compose !== undefined) { this.lists[this.tab === "steps" ? "steps" : "files"].scroll_to_item(at.compose, "center"); this.scrollCompose = false; }
@@ -3246,8 +3292,9 @@ export const ReviewMode = {
     }
     if (this.hlQueue?.size && !this.hlBusy) { this.hlBusy = true; cx.timer.after(0, (cx) => this.drainHighlight(cx)); }
     if (items.length > 9990) items.length = 9990; // the virtual list's hard limit is 10000
-    const keys = itemKeys(items);
-    this.items = items; this.at = at; this.byKey = new Map(keys.map((k, i) => [k, items[i]]));
+    const keys = itemKeys(items), sizes = items.map((it) => this.sizeOf(it));
+    if (listShown) { this.items = items; this.at = at; this.byKey = new Map(keys.map((k, i) => [k, items[i]])); }
+    if (heads) this.layFiles(items, keys, sizes, heads.filter((h) => h < items.length));
     const listId = `rv-list-${this.tab === "steps" ? "steps" : "files"}`, sug = this.openSugs().find((s) => s.key === this.sug);
     const range = this.fsel && rangeOf(this.rowsFor(this.fsel.path), this.fsel.a, this.fsel.b);
     this.selKeys = range ? new Set(this.rowsFor(this.fsel.path).slice(range[0], range[1] + 1).map(lineKey)) : null;
@@ -3275,12 +3322,14 @@ export const ReviewMode = {
             .child(div().flex_1().min_w(0).whitespace_normal().child(`No local clone of ${target.repo ?? "this repo"}: reviewers, whole files, definitions and the AI analysis need one. The diff works without.`))
             .child(pill("rv-clone", t, this.cloning ? "Cloning…" : `Clone to ${this.needClone.replace(home(), "~")}`, (_e, cx) => { if (!this.cloning) { this.makeWorktree(cx, true); cx.notify(); } }, false, t.foreground).tooltip("Clone the repository once, so the PR head can be checked out for reviewers and go-to-definition"))))
 
-          .when(!this.defFile && !(this.tab === "steps" && this.page), (e) => e.child(div().id(`${listId}-wrap`).flex_1().min_h(0).relative()
+          .when(listShown, (e) => e.child(div().id(`${listId}-wrap`).flex_1().min_h(0).relative()
 
+            // The Files list: scrolling, or dragging its scrollbar, near a folded file opens the files around the view.
+            .when(Boolean(heads), (e) => e.on_scroll_wheel((_e, cx) => this.autoFold(cx)).on_mouse_move((_e, cx) => this.autoFold(cx)).on_mouse_up("left", (_e, cx) => this.autoFold(cx)))
             // With the composer open, onItem decides where the keyboard goes (a press in the textarea keeps it).
             .on_mouse_down("left", (e, cx) => { this.press = { x: e.local_position?.x ?? 0, w: e.bounds?.width ?? this.listW ?? 900, shift: e.modifiers.shift, cmd: e.modifiers.platform }; if (!this.composing) this.fh.focus(); })
             .child(items.length
-              ? v_virtual_list(listId, items.length, items.map((it) => this.sizeOf(it)), (i) => keys[i], (range) => items.slice(range.start, range.end).map((it) => this.item(it, t)))
+              ? v_virtual_list(listId, items.length, sizes, (i) => keys[i], (range) => { if (heads) this.vis = { start: range.start, end: range.end }; return items.slice(range.start, range.end).map((it) => this.item(it, t)); })
                 .track_scroll(this.lists[this.tab === "steps" ? "steps" : "files"]).on_item_click((key, cx) => this.onItem(key, cx)).size_full()
               : div().p(20).text_size(13.5).text_color(this.error ? t.ansi1 : t.muted).child(this.error || (this.loading || !this.patch
                 ? h_flex().gap(8).child(div().child(SPIN[0]).frames(SPIN, 90)).child("Loading…") : "No diff")))
