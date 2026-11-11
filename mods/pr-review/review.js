@@ -336,10 +336,19 @@ export const ReviewMode = {
   async onSource(cx) {
     const url = this.prSel?.url;
     if (!url || !this.patch) return;
-    this.hunks = hunksOf(this.patch).map((h) => ({ ...h, rows: diffRows(h.lines) }));
+    // Herdr stops a script slice after ~50 ms ("interrupted"): a big PR's hunks are made file by file, with a pause
+    // (a timer, so a fresh slice) every 12 ms; the same ids and aliases as hunksOf over the whole patch.
+    const patch = this.patch, hunks = [], fileHunks = new Map();
+    this.hunks = null; // until they match this patch (loadAi reuses them)
+    let t = Date.now();
+    for (const f of patch) {
+      const hs = hunksOf([f]).map((h, i) => ({ ...h, alias: `h${hunks.length + i + 1}`, rows: diffRows(h.lines) }));
+      hunks.push(...hs);
+      if (hs.length) fileHunks.set(f.path, hs);
+      if (Date.now() - t > 12) { await new Promise((r) => cx.timer.after(0, r)); t = Date.now(); if (this.patch !== patch) return; }
+    }
+    this.hunks = hunks; this.fileHunks = fileHunks;
     this.byId = new Map(this.hunks.map((h) => [h.id, h]));
-    this.fileHunks = new Map();
-    for (const h of this.hunks) this.fileHunks.set(h.path, [...(this.fileHunks.get(h.path) ?? []), h]);
     this.diffLines = diffLines(this.hunks);
     this.loadGhComments(cx);
     await this.loadThreads(cx);
@@ -553,7 +562,7 @@ export const ReviewMode = {
     const m = model(), url = this.prSel?.url;
     this.aiModel = m;
     if (!url || !this.patch) return;
-    const job = reviewRequest({ url, pr: url.startsWith("https://") ? url : null, worktree: this.worktree?.path ?? null, files: this.patch, model: m, context: this.ctxReq(), dir: cacheDir() });
+    const job = reviewRequest({ url, pr: url.startsWith("https://") ? url : null, worktree: this.worktree?.path ?? null, files: this.patch, hunks: this.hunks, model: m, context: this.ctxReq(), dir: cacheDir() });
     if (mode === "run") {
       if (this.aiBusy) return;
       if (!job.req.hunks.length) { this.aiError = "No diff"; return cx.notify(); }
@@ -600,7 +609,7 @@ export const ReviewMode = {
   refreshDiagrams(cx) {
     const url = this.prSel?.url, file = this.aiFile, m = model();
     if (!url || !file || !this.patch || this.diaBusy) return;
-    const job = reviewRequest({ url, pr: url.startsWith("https://") ? url : null, worktree: this.worktree?.path ?? null, files: this.patch, model: m, context: this.ctxReq(), dir: cacheDir() });
+    const job = reviewRequest({ url, pr: url.startsWith("https://") ? url : null, worktree: this.worktree?.path ?? null, files: this.patch, hunks: this.hunks, model: m, context: this.ctxReq(), dir: cacheDir() });
     const status = `${file}.diagrams.status`;
     const req = { diagrams: file, also: [job.out, job.latest].filter((x) => x !== file), head: this.head, model: m, context: this.ctxReq(), pr: job.req.pr,
       worktree: job.req.worktree, hunks: job.req.hunks, status };
@@ -1076,7 +1085,9 @@ export const ReviewMode = {
   unfold(p) { this.collapsed.delete(p); this.recentOpen = [p, ...(this.recentOpen ?? []).filter((x) => x !== p)].slice(0, 200); },
   filesItems() {
     const items = [], at = {}, sh = this.shown();
-    const cap = this.rowCap = Math.max(1000, 9700 - 2 * sh.patch.length); // room for every file's header and one note
+    // 2500 lines open at most: every render walks the list's items, and Herdr stops a slice after ~50 ms; 9000 open
+    // lines took that long. The virtual list's own limit (10000) leaves room for every file's header and one note.
+    const cap = this.rowCap = Math.min(2500, Math.max(1000, 9700 - 2 * sh.patch.length));
     // The virtual list holds at most 10000 items: the files around the one you read (this.center, autoFold) and the
     // ones you opened last get the room (views.js allocate); the rest fold to one item of their height (overBudget).
     const rowsOf = new Map(), open = [], heads = []; // not `rows`: the loop below has its own

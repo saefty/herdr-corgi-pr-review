@@ -182,8 +182,9 @@ export const lowValue = (path) => /(^|\/)([^/]*\.lock|package-lock\.json|pnpm-lo
 // What review.py gets: the hunks that fit the model (low-value ones cut first, the rest in diff order), the aliases
 // cut, the cache file for exactly this hunk set and model, the source's latest for that model, and a status file.
 // source: what it is kept under (the PR url, or repo#base); pr: the PR url or null; worktree: the checkout to read.
-export function reviewRequest({ url, pr = url, worktree = null, files, model, context, dir }) {
-  const hunks = hunksOf(files);
+// hunks: hunksOf(files) when the caller has it already (a big diff takes too long to hash twice in one slice).
+export function reviewRequest({ url, pr = url, worktree = null, files, hunks: made = null, model, context, dir }) {
+  const hunks = made ?? hunksOf(files);
   const { sent, cut } = budget([...hunks.filter((h) => !lowValue(h.path)), ...hunks.filter((h) => lowValue(h.path))], MODELS[model].chars);
   const at = new Map(hunks.map((h, i) => [h.alias, i]));
   sent.sort((a, b) => at.get(a.alias) - at.get(b.alias));
