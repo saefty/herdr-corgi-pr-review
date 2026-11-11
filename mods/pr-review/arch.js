@@ -299,7 +299,7 @@ export function archLayout(arch, view = "diff", extra = () => 0, fit = false) {
   for (const p of paths) if (p.kind === "stub") {
     // The chip: the path's number as a badge (as on drawn lines), then "→ target" at 12 px (stack.js archView).
     const l = String(byId.get(p.to).label ?? p.to), text = `→ ${l.length > 30 ? `${l.slice(0, 29)}…` : l}`;
-    p.chip = { text, w: Math.min(260, Math.round(text.length * 7.2 + 16 + BADGE + 6)), h: CHIP_H };
+    p.chip = { text, w: Math.min(260, Math.round(text.length * 6.3 + 12 + BADGE + 6)), h: CHIP_H }; // ~6.3 px per char at 12 px
     zone[srcCol(p)] = Math.max(zone[srcCol(p)], STUB + 4 + p.chip.w + 8 - PAD);
   }
   for (const p of [...paths.filter((q) => q.kind === "next"), ...trunks]) lanesN[srcCol(p)]++;
