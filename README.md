@@ -62,7 +62,8 @@ architecture and sample values, each with file:line, and the cited files in a re
 
 **Comments that keep going.** Sent and posted comments stay under their lines as threads. The agent answers each one
 in place, GitHub replies show up there too, and Fix hands one comment, or all selected ones, to a sub-agent that works
-in its own worktree. Apply to PR brings its commit over when you are happy with it.
+in its own worktree. When done it hands its commit to the PR's agent, which cherry-picks it, runs the tests and
+pushes; Apply to PR brings it over yourself when there is no live PR agent.
 
 **Security blast radius.** The changed parts in the middle, the existing code that calls into them on the left and
 what they call on the right, each with the reason it matters.
@@ -102,7 +103,8 @@ what they call on the right, each with the reason it matters.
   findings and notes never go out unless you add them as comments.
 - Nothing is typed into an agent's session without a preview of the exact, editable text.
 - Fix: one comment, the selected ones, or a finding go to a sub-agent (default) in its own worktree on a fix branch,
-  or to the main agent. Apply to PR cherry-picks onto a clean checkout; nothing is pushed.
+  or to the main agent. The sub-agent never pushes: the PR's agent gets a note when it starts and, when it is done,
+  its commit to cherry-pick, test and push. Apply to PR (secondary) cherry-picks onto a clean checkout without pushing.
 - Ask about this, pinned notes and Show details (a card or a layer from the inside), as described above.
 - Explore a topic in existing code without a PR (the panel, the review's ⋯ menu, or `pr-review.explore`).
 - Big PRs: the analysis gets every hunk, inlines what fits, reads the rest itself and splits into passes when it has

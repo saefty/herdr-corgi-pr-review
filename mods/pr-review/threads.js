@@ -136,7 +136,8 @@ export const toggleSelected = (doc, key, id, now = Date.now()) => {
 export const clearSelected = (doc, key, now = Date.now()) => bound(doc, key, threadsOf(doc, key), now, { selected: [] });
 
 // Fix jobs: {id, branch, path (its worktree), base (the PR's checkout), head (where the branch starts), items: [{kind:
-// "comment" | "finding", id}], terminal, target: "sub" | "main", at, state: "running" | "applied" | "discarded"}.
+// "comment" | "finding", id}], terminal, target: "sub" | "main", handoff (the PR agent the sub-agent reports to, else
+// null), at, state: "running" | "applied" | "discarded"}. A running job with a commit and a handoff reads "handed".
 export const fixesOf = (doc, key) => doc?.[key]?.fixes ?? [];
 export const addFix = (doc, key, job, now = Date.now()) => bound(doc, key, threadsOf(doc, key), now, { fixes: [...fixesOf(doc, key).filter((f) => f.id !== job.id), job].slice(-MAX_FIXES) });
 export const setFix = (doc, key, id, change, now = Date.now()) => bound(doc, key, threadsOf(doc, key), now, { fixes: fixesOf(doc, key).map((f) => (f.id === id ? { ...f, ...change } : f)) });
@@ -157,15 +158,33 @@ export function fixCommit(job, replies = {}, reports = {}) {
   return null;
 }
 
-// What the sub-agent is told on top of the comments or findings: its worktree, its branch, commit there, never push.
-export const worktreeNote = (branch, path) => `You work in your own git worktree ${path} on branch ${branch}, started from the PR head. ` +
-  `Make the change there, commit it on ${branch} (one commit per point is fine), and don't push: the reviewer applies it to the PR.`;
+// What the sub-agent is told on top of the comments or findings: its worktree, its branch, commit there, never push
+// (main: the PR's agent takes the fix over, see handoffNote; without one the reviewer applies it).
+export const worktreeNote = (branch, path, main = null) => `You work in your own git worktree ${path} on branch ${branch}, started from the PR head. ` +
+  `Make the change there, commit it on ${branch} (one commit per point is fine), and never push: ${main ? "the PR's agent takes it over (last step below)" : "the reviewer applies it to the PR"}.`;
+
+// What the PR's agent does with a ready fix: cherry-pick, tests, push, then the fix worktree and branch go.
+const takeOver = ({ branch, head, path }) => `Please take it over: on your PR branch run git cherry-pick ${head}..${branch}, resolve conflicts if any, run the tests, ` +
+  `and push to the PR branch. Then remove the fix worktree and branch: git worktree remove ${path} && git branch -D ${branch}`;
+// The sub-agent's last step: one hc send to the PR's agent (main: its terminal address) with the result and takeOver.
+// Without a live PR agent (or the head) there is no such step and Apply to PR stays the way in.
+export function handoffNote({ main, branch, path, head }) {
+  if (!main || !head) return null;
+  return `Last step, after the commit and the report line: hand the fix to the PR's agent with exactly one message (no double quotes inside the text):\n` +
+    `hc send ${main} "Fix ready: branch ${branch}, commit <sha>, worktree ${path}. <one line: what you changed>. Tests: <passed | failed: what | not run>. ${takeOver({ branch, head, path })}"\n` +
+    `Never push yourself. If hc send fails, check with hc read ${main} --lines 30 whether it arrived before you try once more; if it still fails, stop: the reviewer can apply the fix from the review.`;
+}
+// The mod's notice to the PR's agent when a fix sub-agent starts (labels: the items, short).
+export const startNotice = ({ pr, branch, path, terminal, labels }) => `${pr ? `PR #${pr.number}` : "This PR"}: the reviewer started a fix sub-agent (${terminal}) ` +
+  `on branch ${branch}, worktree ${path}, for: ${labels.map((l) => String(l).replace(/\s+/g, " ").slice(0, 80)).join("; ")}. ` +
+  `It reports back here when done; nothing to do yet.`;
 
 // The comments as one fix task, with ids and the replies contract (each point answered with status fixed and the commit).
-export function fixCommentsPrompt({ pr, comments, file, lang, branch = null, path = null }) {
+export function fixCommentsPrompt({ pr, comments, file, lang, branch = null, path = null, head = null, main = null }) {
   const items = withIds(comments).map((c, i) => [`${i + 1}. [${c.id}] \`${c.file}\`${c.start === undefined ? "" : ` ${lineLabel(c)}`}`, c.hunk ? "```diff\n" + c.hunk + "\n```" : null, c.text.trim()].filter(Boolean).join("\n"));
   return [`${pr ? `PR #${pr.number} "${pr.title}"${pr.url ? ` (${pr.url})` : ""}` : "This branch"}: please fix ${comments.length === 1 ? "this review comment" : `these ${comments.length} review comments`}.`,
-    branch ? worktreeNote(branch, path) : null, ...items, repliesContract(file, withIds(comments)[0]?.id)].filter(Boolean).join("\n\n") + answerIn(lang);
+    branch ? worktreeNote(branch, path, head && main) : null, ...items, repliesContract(file, withIds(comments)[0]?.id),
+    branch ? handoffNote({ main, branch, path, head }) : null].filter(Boolean).join("\n\n") + answerIn(lang);
 }
 
 // hc run for the sub-agent: under the PR's agent (parent) so it shows there, in its worktree, on the PR's context
@@ -181,8 +200,8 @@ export function applyPlan({ status, head, branch }) {
   if (dirty.length) return { ok: false, reason: `The PR's checkout has ${dirty.length} uncommitted ${dirty.length === 1 ? "change" : "changes"}: Apply needs a clean checkout.` };
   return { ok: true, args: ["cherry-pick", `${head}..${branch}`] };
 }
-// The hand-over when the checkout isn't clean: the main agent cherry-picks it itself.
-export const applyPrompt = ({ branch, head, path }) => `The reviewer's fix is ready on branch ${branch} (worktree ${path}). Please cherry-pick its commits onto your PR branch: git cherry-pick ${head}..${branch}. Resolve conflicts if any, run the tests, and don't push.`;
+// The hand-over when the checkout isn't clean: the main agent takes it over (as after a sub-agent's handoff).
+export const applyPrompt = (job) => `The reviewer's fix is ready on branch ${job.branch} (worktree ${job.path}). ${takeOver(job)}.`;
 
 // ---- the Comments tab and the Show switch
 

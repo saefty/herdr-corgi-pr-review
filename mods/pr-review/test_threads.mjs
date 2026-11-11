@@ -114,6 +114,20 @@ const main = TH.fixCommentsPrompt({ pr: { number: 7, title: "T" }, comments: [{ 
 assert.ok(sub.includes("own git worktree /w on branch fix/7-c1") && sub.includes("[c1]") && sub.includes(">> /r.jsonl"));
 assert.ok(!main.includes("worktree") && main.includes("[c1]"));
 assert.equal(TH.confirm(TH.preview({ what: "Fix", agent: "x", prompt: sub })).text, sub);
+assert.ok(!sub.includes("hc send") && sub.includes("the reviewer applies it"), "no live PR agent: no send step");
+assert.ok(!main.includes("hc send"), "the main agent itself: no handoff");
+// The handoff: with the PR agent's address the sub-agent's last step is one hc send to it; the main agent pushes.
+const handed = TH.fixCommentsPrompt({ pr: { number: 7, title: "T" }, comments: [{ id: "c1", file: "a.py", start: 3, end: 3, text: "Warum?" }], file: "/r.jsonl", branch: "fix/7-c1", path: "/w", head: "abc", main: "t3" });
+assert.ok(handed.includes('hc send t3 "Fix ready: branch fix/7-c1, commit <sha>, worktree /w.'), "the send to the PR agent's address");
+assert.ok(handed.indexOf("hc send t3") > handed.indexOf(">> /r.jsonl"), "after the report line");
+assert.ok(handed.includes("git cherry-pick abc..fix/7-c1") && handed.includes("push to the PR branch"), "the PR agent cherry-picks and pushes");
+assert.ok(handed.includes("git worktree remove /w && git branch -D fix/7-c1"), "then the worktree and branch go");
+assert.ok(handed.includes("never push") && handed.includes("Never push yourself"), "the sub-agent never pushes");
+assert.equal(TH.handoffNote({ main: null, branch: "b", path: "/w", head: "abc" }), null, "no address: no send step");
+assert.equal(TH.handoffNote({ main: "t3", branch: "b", path: "/w", head: null }), null, "no head: no send step");
+assert.ok(TH.applyPrompt(job).includes("push to the PR branch") && TH.applyPrompt(job).includes("git worktree remove"), "Hand over…: the same take-over");
+const notice = TH.startNotice({ pr: { number: 7 }, branch: "fix/7-c1", path: "/w", terminal: "t9", labels: ["a.py L3: Warum\nso?", "b.py L1: x"] });
+assert.equal(notice, "PR #7: the reviewer started a fix sub-agent (t9) on branch fix/7-c1, worktree /w, for: a.py L3: Warum so?; b.py L1: x. It reports back here when done; nothing to do yet.");
 console.log("threads ok");
 // ---- the Comments tab: rows, summary, filters
 {

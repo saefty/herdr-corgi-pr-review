@@ -140,7 +140,8 @@ about and file:line evidence; a short thread per PR is kept in pr-data/deep.json
 note on its card, edge or lines; notes never go out. Show details (one call, "Review: drill down") draws a card or a
 layer from the inside, cached per card path and diff head. Explore (one call, "Explore: walkthrough", read-only tools
 in the repo) keeps the newest 20 explorations. Every send to an agent opens a preview first. Fix starts a sub-agent
-(`hc run --parent <PR agent>`) in a worktree on fix/<pr>-<id>; Apply to PR cherry-picks onto a clean checkout. The
+(`hc run --parent <PR agent>`) in a worktree on fix/<pr>-<id> and tells the PR agent (`hc send`); the sub-agent's last
+step is one `hc send` to the PR agent, which cherry-picks, tests and pushes; Apply to PR cherry-picks onto a clean checkout. The
 GitHub submit posts only the ticked items. The analysis writes every hunk to its run folder with an index and splits
 big PRs into cohort passes and a merge pass under one cap.
 
