@@ -84,3 +84,12 @@ const fs = splitPatch(filesToDiff([
 assert.deepEqual(fs.map((f) => [f.path, f.status, f.add, f.del, f.binary]), [["a.js", "added", 2, 0, false], ["b.js", "deleted", 0, 1, false], ["n.js", "renamed", 1, 1, false], ["img.png", "modified", 0, 0, true]]);
 assert.equal(fs[2].from, "o.js");
 assert.ok(filesToDiff([{ filename: "i.png", status: "modified" }]).includes("No diff from GitHub for this file"));
+
+// Lock files and big changes fold when a review opens.
+{
+  const { foldOnOpen } = await import("./views.js");
+  const f = (path, add = 1, del = 0) => ({ path, add, del });
+  const out = foldOnOpen([f("package-lock.json"), f("web/yarn.lock"), f("Cargo.lock"), f("go.sum"), f("dist/app.min.js"), f("src/big.ts", 300, 150), f("src/small.ts", 10, 2), f("docs/locking.md")]);
+  assert.deepEqual(out, ["package-lock.json", "web/yarn.lock", "Cargo.lock", "go.sum", "dist/app.min.js", "src/big.ts"]);
+  assert.deepEqual(foldOnOpen(null), []);
+}
