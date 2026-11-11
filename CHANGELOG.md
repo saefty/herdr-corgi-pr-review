@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.0 (2026-11-11)
+
+### Features
+
+- review: hand finished fixes to the PR's agent
+
+### Fixes
+
+- review: one scroll axis per gesture in the flow, state and blast pictures
+
 ## 0.4.0 (2026-11-11)
 
 ### Features
