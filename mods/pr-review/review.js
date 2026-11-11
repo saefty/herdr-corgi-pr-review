@@ -15,7 +15,7 @@ import { exec, hc, run, spaces, agents, focused, pickFolder, theme, settings, re
 import { parseReports, findingStatus, fixPrompt, hash, touchReview, expireReviews, resumeFields, itemKeys, expandTabs, tokenAt } from "./pr.js";
 import * as C from "./context.js";
 import { hasTool, copyText, openUrl, loadSetup, readConfig } from "./setup-view.js";
-import { highlightRows, highlightLines, cachedRows, langOf, colors, renderLine, refAt } from "./syntax.js";
+import { highlightRows, highlightLines, langOf, colors, renderLine, refAt } from "./syntax.js";
 import { lookup, warm, contents, vscodeArgs, where, setTrusted } from "./defs.js";
 import { diffRows, hunksOf, selection, uiLine, lineKey, rangeOf, MODELS, reviewRequest, mapReview, suspectComment, stepKey, fileRows, fileTree, atLine, splitPatch } from "./pr.js";
 import { ghTarget, lowValue, markReviewed, sinceBase, verifyCandidates, applyVerification, blastArch, preMergeChecks, mergeBlockers, triageOf } from "./pr.js";
@@ -1077,7 +1077,7 @@ export const ReviewMode = {
       if (typeof this.full[f.path] === "string") items.push({ t: "note", text: this.full[f.path] });
       if (f.binary) { items.push({ t: "note", text: "Binary file" }); continue; }
       if (!hs.length) { items.push({ t: "note", text: f.status === "renamed" ? `Renamed from ${f.from}, content unchanged` : "No text change" }); continue; }
-      const rows = fileRows(hs.map((h) => h.rows), full, this.gaps[f.path], this.whole.has(f.path), f.status === "modified" || f.status === "renamed");
+      const rows = this.memoRows(`0\0${f.path}`, f.path, hs, full, f);
       const loose = this.pushRows(items, at, rows, f.path, (r) => (r.h === undefined ? null : hs[r.h].id));
       for (const c of loose) {
         if (this.composing && this.editing?.id === c.id && at.compose === undefined) { at.compose = items.length; items.push({ t: "compose", c, loose: true }, { t: "composeact", c }); }
@@ -1214,12 +1214,16 @@ export const ReviewMode = {
   rowsFor(path, whole = false) {
     const sh = whole ? { patch: this.patch ?? [], fileHunks: this.fileHunks } : this.shown();
     const hs = sh.fileHunks?.get(path) ?? [], f = sh.patch.find((x) => x.path === path), full = Array.isArray(this.full[path]) ? this.full[path] : null;
-    // Memoized: findings' status and counts call this per finding on every render (a big PR timed the render out).
+    return this.memoRows(`${whole ? 1 : 0}\0${path}`, path, hs, full, f);
+  },
+  // Memoized on their inputs: findings call rowsFor per finding on every render, and the Files view keeps the same row
+  // arrays across renders, which the highlight cache (spanMap) is keyed on (a big PR timed the render out).
+  memoRows(key, path, hs, full, f) {
     const deps = [hs, full, JSON.stringify(this.gaps[path] ?? null), this.whole.has(path), f?.status];
-    const key = `${whole ? 1 : 0}\0${path}`, memo = (this.rowsMemo ??= new Map()), hit = memo.get(key);
+    const memo = (this.rowsMemo ??= new Map()), hit = memo.get(key);
     if (hit && hit.deps.every((d, i) => d === deps[i])) return hit.rows;
     const rows = fileRows(hs.map((h) => h.rows), full, this.gaps[path], this.whole.has(path), f?.status === "modified" || f?.status === "renamed");
-    if (memo.size > 400) memo.clear();
+    if (memo.size > 8000) memo.clear(); // ponytail: two entries per file (whole/shown); 3000-file PRs fit
     memo.set(key, { deps, rows });
     return rows;
   },
@@ -3142,7 +3146,7 @@ export const ReviewMode = {
   drainHighlight(cx) {
     const start = Date.now();
     for (const [k, job] of this.hlQueue ?? []) {
-      highlightRows(job.shown, job.lang, job.hkey);
+      job.inf.spans = highlightRows(job.shown, job.lang, job.hkey);
       this.hlQueue.delete(k);
       if (Date.now() - start > 12) break;
     }
@@ -3211,15 +3215,17 @@ export const ReviewMode = {
     if (this.pendingScroll && at[this.pendingScroll] !== undefined) { this.lists[this.tab === "steps" ? "steps" : "files"].scroll_to_item(at[this.pendingScroll], "top"); this.pendingScroll = null; }
     if (this.scrollCompose && at.compose !== undefined) { this.lists[this.tab === "steps" ? "steps" : "files"].scroll_to_item(at.compose, "center"); this.scrollCompose = false; }
     this.uiChanged(cx);
-    this.syn = colors(t); this.spanMap = new Map();
+    this.syn = colors(t);
+    // Per row array (memoRows keeps them across renders), so a render neither hashes nor tokenizes a big diff again:
+    // uncolored until drainHighlight fills in the spans.
+    const head = this.worktree?.head ?? "";
+    if (!this.spanMap || this.spanHead !== head) { this.spanMap = new WeakMap(); this.spanHead = head; }
     for (const it of items) {
       if (it.t !== "row" || this.spanMap.has(it.src)) continue;
       const shown = it.src.map((r) => (r.text?.includes("\t") ? { ...r, text: expandTabs(r.text) } : r)); // tabs drawn as spaces: clicks map back
-      // Never tokenize in render (a big PR timed it out): uncolored until drainHighlight has filled the cache.
-      const lang = langOf(it.path), hkey = `${this.worktree?.head ?? ""}:${it.path}`;
-      let spans = cachedRows(shown, lang, hkey);
-      if (!spans) { spans = []; (this.hlQueue ??= new Map()).set(`${hkey}\0${shown.length}`, { shown, lang, hkey }); }
-      this.spanMap.set(it.src, { shown, spans });
+      const inf = { shown, spans: [] }, lang = langOf(it.path);
+      this.spanMap.set(it.src, inf);
+      if (lang) (this.hlQueue ??= new Map()).set(inf, { shown, lang, hkey: `${head}:${it.path}`, inf });
     }
     if (this.hlQueue?.size && !this.hlBusy) { this.hlBusy = true; cx.timer.after(0, (cx) => this.drainHighlight(cx)); }
     const keys = itemKeys(items);
