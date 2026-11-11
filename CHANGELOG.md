@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.7.0 (2026-11-11)
+
+### Features
+
+- arch: bigger jump chips with the call's number as a badge and a clearer tooltip
+- review: fold and open files by themselves while scrolling
+
+### Fixes
+
+- arch: jump chips as wide as their text
+
 ## 0.6.0 (2026-11-11)
 
 ### Features
