@@ -42,3 +42,14 @@ assert prs.context_for(None, "https://github.com/x/y", [{"remote": "(", "context
 # pr.js hash() in Python, for cache names.
 assert prs.fnv("") == "811c9dc5" and prs.fnv("a") == "e40c292c"
 print("ok")
+
+# prune: a big diff's index and parts are one unit (counted once, dropped together)
+import os, pathlib, tempfile
+with tempfile.TemporaryDirectory() as d:
+    prs.CACHE, prs.CACHE_FILES = pathlib.Path(d), 2
+    for n in ["diff-aa-h1.json", "diff-aa-h1.0.txt", "diff-aa-h1.1.txt", "diff-bb-h2.json", "other.json"]:
+        (prs.CACHE / n).write_text("x")
+    for n, t in [("diff-bb-h2.json", 1), ("other.json", 2)]:
+        os.utime(prs.CACHE / n, (t, t))
+    prs.prune_cache()
+    assert sorted(p.name for p in prs.CACHE.iterdir()) == ["diff-aa-h1.0.txt", "diff-aa-h1.1.txt", "diff-aa-h1.json", "other.json"]

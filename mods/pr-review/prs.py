@@ -54,12 +54,17 @@ def prune_cache(closed_urls=()):
     out; files of PRs merged/closed for CLOSED_KEEP go (their names carry hash(url), see hashes())."""
     CACHE.mkdir(parents=True, exist_ok=True)
     gone = {fnv(u) for u in closed_urls}
-    files = sorted((p for p in CACHE.iterdir() if p.is_file()), key=lambda p: p.stat().st_mtime, reverse=True)
+    # A big diff is an index diff-<h>-<head>.json plus parts diff-<h>-<head>.<i>.txt: one unit, kept or dropped together.
+    units = {}
+    for p in CACHE.iterdir():
+        if p.is_file():
+            units.setdefault(re.sub(r"\.\d+\.txt$", ".json", p.name), []).append(p)
     total = 0
-    for i, p in enumerate(files):
-        total += p.stat().st_size
-        if i >= CACHE_FILES or total > CACHE_BYTES or any(h in p.name for h in gone):
-            p.unlink(missing_ok=True)
+    for i, (name, ps) in enumerate(sorted(units.items(), key=lambda u: max(p.stat().st_mtime for p in u[1]), reverse=True)):
+        total += sum(p.stat().st_size for p in ps)
+        if i >= CACHE_FILES or total > CACHE_BYTES or any(h in name for h in gone):
+            for p in ps:
+                p.unlink(missing_ok=True)
 
 
 def fnv(text):
