@@ -65,3 +65,22 @@ console.log("views: ok");
   assert.equal(run([], 300).x, 300); assert.equal(wheelStep(null, { dy: 5, t: 0 }, 300, 100).x, 100, "an offset beyond a shrunk max is clamped");
   console.log("wheel ok");
 }
+
+// gh pr diff too large -> local fallback; other errors rethrow.
+import { diffTooLarge, filesToDiff } from "./views.js";
+assert.ok(diffTooLarge("could not find pull request diff: HTTP 406: Sorry, the diff exceeded the maximum number of files (300)."));
+assert.ok(diffTooLarge("... too_large ..."));
+assert.ok(!diffTooLarge("HTTP 404: Not Found"));
+assert.ok(!diffTooLarge(""));
+
+// The files API as diff text, parsed by pr.js.
+import { splitPatch } from "./pr.js";
+const fs = splitPatch(filesToDiff([
+  { filename: "a.js", status: "added", patch: "@@ -0,0 +1,2 @@\n+x\n+y" },
+  { filename: "b.js", status: "removed", patch: "@@ -1 +0,0 @@\n-z" },
+  { filename: "n.js", previous_filename: "o.js", status: "renamed", patch: "@@ -1 +1 @@\n-a\n+b" },
+  { filename: "img.png", status: "modified", additions: 0, deletions: 0 },
+]));
+assert.deepEqual(fs.map((f) => [f.path, f.status, f.add, f.del, f.binary]), [["a.js", "added", 2, 0, false], ["b.js", "deleted", 0, 1, false], ["n.js", "renamed", 1, 1, false], ["img.png", "modified", 0, 0, true]]);
+assert.equal(fs[2].from, "o.js");
+assert.ok(filesToDiff([{ filename: "i.png", status: "modified" }]).includes("No diff from GitHub for this file"));

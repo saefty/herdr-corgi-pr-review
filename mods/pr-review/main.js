@@ -21,7 +21,7 @@ import { parsePrRef, ghTarget, pruneSources } from "./pr.js";
 import * as C from "./context.js";
 import { setupBanner, renderSetup, loadSetup, runSetup, openUrl, readConfig } from "./setup-view.js";
 import { chip, triageTip, PRIORITY_TIP } from "./stack.js";
-import { panelState, bodyTab, capped, IN_PROGRESS_MAX } from "./views.js";
+import { panelState, bodyTab, capped, IN_PROGRESS_MAX, diffTooLarge, filesToDiff } from "./views.js";
 import { ReviewMode, startReview, startExplore, saveKey, flowCard, modelPills, renderReviews, renderAgentBar, renderKeys, renderCardMenu } from "./review.js";
 import { highlightRows, langOf, colors, renderLine, editorSyntax } from "./syntax.js";
 
@@ -222,12 +222,22 @@ export default class PrReview extends View {
     const before = await readTextFile(file).catch(() => null);
     if (before) return JSON.parse(before).text;
     const r = await exec("gh", ["pr", "diff", pr.url, "--color", "never"], { timeout: 60000 });
+    if (r.code !== 0 && diffTooLarge(r.stderr)) return this.apiPrDiff(pr);
     if (r.code !== 0) throw new Error(`gh pr diff: ${r.stderr.trim()}`);
     if (r.stdout.length < 900000) {
       await writeTextFile(file, JSON.stringify({ url: pr.url, head, text: r.stdout }), null).catch(() => null);
       exec("python3", [`${appHome()}/mods/pr-review/prs.py`, "--prune"]).catch(() => null); // bounds the cache folder
     }
     return r.stdout;
+  }
+
+  // Over GitHub's 300-file limit: the diff built from the "List pull request files" API (at most 3000 files).
+  async apiPrDiff(pr) {
+    const r = await exec("gh", ["api", "--paginate", "--slurp", `repos/${pr.repo}/pulls/${pr.number}/files?per_page=100`], { timeout: 120000 });
+    if (r.code !== 0) throw new Error(`gh api pulls/files: ${r.stderr.trim()}`);
+    const files = JSON.parse(r.stdout).flat();
+    if (files.length >= 3000) throw new Error("This PR changes 3000 or more files, and GitHub lists at most 3000, so it can't be reviewed here.");
+    return filesToDiff(files);
   }
 
   // A shown PR's head, asked at most every PR_INFO_MS in the background; a new push marks it for a refresh.
@@ -934,7 +944,7 @@ export default class PrReview extends View {
           .when(n > 0, (e) => e.child(div().id(`f-c-${f.path}`).tooltip(`${n} pending ${n === 1 ? "comment" : "comments"} on this file`).text_size(10.5).text_color(t.accent).child(`● ${n}`)))
           .when(f.add > 0, (e) => e.child(div().id(`f-a-${f.path}`).tooltip("Lines added in this file").text_size(11).text_color(t.ansi2).child(`+${f.add}`)))
           .when(f.del > 0, (e) => e.child(div().id(`f-d-${f.path}`).tooltip("Lines removed in this file").text_size(11).text_color(t.ansi1).child(`−${f.del}`)));
-      })).when(!this.files.length, (e) => e.child(div().p(8).text_color(this.error ? t.ansi1 : t.dim).child(this.error || (this.loading ? Spin(t, "Loading…") : "No changes against the base")))))
+      })).when(!this.files.length, (e) => e.child(div().p(8).whitespace_normal().text_color(this.error ? t.ansi1 : t.dim).child(this.error || (this.loading ? Spin(t, "Loading…") : "No changes against the base")))))
       .child(Scrollbar.vertical(`pr-files-${this.uid}`).absolute().inset_0());
     const diffBody = this.mode === "file"
       ? div().flex_1().min_h(0).relative()
