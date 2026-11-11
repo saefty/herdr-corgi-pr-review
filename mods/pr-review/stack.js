@@ -293,7 +293,7 @@ export function stateView(L, t, id, onJump) {
     return out;
   }));
   const loops = L.loops.flatMap((l, i) => [div().id(`${id}-o${i}`).absolute().left(l.x).top(l.y).w(14).h(12).rounded(6).border(1.5).border_color(col(l)).when(l.dashed, (e) => e.border_dashed()).tooltip(l.text || "self-transition"),
-    ...(l.text ? [div().id(`${id}-ol${i}`).absolute().left(l.x + 17).top(l.y - 1).max_w(80).text_size(10.5).text_color(l.changed ? t.accent : t.muted).tooltip(l.text).child(div().truncate().child(`↺ ${l.text}`))] : [])]);
+    ...(l.text ? [div().id(`${id}-ol${i}`).absolute().left(l.x + 17).top(l.y - 1).max_w(l.w).text_size(10.5).text_color(l.changed ? t.accent : t.muted).tooltip(l.text).child(div().truncate().child(`↺ ${l.text}`))] : [])]);
   const stubs = L.stubs.flatMap((s, i) => {
     const c = /retry/i.test(s.text) ? t.ansi3 : t.ansi1;
     return [hline(`${id}-sl${i}`, s.x1, s.x2, s.y, c, s.dashed), div().id(`${id}-sc${i}`).absolute().left(s.chip.x).top(s.chip.y).w(s.chip.w).h(s.chip.h).px(5).flex().items_center()

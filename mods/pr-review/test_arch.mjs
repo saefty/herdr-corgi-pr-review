@@ -286,6 +286,19 @@ const sync = {
   assert.deepEqual(old.edges.filter((e) => e.text).map((e) => [e.text, e.changed]), [["remind", false], ["return", true]]);
 }
 
+// Self-loops: several on one card each get their own row, and a loop's text never runs into the card beside it.
+{
+  const v = { kind: "state", nodes: [{ id: "none", label: "No item" }, { id: "list", label: "Items as list", note: "read as empty" }, { id: "map", label: "Items as map" }],
+    transitions: [{ from: "none", to: "map", event: "add" }, { from: "list", to: "map", event: "add", action: "LOG.warn" }, { from: "none", to: "none", event: "remove" },
+      { from: "map", to: "map", event: "add" }, { from: "map", to: "map", event: "remove" }, { from: "map", to: "map", event: "create", action: "overwrite" }] };
+  const L = stateLayout(v);
+  assert.equal(L.loops.length, 4);
+  const label = (l) => ({ x: l.x, y: l.y - 1, w: 17 + l.w, h: 14 });
+  for (const l of L.loops) for (const n of L.nodes.filter((x) => x.id !== l.id)) assert.ok(!boxOver(label(l), n), `loop ${l.text} on ${n.id}`);
+  for (const a of L.loops) for (const b of L.loops) if (a !== b) assert.ok(!boxOver(label(a), label(b)), `loops ${a.text} and ${b.text} overlap`);
+  for (const l of L.loops) assert.ok(l.x + 17 + l.w <= L.width, "the loop text fits in the picture");
+}
+
 // Step Functions: a choice forks into columns below it, a Parallel's branches sit side by side in its block, Catch and
 // Retry are stubs to the right, the Fail state only reached by Catch is not a card.
 {

@@ -436,8 +436,9 @@ const isError = (e) => e.error === "catch" || e.error === "retry" || (!e.event &
 // states by their longest path from it, an end ring under the last ones. States in one layer sit side by side (a
 // choice forks into columns); Parallel and Map states are blocks with their branches side by side (children: nodes
 // with `parent`, grouped by `branch`). Forward transitions run down (fork and merge in the gap between layers, long
-// ones through spacers); transitions back up (a lifecycle going back) run in return lanes on the left; self-loops are
-// a small loop on the card's right edge; Catch and Retry are short stubs to the right ("Catch → Fail", "Retry ×3").
+// ones through spacers); transitions back up (a lifecycle going back) run in return lanes on the left; self-loops (a
+// small loop on the card's right edge with its text) and Catch/Retry stubs ("Catch → Fail", "Retry ×3") each get a
+// row beside the card, with room kept free to its right, so several never stack and none runs into the next card.
 // v: {nodes: [{id, label, type, changed, note, at, parent, branch}], edges | transitions: [{from, to, label | event,
 // guard, action, changed, error: "catch" | "retry"}]}. Returns {nodes, edges, backs, loops, stubs, width, height}.
 export function stateLayout(v, width = SM.W) {
@@ -488,7 +489,8 @@ export function stateLayout(v, width = SM.W) {
     }
   }
   // Sizes: a card (taller with a note or several stubs), a block with its branches, a dot, a spacer.
-  const stubsOf = (id) => errors.filter((e) => top(e.from) === id);
+  const stubsOf = (id) => errors.filter((e) => top(e.from) === id), loopsOf = (id) => loopsE.filter((e) => e.a === id);
+  const side = (id) => loopsOf(id).length + stubsOf(id).length, sideW = (id) => (side(id) ? SM.STUB + 4 + SM.CHIP : 0);
   const branchesOf = (id) => {
     const kids = nodes0.filter((n) => blockOf(n.id) === id), keyOf = new Map();
     for (const k of kids) keyOf.set(k.id, k.branch ?? null);
@@ -507,11 +509,11 @@ export function stateLayout(v, width = SM.W) {
     else {
       const n = byId.get(id), br = branchesOf(id);
       if (br.length) box.set(id, { w: Math.max(SM.NODE, br.length * SM.CHILD_W + (br.length - 1) * 8 + 16), h: 26 + Math.max(...br.map((b) => b.length)) * (SM.CHILD_H + 10) + 4, br });
-      else box.set(id, { w: SM.NODE, h: Math.max(n.note ? SM.NOTE_H : SM.H, stubsOf(id).length * 20 + 8) });
+      else box.set(id, { w: SM.NODE, h: Math.max(n.note ? SM.NOTE_H : SM.H, side(id) * 20 + 8) });
     }
   }
   const lanesLeft = back.length ? 10 + back.length * SM.BACK : 6;
-  const stubW = Math.max(0, ...ids.map((id) => (stubsOf(id).length ? SM.STUB + 4 + SM.CHIP : 0)));
+  const stubW = Math.max(0, ...ids.map(sideW));
   const rowW = (r) => r.reduce((s, id) => s + box.get(id).w, 0) + SM.GAP_X * Math.max(0, r.length - 1);
   const inner0 = Math.max(width - lanesLeft - stubW, ...rows.map(rowW));
   let y = 0;
@@ -521,7 +523,7 @@ export function stateLayout(v, width = SM.W) {
     // Centred on the states (spacers beside them), so a plain chain stays one straight column.
     const xs = [];
     let x = 0;
-    for (const id of r) { xs.push(x); x += box.get(id).w + SM.GAP_X + (stubsOf(id).length ? SM.STUB + 4 + SM.CHIP : 0); }
+    for (const id of r) { xs.push(x); x += box.get(id).w + SM.GAP_X + sideW(id); }
     const real = r.map((id, k) => [id, k]).filter(([id]) => !id.startsWith("\0d")), lo = real.length ? xs[real[0][1]] : 0;
     const hi = real.length ? xs[real.at(-1)[1]] + box.get(real.at(-1)[0]).w : x - SM.GAP_X;
     const shift = Math.max(lanesLeft - (xs[0] ?? 0), lanesLeft + inner0 / 2 - (lo + hi) / 2);
@@ -583,9 +585,12 @@ export function stateLayout(v, width = SM.W) {
       source: e.source ?? null, dashed: e.source === "spec",
       segments: [{ x1: s.x, y1: sy, x2: laneX, y2: sy }, { x1: laneX, y1: ty, x2: laneX, y2: sy }, { x1: laneX, y1: ty, x2: t.x, y2: ty }] };
   });
-  const loops = loopsE.filter((e) => at.has(e.a)).map((e) => ({ key: `l${e.i}`, id: e.a, text: e.text, changed: Boolean(e.changed) || e.status === "new" || e.status === "changed", source: e.source ?? null, dashed: e.source === "spec", x: at.get(e.a).x + at.get(e.a).w - 7, y: at.get(e.a).y + 3 }));
-  const stubs = ids.flatMap((id) => stubsOf(id).map((e, k, list) => {
-    const n = at.get(id), y0 = n.y + n.h / 2 + (k - (list.length - 1) / 2) * 20, retry = e.error === "retry" || /^retry/i.test(String(e.label ?? ""));
+  // Side rows, centred on the card: its self-loops first, then its stubs.
+  const rowY = (id, k) => { const n = at.get(id); return Math.round(n.y + n.h / 2 + (k - (side(id) - 1) / 2) * 20); };
+  const loops = ids.filter((id) => at.has(id)).flatMap((id) => loopsOf(id).map((e, k) => ({ key: `l${e.i}`, id, text: e.text, changed: Boolean(e.changed) || e.status === "new" || e.status === "changed",
+    source: e.source ?? null, dashed: e.source === "spec", x: at.get(id).x + at.get(id).w - 7, y: rowY(id, k) - 6, w: SM.STUB + 4 + SM.CHIP - 10 })));
+  const stubs = ids.flatMap((id) => stubsOf(id).map((e, k) => {
+    const n = at.get(id), y0 = rowY(id, loopsOf(id).length + k), retry = e.error === "retry" || /^retry/i.test(String(e.label ?? ""));
     const name = byId.get(e.to)?.label ?? e.to;
     const text = retry ? (e.text || "Retry") : `${e.text || "Catch"} → ${name}`;
     return { key: `s${e.i}`, from: id, to: e.to, text, changed: Boolean(e.changed) || e.status === "new" || e.status === "changed", source: e.source ?? null, dashed: e.source === "spec", x1: n.x + n.w, x2: n.x + n.w + SM.STUB, y: Math.round(y0), chip: { x: n.x + n.w + SM.STUB + 4, y: Math.round(y0) - 9, w: SM.CHIP, h: 18 } };
@@ -593,6 +598,6 @@ export function stateLayout(v, width = SM.W) {
   const kids = (id) => (box.get(id)?.br ?? []).flatMap((b, j) => b.map((cid, k) => ({ ...byId.get(cid), x: at.get(id).x + 8 + j * (SM.CHILD_W + 8), y: at.get(id).y + 26 + k * (SM.CHILD_H + 10), w: SM.CHILD_W, h: SM.CHILD_H, branch: j, step: k })));
   const out = [...at.values()].filter((n) => !n.id.startsWith("\0d")).map((n) => (n.id.startsWith("\0") ? { ...n, kind: n.id === "\0start" ? "start" : "end" }
     : { ...byId.get(n.id), ...n, kind: box.get(n.id).br ? "block" : "state", children: kids(n.id), changed: Boolean(byId.get(n.id).changed) }));
-  const right = Math.max(width, ...out.map((n) => n.x + n.w), ...stubs.map((s) => s.chip.x + s.chip.w), ...loops.map((l) => l.x + 14));
+  const right = Math.max(width, ...out.map((n) => n.x + n.w), ...stubs.map((s) => s.chip.x + s.chip.w), ...loops.map((l) => l.x + 17 + l.w));
   return { nodes: out, edges, backs, loops, stubs, width: Math.ceil(right + 2), height: Math.max(0, y - SM.GAP_Y) };
 }
