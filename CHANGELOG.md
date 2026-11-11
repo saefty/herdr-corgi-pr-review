@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.0 (2026-11-11)
+
+### Features
+
+- ui: explain controls with hover texts, rename the Mine chip to Yours
+
+### Fixes
+
+- review: give the two header rows more room
+
 ## 0.3.0 (2026-11-11)
 
 ### Features
