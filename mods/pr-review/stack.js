@@ -109,8 +109,9 @@ export function archView(L, t, id, onNode, decorate, opts = {}) {
     .when(Boolean(opts.onHl), (e) => e.on_hover((on, cx) => opts.onHl(on ? p.num : null, cx)))
     .when(Boolean(p.evidence && opts.onJump), (e) => e.cursor_pointer().on_click((_e, cx) => { opts.onJump(p.evidence, cx); cx.stop_propagation(); })), dimP(p))] : []));
   const chips = L.paths.flatMap((p, i) => (p.chip ? [dim(div().id(`${id}-c${i}`).absolute().left(p.chip.x).top(p.chip.y).w(p.chip.w).h(p.chip.h).px(5)
-    .flex().items_center().rounded(5).border_1().border_color(color(p)).when(p.dashed, (e) => e.border_dashed()).bg(opts.hl === p.num ? t.accent + "33" : t.background)
-    .text_size(10.5).text_color(t.foreground).tooltip(`${tipOf(p)}${p.label ? "\n" : ""}Not drawn as a line (it would skip a column or go back): hover to find the target, click to focus it.`)
+    .flex().items_center().gap(6).rounded(6).border_1().border_color(color(p)).when(p.dashed, (e) => e.border_dashed()).bg(opts.hl === p.num ? t.accent + "33" : t.background)
+    .text_size(12).text_color(t.foreground).tooltip(`Call ${p.num}: ${tipOf(p)}\nNot drawn as a line, because it would skip a column or point back: the target is elsewhere in the picture. Hover to light it up, click to focus it.`)
+    .child(div().w(ARCH.BADGE - 2).h(ARCH.BADGE - 2).flex_none().flex().items_center().justify_center().rounded_full().border_1().border_color(color(p)).text_size(10.5).child(String(p.num)))
     .child(div().min_w(0).truncate().child(p.chip.text))
     .when(Boolean(opts.onHl), (e) => e.on_hover((on, cx) => opts.onHl(on ? p.num : null, cx)))
     .when(Boolean(opts.onFocus), (e) => e.cursor_pointer().on_click((_e, cx) => { opts.onFocus(p.to, cx); cx.stop_propagation(); })), dimP(p))] : []));

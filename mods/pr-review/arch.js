@@ -14,7 +14,7 @@
 // state's `calls` leaves the card at that state's row.
 
 export const ARCH = { W: 230, PAD: 12, HEAD: 30, GAP_Y: 18, GAP_G: 20, LANE: 12, GAP_MIN: 64, BADGE: 18, HOP: 8, PORT: 12,
-  STUB: 16, CHIP_H: 18, CHIP_GAP: 22, CH: 6.4, FAN: 30, ROW: 18, TITLE_CH: 29, DESC_CH: 38 };
+  STUB: 16, CHIP_H: 24, CHIP_GAP: 30, CH: 6.4, FAN: 30, ROW: 18, TITLE_CH: 29, DESC_CH: 38 };
 
 // Word-wrapped lines of text at `per` characters (long words are split).
 export function wrapLines(text, per) {
@@ -297,8 +297,9 @@ export function archLayout(arch, view = "diff", extra = () => 0, fit = false) {
   }
   const zone = Array(ncol).fill(0), lanesN = Array(ncol).fill(0);
   for (const p of paths) if (p.kind === "stub") {
-    const l = String(byId.get(p.to).label ?? p.to), text = `→ ${l.length > 22 ? `${l.slice(0, 21)}…` : l} ${p.mark}`;
-    p.chip = { text, w: Math.min(180, Math.round(text.length * CH + 14)), h: CHIP_H };
+    // The chip: the path's number as a badge (as on drawn lines), then "→ target" at 12 px (stack.js archView).
+    const l = String(byId.get(p.to).label ?? p.to), text = `→ ${l.length > 30 ? `${l.slice(0, 29)}…` : l}`;
+    p.chip = { text, w: Math.min(260, Math.round(text.length * 7.2 + 16 + BADGE + 6)), h: CHIP_H };
     zone[srcCol(p)] = Math.max(zone[srcCol(p)], STUB + 4 + p.chip.w + 8 - PAD);
   }
   for (const p of [...paths.filter((q) => q.kind === "next"), ...trunks]) lanesN[srcCol(p)]++;

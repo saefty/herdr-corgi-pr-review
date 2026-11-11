@@ -102,7 +102,7 @@ function sane(L, what) {
   assert.equal(skip.kind, "stub");
   assert.equal(skip.segments.length, 1);
   assert.deepEqual([skip.segments[0].x1, skip.segments[0].x2 - skip.segments[0].x1], [a1.x + a1.w, ARCH.STUB]);
-  assert.equal(skip.chip.text, `→ Store ${skip.mark}`);
+  assert.equal(skip.chip.text, "→ Store"); assert.ok(skip.num > 0); // the number is a badge in the chip
   assert.equal(skip.badge, null);
   assert.ok(skip.chip.x + skip.chip.w < L.nodes.find((n) => n.id === "b1").x, "the chip fits in the gutter");
 }
@@ -157,7 +157,7 @@ const sync = {
   // The call that skips the Lambdas: a stub with its chip.
   const skip = L.paths.find((p) => p.label === "reads the config");
   assert.equal(skip.kind, "stub");
-  assert.equal(skip.chip.text, `→ Secrets vault ${skip.mark}`);
+  assert.equal(skip.chip.text, "→ Secrets vault");
   // Numbers in reading order: by the source's column, then top to bottom.
   const colOf = (p) => L.nodes.find((n) => n.id === p.from[0]).col;
   assert.deepEqual(L.paths.map((p) => p.num), L.paths.map((_, k) => k + 1));
