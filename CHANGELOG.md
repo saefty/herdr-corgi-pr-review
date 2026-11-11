@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.6.0 (2026-11-11)
+
+### Features
+
+- review: fold lock files and changes over 400 lines when a review opens
+- review: files past the list's room fold by themselves; opening one folds those opened longest ago
+
+### Fixes
+
+- panel: review PRs over 300 files via the pull request files API
+- review: keep row arrays across renders so a big diff is never hashed in render
+- review: fold files past the virtual list's 10000-item limit instead of crashing
+
+### Other
+
+- perf(panel): cache big PR diffs in parts
+
 ## 0.5.0 (2026-11-11)
 
 ### Features
