@@ -278,7 +278,7 @@ export const ReviewMode = {
     else if (name === "verify") this.runVerify(cx);
     else if (name === "step") this.goStep(arg === "next" ? this.cur + 1 : arg === "prev" ? this.cur - 1 : Number(arg), cx);
     else if (name === "hunk") this.goHunk(arg === "prev" ? -1 : 1, cx);
-    else if (name === "file") { this.tab = "files"; this.collapsed.delete(arg); this.scrollTo("files", arg); }
+    else if (name === "file") { this.tab = "files"; this.unfold(arg); this.scrollTo("files", arg); }
     else if (name === "whole") { this.tab = "files"; this.toggleWhole(arg, cx); this.scrollTo("files", arg); }
     else if (name === "gap") { const [path, k] = arg.split("#"); this.tab = "files"; this.expand(path, Number(k), "all", cx); }
     else if (name === "analyze") this.loadAi(cx, "run");
@@ -292,7 +292,7 @@ export const ReviewMode = {
     else if (name === "keys") openOverlay({ mod: "pr-review", props: { part: "keys" }, kind: "popup", ...KEYS_POP });
     else if (name === "comment") { // comment:<path>:<line>[-<end>]: the composer under that new-side line (scripts, tests)
       const m = /^(.*):(\d+)(?:-(\d+))?$/.exec(arg);
-      if (m) { this.tab = "files"; this.collapsed.delete(m[1]); this.fsel = { path: m[1], a: `+${m[2]}`, b: `+${m[3] ?? m[2]}` }; this.openComposer(cx, null, true); }
+      if (m) { this.tab = "files"; this.unfold(m[1]); this.fsel = { path: m[1], a: `+${m[2]}`, b: `+${m[3] ?? m[2]}` }; this.openComposer(cx, null, true); }
     }
     // Scripts and tests: the composer's text, then its "Post now / Send to agent…" button; the preview's "Send to agent".
     else if (name === "draft") { this.draft.set_value(arg); }
@@ -975,7 +975,7 @@ export const ReviewMode = {
     if (!h) { this.note = `Could not find ${at} in the diff`; return cx.notify(); }
     this.visit(h.id, cx); this.page = null; // from a Layers page: show the diff
     const view = this.tab === "steps" && this.itemsOf("steps").at[h.id] !== undefined ? "steps" : "files";
-    if (view === "files") { if (this.tab !== "findings" && this.tab !== "comments") this.tab = "files"; this.collapsed.delete(h.path); this.sinceOn = false; } // the whole PR has every hunk
+    if (view === "files") { if (this.tab !== "findings" && this.tab !== "comments") this.tab = "files"; this.unfold(h.path); this.sinceOn = false; } // the whole PR has every hunk
     const k = `+${line}`, { items } = this.itemsOf(view), row = items.findIndex((x) => x.t === "row" && x.path === h.path && lineKey(x.src[x.ri]) === k);
     if (line && row >= 0) { this.fsel = { path: h.path, a: k, b: k }; this.lists[view].scroll_to_item(Math.max(0, row - 3), "top"); }
     else this.scrollTo(view, h.id);
@@ -996,7 +996,7 @@ export const ReviewMode = {
     const list = this.tab === "steps" ? this.present(this.steps()[this.cur] ?? { hunks: [] }) : this.shown().hunks.map((h) => h.id);
     const id = list[list.indexOf(this.focusHunk) + dir] ?? (list.includes(this.focusHunk) ? null : list[0]);
     if (!id) return;
-    if (this.tab === "files") this.collapsed.delete((this.byId.get(id) ?? this.shown().hunks.find((h) => h.id === id))?.path);
+    if (this.tab === "files") { const fp = (this.byId.get(id) ?? this.shown().hunks.find((h) => h.id === id))?.path; if (fp) this.unfold(fp); }
     this.visit(id, cx); this.fsel = null; this.sug = this.openSugs().find((s) => s.hunk === id)?.key ?? null;
     this.scrollTo(this.tab, id);
   },
@@ -1071,13 +1071,25 @@ export const ReviewMode = {
       : { patch: this.patch ?? [], fileHunks: this.fileHunks, hunks: this.hunks ?? [] };
   },
 
+  // Open a file and give it the list's room first (filesItems: overBudget).
+  unfold(p) { this.collapsed.delete(p); this.recentOpen = [p, ...(this.recentOpen ?? []).filter((x) => x !== p)].slice(0, 200); },
   filesItems() {
     const items = [], at = {}, sh = this.shown();
-    this.rowCap = Math.max(1000, 9700 - 2 * sh.patch.length); // room for every file's header and one note
+    const cap = this.rowCap = Math.max(1000, 9700 - 2 * sh.patch.length); // room for every file's header and one note
+    // The virtual list holds at most 10000 items: files you opened last get the room first, then the rest in order;
+    // what doesn't fit shows folded (overBudget) and opens with a click, folding the files opened longest ago.
+    const rank = new Map((this.recentOpen ?? []).map((p, i) => [p, i])), open = [];
+    sh.patch.forEach((f, i) => { if (!this.collapsed.has(f.path) && !f.binary && sh.fileHunks?.get(f.path)?.length) open.push({ f, i, r: rank.get(f.path) ?? 1e9 }); });
+    open.sort((a, b) => a.r - b.r || a.i - b.i);
+    let used = 0; this.overBudget = new Set();
+    for (const { f } of open) {
+      const n = this.memoRows(`0\0${f.path}`, f.path, sh.fileHunks.get(f.path), Array.isArray(this.full[f.path]) ? this.full[f.path] : null, f).length;
+      if (used + n > cap) this.overBudget.add(f.path); else used += n;
+    }
     for (const f of sh.patch) {
       at[f.path] = items.length;
       items.push({ t: "file", f });
-      if (this.collapsed.has(f.path)) continue;
+      if (this.collapsed.has(f.path) || this.overBudget.has(f.path)) continue;
       const hs = sh.fileHunks?.get(f.path) ?? [], full = Array.isArray(this.full[f.path]) ? this.full[f.path] : null;
       if (typeof this.full[f.path] === "string") items.push({ t: "note", text: this.full[f.path] });
       if (f.binary) { items.push({ t: "note", text: "Binary file" }); continue; }
@@ -1145,7 +1157,7 @@ export const ReviewMode = {
       this.fileFocus = p;
       if (x >= FILE_CHEV && x < FILE_CHEV + FILE_SEEN) this.toggleSeen(p, cx);
       else if (x >= FILE_CHEV + FILE_SEEN && x < FILE_CHEV + FILE_SEEN + FILE_WHOLE && this.shown().fileHunks?.has(p)) this.toggleWhole(p, cx);
-      else if (this.collapsed.has(p)) this.collapsed.delete(p); else this.collapsed.add(p);
+      else if (this.collapsed.has(p) || this.overBudget?.has(p)) this.unfold(p); else this.collapsed.add(p);
     } else if (it.t === "step") this.goStep(it.i, cx, false);
     else if (it.t === "path") this.visit(it.h.id, cx);
     cx.notify();
@@ -1159,7 +1171,7 @@ export const ReviewMode = {
 
   toggleWhole(path, cx) {
     if (this.whole.has(path)) this.whole.delete(path);
-    else { this.whole.add(path); this.collapsed.delete(path); this.loadFull(path, cx); }
+    else { this.whole.add(path); this.unfold(path); this.loadFull(path, cx); }
   },
 
   expand(path, k, how, cx) {
@@ -2904,7 +2916,7 @@ export const ReviewMode = {
       .when(Boolean(task.note), (e) => e.child(div().text_size(12).text_color(t.ansi3).whitespace_normal().child(task.note)))
       .when(!this.ai.asks.length, (e) => e.child(div().text_color(t.muted).child("No task found.")))
       .children(this.ai.asks.map((a, i) => h_flex().id(`rv-ask-${i}`).tooltip("Show the code in the diff behind this check").gap(8).items_start().p(4).rounded(6).cursor_pointer().hover((s) => s.bg(t.hover))
-        .on_click((_e, cx) => { const id = a.hunks.find((x) => this.byId.has(x)); if (id) { this.tab = "files"; this.collapsed.delete(this.byId.get(id).path); this.visit(id, cx); this.scrollTo("files", id); } cx.notify(); })
+        .on_click((_e, cx) => { const id = a.hunks.find((x) => this.byId.has(x)); if (id) { this.tab = "files"; this.unfold(this.byId.get(id).path); this.visit(id, cx); this.scrollTo("files", id); } cx.notify(); })
         .child(div().id(`rv-ask-${i}-cv`).tooltip(COVER_TIP[a.coverage] ?? "").w(78).flex_none().text_size(12).font_semibold().text_color(t[COVER[a.coverage][1]]).child(COVER[a.coverage][0]))
         .child(div().flex_1().min_w(0).line_height(1.5).child(TextView.markdown(`rv-ask-${this.ai.generated}-${i}`, a.text)))
         .children(a.elements.filter((x) => specs.has(x)).map((x, k) => div().id(`rv-ask-${i}-sp${k}`).flex_none().px(5).rounded(4).border_1().border_dashed().border_color(t.ansi5)
@@ -2985,7 +2997,7 @@ export const ReviewMode = {
               .when(!n.dir && this.fileFocus === n.path, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover))
               .on_click((_e, cx) => {
                 if (n.dir) { if (this.closedDirs.has(n.path)) this.closedDirs.delete(n.path); else this.closedDirs.add(n.path); }
-                else { this.tab = "files"; this.fileFocus = n.path; this.collapsed.delete(n.path); this.scrollTo("files", n.path); }
+                else { this.tab = "files"; this.fileFocus = n.path; this.unfold(n.path); this.scrollTo("files", n.path); }
                 cx.notify();
               })
               .child(div().w(12).flex_none().text_color(t.muted).child(n.dir ? (this.closedDirs.has(n.path) ? "▸" : "▾") : ""))
@@ -3119,7 +3131,7 @@ export const ReviewMode = {
           .child(this.sending && b.act !== "closeComposer" && b.act !== "insertSuggestion" ? "…" : b.label))));
     }
     if (it.t === "file") {
-      const f = it.f, closed = this.collapsed.has(f.path), seen = this.prog.seen.has(f.path), [letter, col] = STATUS[f.status];
+      const f = it.f, closed = this.collapsed.has(f.path) || Boolean(this.overBudget?.has(f.path)), seen = this.prog.seen.has(f.path), [letter, col] = STATUS[f.status];
       const n = this.comments.filter((c) => c.file === f.path).length, whole = this.whole.has(f.path);
       return h_flex().h(44).w_full().items_center().bg(this.fileFocus === f.path ? t.selected : t.raised).border_t(1).border_b(1).border_color(t.border).text_size(13).cursor_pointer()
         .child(div().id(`rv-fh-chev-${f.path}`).tooltip(closed ? "Expand this file" : "Collapse this file").accessibility_label(closed ? "Expand file" : "Collapse file").w(FILE_CHEV).flex_none().text_center().text_color(t.muted).child(closed ? "▸" : "▾"))
