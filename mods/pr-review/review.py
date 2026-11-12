@@ -71,7 +71,7 @@ STATUS = {"enum": ["new", "changed", "unchanged", "removed"]}
 ARCHITECTURE = {"type": "object", "required": ["groups", "nodes", "edges"], "properties": {
     "groups": {"type": "array", "maxItems": 5, "items": {"type": "object", "required": ["id", "label", "kind"], "properties": {"id": S, "label": S, "kind": S}}},
     "nodes": {"type": "array", "maxItems": 12, "items": {"type": "object", "required": ["id", "group", "label", "description", "type", "status"], "properties": {
-        "id": S, "group": S, "label": S, "description": S, "type": S, "status": STATUS, "at": S, "source": SOURCE, "evidence": S,
+        "id": S, "group": S, "label": S, "description": S, "details": S, "type": S, "status": STATUS, "at": S, "source": SOURCE, "evidence": S,
         "states": {"type": "array", "maxItems": 10, "items": {"type": "object", "required": ["name", "type"], "properties": {
             "name": S, "type": {"enum": STATE_TYPES}, "calls": S, "status": STATUS, "source": SOURCE, "evidence": S}}}}}},
     "edges": {"type": "array", "maxItems": 16, "items": {"type": "object", "required": ["from", "to", "label"], "properties": {
@@ -293,7 +293,9 @@ def prompt(hunks, cut, task_text, tools, rules="", candidates=(), previous=None,
             "with source and evidence (see Sources). "
             "merge_risk: level (minimal, low, medium, high, critical) and why (one sentence). effort: score 1-5 (1: minutes, 5: hours "
             "of focused work) and why. architecture: the picture of the whole PR: groups (systems, e.g. label \"Web application\", "
-            "kind \"Client\"), nodes (id, group, label, description in 1-2 lines, type such as component, api·service, data, "
+            "kind \"Client\"), nodes (id, group, label, description in 1-2 lines, details: 3-5 sentences for a reviewer who clicks the card: what the "
+            "component does in the system as a whole, then what this PR's code changes in it and how (name the new or changed "
+            "functions and types; for an unchanged node only the first part), type such as component, api·service, data, "
             "service, orchestration, status new/changed/unchanged/removed, at: file:line; an orchestrator such as a Step Functions "
             "state machine may list its states in order (name, type task/choice/parallel/map/wait/pass/fail/succeed, calls: the id "
             "of the node a task state invokes, status), each call is then drawn from that state's row), edges (from, to, label: "
@@ -652,7 +654,8 @@ def drill_prompt(req, tools, lang="English"):
             "(e.g. sendDueReminders()), note (what it does, one line), values (sample values at that point, like a debugger: "
             "\"loan = {id: 7, dueAt: 2026-03-12}, sent = 0\"; derived from the code, invent nothing), at (file:line), changed "
             "(touched by the change), source (implemented, existing or spec) and evidence (file:line). Edges: from, to, label "
-            "(the payload), changed. summary: 2-3 sentences on what happens inside." +
+            "(the payload), changed. summary: 3-5 sentences: what it does in the system as a whole, then what the new code of this "
+            "change does in it and how (name the functions)." +
             (" Read the code (Read, Grep, Glob) to find the real functions and lines; claim only what you read." if tools else "") +
             "\n\nWhat to open up:\n" + json.dumps(d.get("subject") or {}, ensure_ascii=False) + "\n\n" + deep_context(req))
 

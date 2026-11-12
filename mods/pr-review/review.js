@@ -2340,7 +2340,7 @@ export const ReviewMode = {
     const set = (name, v, cx) => { if (this[name] !== v) { this[name] = v; cx.notify(); } };
     return { hl: this[`${k}Hl`] ?? (k === "arch" ? this.askHl : null), focus: this[`${k}Focus`] ?? null, hover: this[`${k}Hover`] ?? null,
       onHl: (v, cx) => set(`${k}Hl`, v, cx), onHover: (v, cx) => set(`${k}Hover`, v, cx),
-      onFocus: (v, cx) => { this.fh.focus(); set(`${k}Focus`, v, cx); if (k === "arch" && v && this.drawerState() !== "open") this.setDrawer("open", cx); }, onJump: (at, cx) => this.jumpTo(at, cx) };
+      onFocus: (v, cx) => { this.fh.focus(); set(`${k}Focus`, v, cx); }, onJump: (at, cx) => this.jumpTo(at, cx) };
   },
 
   archPage(t) {
@@ -2355,8 +2355,7 @@ export const ReviewMode = {
     return v_flex().gap(12)
       .child(h_flex().gap(12).items_center().flex_wrap().child(div().text_size(20).font_semibold().child("Architecture impact")).child(this.diagramsBar(t, "rv-dia-arch", "Refresh diagrams"))
         .when(this.drawerState() !== "open", (e) => e.child(pill("rv-ask-open", t, "Ask", (_e, cx) => this.setDrawer("open", cx, null)).tooltip("Ask one model question about the architecture picture")))
-        .when(Boolean(this.archFocus), (e) => { const n = a.nodes.find((x) => x.id === this.archFocus); return n ? e.child(pill("rv-drill-arch", t, `Show details: ${n.label ?? n.id}`,
-          (_e, cx) => this.showDetails({ id: n.id, label: n.label ?? n.id, group: (a.groups ?? []).find((g) => g.id === n.group)?.label, at: n.at ?? n.evidence, kind: "node", description: n.description }, "arch", cx), false, t.foreground).tooltip("One model call breaks the selected card down further")) : e; }))
+)
       .child(h_flex().w_full().gap(12).items_center().flex_wrap() // wraps onto two rows when narrow
         .child(div().flex_none().text_size(13).text_color(t.muted).child(`${groups} ${groups === 1 ? "system" : "systems"} | ${(a.edges ?? []).length} edges`))
         .child(div().flex_none().child(legend(t)))
@@ -2368,6 +2367,7 @@ export const ReviewMode = {
           .text_color(this.archWrapOn() ? t.foreground : t.muted).tooltip("On: a picture wider than the view in bands, top to bottom. Off: one row to scroll sideways")
           .on_click((_e, cx) => { this.archWrap = !this.archWrapOn(); this.hsOf("rv-arch-canvas").x = 0; cx.notify(); }).child("Wrap")))
       .child(this.archCanvas(t, L, opts))
+      .child(this.archCard(t, a))
       .child(this.drillPanel(t, "arch"))
       .child(archLegend(L, t, "rv-arch-edges", "Edges", opts))
       .when(this.ai?.visuals?.length > 0, (e) => e.child(div().pt(6).text_size(13).font_semibold().text_color(t.muted).child("More views"))
@@ -2386,6 +2386,27 @@ export const ReviewMode = {
         ...(k ? [div().id(`rv-arch-cut${k}`).w_full().h(0).border_t(1).border_dashed().border_color(t.border).tooltip("The picture goes on here: lines leaving the band above on the right come in on the left at the same height")] : []),
         div().id(`rv-arch-band${k}`).w(b.x1 - b.x0).h(L.height + 4).relative().overflow_hidden()
           .child(div().absolute().top(0).left(-b.x0).w(L.width).h(L.height + 4).children(pic(k)))]));
+  },
+  // The clicked card, under the picture: its whole description and the analysis's details (what it does overall, what
+  // the PR changes in it). An analysis without details (older ones): Explain, one model call (the drill-down below).
+  archCard(t, a) {
+    const n = this.archFocus && a.nodes.find((x) => x.id === this.archFocus);
+    if (!n) return div();
+    const g = (a.groups ?? []).find((x) => x.id === n.group), at = n.at ?? n.evidence;
+    const explain = (_e, cx) => this.showDetails({ id: n.id, label: n.label ?? n.id, group: g?.label, at, kind: "node", description: n.description }, "arch", cx);
+    return v_flex().id("rv-arch-card").gap(8).p(12).rounded(10).border_1().border_color(t.border).bg(t.surface)
+      .child(h_flex().gap(8).items_center().flex_wrap()
+        .child(div().text_size(15).font_semibold().child(n.label ?? n.id))
+        .child(div().text_size(12).text_color(t.muted).child([g?.label, n.type, n.status === "new" ? "added" : n.status].filter(Boolean).join(" · ")))
+        .child(div().flex_1())
+        .when(Boolean(at), (e) => e.child(pill("rv-arch-card-open", t, "Open ↗", (_e, cx) => this.jumpTo(at, cx)).tooltip(`Open ${at}`)))
+        .child(pill("rv-arch-card-explain", t, n.details ? "Look inside" : "Explain", explain, false, n.details ? null : t.foreground)
+          .tooltip(`One ${MODELS[model()].label} call reads the code: what this does overall, what the PR changes in it, and a picture of its inside`))
+        .when(this.drawerState() !== "open", (e) => e.child(pill("rv-arch-card-ask", t, "Ask", (_e, cx) => this.setDrawer("open", cx, null)).tooltip("Ask one model question about this card")))
+        .child(pill("rv-arch-card-x", t, "✕", (_e, cx) => { this.archFocus = null; cx.notify(); }).tooltip("Close (Esc)").accessibility_label("Close card details")))
+      .when(Boolean(n.description), (e) => e.child(div().text_size(13).text_color(t.muted).whitespace_normal().line_height(1.5).child(n.description)))
+      .child(n.details ? div().text_size(13.5).whitespace_normal().line_height(1.55).child(n.details)
+        : div().text_size(12.5).text_color(t.muted).whitespace_normal().child("No further details for this card in this analysis: Refresh diagrams (above) adds them for every card, Explain reads just this one."));
   },
   // Wrap: only when clicked (by itself the page would jump whenever the room changes).
   archWrapOn() { return this.archWrap === true; },
