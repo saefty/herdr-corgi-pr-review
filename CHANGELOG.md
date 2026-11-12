@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.8.1 (2026-11-12)
+
+### Features
+
+- review: start fix sub-agents in auto mode
+
+### Fixes
+
+- review: show a background fix agent's real status instead of ended
+- review: auto mode for fix sub-agents only on trusted PRs
+- review: untrusted PRs start fix sub-agents in manual mode without the checkout's settings
+
 ## 0.8.0 (2026-11-12)
 
 ### Features
