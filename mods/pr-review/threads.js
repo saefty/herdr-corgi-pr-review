@@ -191,7 +191,9 @@ export function fixCommentsPrompt({ pr, comments, file, lang, branch = null, pat
 // (env: the context's command prefix), no notes typed into the parent.
 export function subAgentArgs({ parent, cwd, name, env = [], task, job }) {
   return ["run", "--bg", "--json", "--no-notify", "--name", name, "--cwd", cwd, ...(parent ? ["--parent", parent] : ["--no-parent"]),
-    "--label", `pr-review.fix=${job}`, "--", ...env, "claude", task];
+    // auto: the classifier approves the harmless commands (reads, edits, commit, tests) and asks about risky ones; a
+    // sub-agent in manual mode would stop at every grep in the background, where nobody sees it ask.
+    "--label", `pr-review.fix=${job}`, "--", ...env, "claude", "--permission-mode", "auto", task];
 }
 
 // Apply to PR: a cherry-pick of the branch's commits onto the PR's checkout, only when that checkout is clean.

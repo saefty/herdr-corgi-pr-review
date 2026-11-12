@@ -102,7 +102,7 @@ assert.deepEqual(args.slice(0, 2), ["run", "--bg"]);
 assert.ok(args.includes("--no-notify"), "nothing typed into the parent");
 assert.equal(args[args.indexOf("--parent") + 1], "t3", "a sub-agent of the PR's agent");
 assert.equal(args[args.indexOf("--cwd") + 1], "/w", "in its own worktree");
-assert.deepEqual(args.slice(args.indexOf("--") + 1), ["env", "CLAUDE_CONFIG_DIR=/c", "claude", "Fix it"], "on the PR's context");
+assert.deepEqual(args.slice(args.indexOf("--") + 1), ["env", "CLAUDE_CONFIG_DIR=/c", "claude", "--permission-mode", "auto", "Fix it"], "on the PR's context, in auto mode");
 assert.ok(TH.subAgentArgs({ parent: null, cwd: "/w", name: "n", task: "x", job: "j" }).includes("--no-parent"));
 assert.equal(TH.applyPlan({ status: " M src/a.ts\n?? x", head: "abc", branch: "fix/7-c1" }).ok, false, "a dirty checkout: refused");
 assert.match(TH.applyPlan({ status: " M a\n", head: "abc", branch: "b" }).reason, /1 uncommitted change/);
