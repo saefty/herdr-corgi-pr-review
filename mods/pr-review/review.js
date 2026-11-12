@@ -2404,9 +2404,28 @@ export const ReviewMode = {
           .tooltip(`One ${MODELS[model()].label} call reads the code: what this does overall, what the PR changes in it, and a picture of its inside`))
         .when(this.drawerState() !== "open", (e) => e.child(pill("rv-arch-card-ask", t, "Ask", (_e, cx) => this.setDrawer("open", cx, null)).tooltip("Ask one model question about this card")))
         .child(pill("rv-arch-card-x", t, "✕", (_e, cx) => { this.archFocus = null; cx.notify(); }).tooltip("Close (Esc)").accessibility_label("Close card details")))
+      .child(this.archCardFacts(t, a, n, at))
       .when(Boolean(n.description), (e) => e.child(div().text_size(13).text_color(t.muted).whitespace_normal().line_height(1.5).child(n.description)))
       .child(n.details ? div().text_size(13.5).whitespace_normal().line_height(1.55).child(n.details)
         : div().text_size(12.5).text_color(t.muted).whitespace_normal().child("No further details for this card in this analysis: Refresh diagrams (above) adds them for every card, Explain reads just this one."));
+  },
+  // What the card is: its file (path:line, a click opens it; how many changed places of this PR are in it) and its
+  // links to the other cards (a click shows that card).
+  archCardFacts(t, a, n, at) {
+    const path = at ? String(at).replace(/:\d+.*$/, "") : null;
+    const hs = path ? [...(this.fileHunks ?? new Map())].filter(([p]) => p === path || p.endsWith(`/${path}`) || path.endsWith(`/${p}`)).flatMap(([, h]) => h) : [];
+    const name = (id) => a.nodes.find((x) => x.id === id)?.label ?? id;
+    const links = (a.edges ?? []).map((e, i) => [e, i]).filter(([e]) => e.from === n.id || e.to === n.id);
+    const row = (label, kids) => h_flex().gap(8).items_start().text_size(12.5).child(div().flex_none().w(84).text_color(t.muted).child(label)).child(h_flex().flex_1().min_w(0).flex_wrap().gap(6).children(kids));
+    return v_flex().gap(6)
+      .child(row("File", at ? [div().id("rv-arch-card-file").text_color(t.accent).cursor_pointer().hover((s) => s.underline()).tooltip("Open this place in the code").on_click((_e, cx) => this.jumpTo(at, cx)).child(String(at)),
+        div().text_color(t.muted).child(hs.length ? `${hs.length} changed ${hs.length === 1 ? "place" : "places"} in this PR` : "not in this PR's diff")]
+        : [div().text_color(t.muted).child("The analysis names no file for this card (Ask names it)")]))
+      .when(links.length > 0, (e) => e.child(row("Connections", links.map(([x, i]) => {
+        const out = x.from === n.id, other = out ? x.to : x.from;
+        return div().id(`rv-arch-card-l${i}`).px(8).py(2).rounded(6).border_1().border_color(t.border).cursor_pointer().hover((s) => s.bg(t.hover)).tooltip(`Show ${name(other)}`)
+          .on_click((_e, cx) => { this.archFocus = other; cx.notify(); }).child(`${out ? "→" : "←"} ${name(other)}${x.label ? `: ${x.label}` : ""}`);
+      }))));
   },
   // Wrap: only when clicked (by itself the page would jump whenever the room changes).
   archWrapOn() { return this.archWrap === true; },
