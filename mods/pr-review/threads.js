@@ -191,10 +191,14 @@ export function fixCommentsPrompt({ pr, comments, file, lang, branch = null, pat
 // (env: the context's command prefix), no notes typed into the parent.
 export function subAgentArgs({ parent, cwd, name, env = [], task, job, auto = false }) {
   return ["run", "--bg", "--json", "--no-notify", "--name", name, "--cwd", cwd, ...(parent ? ["--parent", parent] : ["--no-parent"]),
-    // auto (a trusted PR only): the classifier approves the harmless commands (reads, edits, commit, tests) and asks
-    // about risky ones. The task quotes PR text and findings; from an untrusted PR it may carry injected instructions,
-    // so there the sub-agent asks for every command (the review shows "waits for your OK").
-    "--label", `pr-review.fix=${job}`, "--", ...env, "claude", ...(auto ? ["--permission-mode", "auto"] : []), task];
+    "--label", `pr-review.fix=${job}`, "--", ...env, "claude", ...permissionArgs(auto), task];
+}
+// A trusted PR: auto (the classifier approves the harmless commands, reads, edits, commit, tests, and asks about risky
+// ones). An untrusted one: the task quotes its text and findings, which may carry injected instructions, and its
+// checkout's .claude/settings.json could allow anything or run hooks, so: manual, said outright (not left to the
+// settings), and only the user's own settings (the review shows "waits for your OK").
+export function permissionArgs(trusted) {
+  return trusted ? ["--permission-mode", "auto"] : ["--permission-mode", "manual", "--setting-sources", "user"];
 }
 
 // Apply to PR: a cherry-pick of the branch's commits onto the PR's checkout, only when that checkout is clean.

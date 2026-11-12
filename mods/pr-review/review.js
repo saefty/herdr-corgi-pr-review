@@ -1431,7 +1431,7 @@ export const ReviewMode = {
   // A new Claude as a sub-agent of the PR's agent, in a fresh worktree on the fix branch from the PR head the preview
   // named; the PR's agent gets a short start notice (hc send; a busy Claude queues it), the sub-agent reports back itself.
   startSubFix(p, text, cx) {
-    const f = p.fix, base = this.fixBase(), key = this.threadKey();
+    const f = p.fix, base = this.fixBase(), key = this.threadKey(), trusted = this.trustedPr(); // trust of the PR the prompt is for
     if (!base) { this.note = "Not started: the PR has no local checkout to branch the fix from"; return cx.notify(); }
     this.sending = true; this.note = null;
     cx.spawn(async (cx) => {
@@ -1443,7 +1443,7 @@ export const ReviewMode = {
         const w = await git(["worktree", "add", "-b", f.branch, f.path, head]);
         if (w.code !== 0) throw new Error(w.stderr.trim().slice(0, 200));
         const id = Date.now().toString(36), { agent } = this.sendAgent();
-        const r = await hc(TH.subAgentArgs({ parent: agent?.address ?? null, cwd: f.path, name: `fix-${id}`, env: this.ctxEnv(this.ctxId()), task: text, job: id, auto: this.trustedPr() }));
+        const r = await hc(TH.subAgentArgs({ parent: agent?.address ?? null, cwd: f.path, name: `fix-${id}`, env: this.ctxEnv(this.ctxId()), task: text, job: id, auto: trusted }));
         if (r.code !== 0) { await git(["worktree", "remove", "--force", f.path]); await git(["branch", "-D", f.branch]); throw new Error((r.stderr || r.stdout).trim().slice(0, 200)); }
         const terminal = JSON.parse(r.stdout).address, handoff = f.main && text.includes(`hc send ${f.main} `) ? f.main : null; // the text may have been edited
         this.updateThreads(cx, (d) => TH.addFix(d, key, { id, branch: f.branch, path: f.path, base, head, items: f.items, terminal, target: "sub", handoff, at: Date.now(), state: "running" }));
