@@ -189,11 +189,12 @@ export function fixCommentsPrompt({ pr, comments, file, lang, branch = null, pat
 
 // hc run for the sub-agent: under the PR's agent (parent) so it shows there, in its worktree, on the PR's context
 // (env: the context's command prefix), no notes typed into the parent.
-export function subAgentArgs({ parent, cwd, name, env = [], task, job }) {
+export function subAgentArgs({ parent, cwd, name, env = [], task, job, auto = false }) {
   return ["run", "--bg", "--json", "--no-notify", "--name", name, "--cwd", cwd, ...(parent ? ["--parent", parent] : ["--no-parent"]),
-    // auto: the classifier approves the harmless commands (reads, edits, commit, tests) and asks about risky ones; a
-    // sub-agent in manual mode would stop at every grep in the background, where nobody sees it ask.
-    "--label", `pr-review.fix=${job}`, "--", ...env, "claude", "--permission-mode", "auto", task];
+    // auto (a trusted PR only): the classifier approves the harmless commands (reads, edits, commit, tests) and asks
+    // about risky ones. The task quotes PR text and findings; from an untrusted PR it may carry injected instructions,
+    // so there the sub-agent asks for every command (the review shows "waits for your OK").
+    "--label", `pr-review.fix=${job}`, "--", ...env, "claude", ...(auto ? ["--permission-mode", "auto"] : []), task];
 }
 
 // Apply to PR: a cherry-pick of the branch's commits onto the PR's checkout, only when that checkout is clean.

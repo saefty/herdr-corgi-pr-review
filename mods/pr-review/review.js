@@ -1443,7 +1443,7 @@ export const ReviewMode = {
         const w = await git(["worktree", "add", "-b", f.branch, f.path, head]);
         if (w.code !== 0) throw new Error(w.stderr.trim().slice(0, 200));
         const id = Date.now().toString(36), { agent } = this.sendAgent();
-        const r = await hc(TH.subAgentArgs({ parent: agent?.address ?? null, cwd: f.path, name: `fix-${id}`, env: this.ctxEnv(this.ctxId()), task: text, job: id }));
+        const r = await hc(TH.subAgentArgs({ parent: agent?.address ?? null, cwd: f.path, name: `fix-${id}`, env: this.ctxEnv(this.ctxId()), task: text, job: id, auto: this.trustedPr() }));
         if (r.code !== 0) { await git(["worktree", "remove", "--force", f.path]); await git(["branch", "-D", f.branch]); throw new Error((r.stderr || r.stdout).trim().slice(0, 200)); }
         const terminal = JSON.parse(r.stdout).address, handoff = f.main && text.includes(`hc send ${f.main} `) ? f.main : null; // the text may have been edited
         this.updateThreads(cx, (d) => TH.addFix(d, key, { id, branch: f.branch, path: f.path, base, head, items: f.items, terminal, target: "sub", handoff, at: Date.now(), state: "running" }));

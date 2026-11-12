@@ -97,13 +97,14 @@ assert.equal(TH.fixFor(TH.setFix(fx, "pr", "j1", { state: "applied" }, 7), "pr",
 assert.equal(TH.fixCommit(job, {}, {}), null);
 assert.equal(TH.fixCommit(job, { c1: [{ status: "answered" }, { status: "fixed", commit: "beef" }] }, {}), "beef", "a comment reply with the commit");
 assert.equal(TH.fixCommit(job, {}, { f1: { status: "fixed", commit: "cafe" } }), "cafe", "a finding report with the commit");
-const args = TH.subAgentArgs({ parent: "t3", cwd: "/w", name: "fix-j1", env: ["env", "CLAUDE_CONFIG_DIR=/c"], task: "Fix it", job: "j1" });
+const args = TH.subAgentArgs({ parent: "t3", cwd: "/w", name: "fix-j1", env: ["env", "CLAUDE_CONFIG_DIR=/c"], task: "Fix it", job: "j1", auto: true });
 assert.deepEqual(args.slice(0, 2), ["run", "--bg"]);
 assert.ok(args.includes("--no-notify"), "nothing typed into the parent");
 assert.equal(args[args.indexOf("--parent") + 1], "t3", "a sub-agent of the PR's agent");
 assert.equal(args[args.indexOf("--cwd") + 1], "/w", "in its own worktree");
 assert.deepEqual(args.slice(args.indexOf("--") + 1), ["env", "CLAUDE_CONFIG_DIR=/c", "claude", "--permission-mode", "auto", "Fix it"], "on the PR's context, in auto mode");
 assert.ok(TH.subAgentArgs({ parent: null, cwd: "/w", name: "n", task: "x", job: "j" }).includes("--no-parent"));
+assert.ok(!TH.subAgentArgs({ parent: null, cwd: "/w", name: "n", task: "x", job: "j" }).includes("--permission-mode"), "an untrusted PR: no auto mode");
 assert.equal(TH.applyPlan({ status: " M src/a.ts\n?? x", head: "abc", branch: "fix/7-c1" }).ok, false, "a dirty checkout: refused");
 assert.match(TH.applyPlan({ status: " M a\n", head: "abc", branch: "b" }).reason, /1 uncommitted change/);
 assert.deepEqual(TH.applyPlan({ status: "", head: "abc", branch: "fix/7-c1" }), { ok: true, args: ["cherry-pick", "abc..fix/7-c1"] });
