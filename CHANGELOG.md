@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.8.0 (2026-11-12)
+
+### Features
+
+- arch: stack a picture wider than the view in bands, and set a cramped edge label on the roomier side
+- arch: a Wrap switch beside Fit, bands or one row to scroll
+- arch: wrap by itself only while Ask is open
+- arch: a click on a card shows what it does and what the PR changes in it
+- review: run Explain for several cards at once, each card keeps its own result
+- arch: the card panel names the card's file and its links to other cards
+- review: architecture cards carry their name in the code, details name the file
+- arch: card details and Explain answers in markdown, bullets with bold changes and code names
+
+### Fixes
+
+- review: keep big PRs inside Herdr's ~50 ms script slice
+- arch: give each self-loop its own row beside the card, clear of its neighbours
+- arch: wrap only when switched on, never by itself
+
 ## 0.7.0 (2026-11-11)
 
 ### Features
