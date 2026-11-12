@@ -2364,9 +2364,9 @@ export const ReviewMode = {
         .child(h_flex().flex_none().gap(2).p(2).rounded(7).border_1().border_color(t.border).child(seg("diff", "Structural diff")).child(seg("before", "Before")).child(seg("after", "After")))
         .child(div().id("rv-av-fit").flex_none().px(10).h(28).flex().items_center().rounded(7).border_1().border_color(fit ? t.accent : t.border).cursor_pointer().text_size(12.5)
           .text_color(fit ? t.foreground : t.muted).tooltip("Narrow cards, so a wide picture fits the view").on_click((_e, cx) => { this.archFit = !fit; this.hsOf("rv-arch-canvas").x = 0; cx.notify(); }).child("Fit"))
-        .child(div().id("rv-av-wrap").flex_none().px(10).h(28).flex().items_center().rounded(7).border_1().border_color(this.archWrap !== false ? t.accent : t.border).cursor_pointer().text_size(12.5)
-          .text_color(this.archWrap !== false ? t.foreground : t.muted).tooltip("On: a picture wider than the view in bands, top to bottom. Off: one row to scroll sideways")
-          .on_click((_e, cx) => { this.archWrap = this.archWrap === false; this.hsOf("rv-arch-canvas").x = 0; cx.notify(); }).child("Wrap")))
+        .child(div().id("rv-av-wrap").flex_none().px(10).h(28).flex().items_center().rounded(7).border_1().border_color(this.archWrapOn() ? t.accent : t.border).cursor_pointer().text_size(12.5)
+          .text_color(this.archWrapOn() ? t.foreground : t.muted).tooltip("On: a picture wider than the view in bands, top to bottom. Off: one row to scroll sideways. By itself: on while Ask is open")
+          .on_click((_e, cx) => { this.archWrap = !this.archWrapOn(); this.hsOf("rv-arch-canvas").x = 0; cx.notify(); }).child("Wrap")))
       .child(this.archCanvas(t, L, opts))
       .child(this.drillPanel(t, "arch"))
       .child(archLegend(L, t, "rv-arch-edges", "Edges", opts))
@@ -2374,10 +2374,10 @@ export const ReviewMode = {
         .child(div().max_w(760).child(more())));
   },
 
-  // The picture: wider than the view, in bands stacked top to bottom (arch.js archBands: lines run on in the next band
+  // The picture: wider than the view and Wrap on (archWrapOn), in bands stacked top to bottom (arch.js archBands: lines run on in the next band
   // at the same height); else one row in the sideways scroller (40 px of room after the last column).
   archCanvas(t, L, opts) {
-    const s = this.hsOf("rv-arch-canvas"), B = archBands(L, s.viewW && this.archWrap !== false ? hsVisible(s.viewW, this.drawerCover()) - 4 : 0); // 0: not measured yet or Wrap off, one row
+    const s = this.hsOf("rv-arch-canvas"), B = archBands(L, s.viewW && this.archWrapOn() ? hsVisible(s.viewW, this.drawerCover()) - 4 : 0); // 0: not measured yet or Wrap off, one row
     const pic = (k) => [archView(L, t, `rv-arch${k ? `-${k}` : ""}`, (n, _e, cx) => this.jumpTo(n.at, cx), null, opts), ...this.pinNotes(t, L)];
     if (B.length < 2) return this.hscroll("rv-arch-canvas", L.width + 4 + 40, L.height + 4, pic(0), t);
     return v_flex().id("rv-arch-canvas").w_full().gap(6)
@@ -2387,6 +2387,8 @@ export const ReviewMode = {
         div().id(`rv-arch-band${k}`).w(b.x1 - b.x0).h(L.height + 4).relative().overflow_hidden()
           .child(div().absolute().top(0).left(-b.x0).w(L.width).h(L.height + 4).children(pic(k)))]));
   },
+  // Wrap: as clicked, else on while the Ask drawer is open (it takes room from the picture), off otherwise.
+  archWrapOn() { return this.archWrap ?? this.drawerState() === "open"; },
   // The picture shown: its layout with normal or narrow cards (Fit), memoized like stack.js archModel.
   archFitOn() {
     if (this.archFit !== undefined) return this.archFit;
