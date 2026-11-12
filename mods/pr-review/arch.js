@@ -424,6 +424,28 @@ export function archLayout(arch, view = "diff", extra = () => 0, fit = false) {
   return { groups: outGroups, nodes, paths, trunks, hops, width, height };
 }
 
+// A picture wider than the view, cut into bands stacked top to bottom instead of one long row to scroll sideways:
+// cuts go through a gap no card, badge or chip covers (the middle of it), each band as wide as fits the view. Lines
+// crossing a cut run on in the next band at the same height (their number badges tell them apart). Returns [{x0, x1}];
+// one band (the whole picture) when it fits or there is no gap to cut at.
+export function archBands(L, viewW) {
+  if (!(viewW > 0) || L.width <= viewW) return [{ x0: 0, x1: L.width }];
+  const boxes = [...L.nodes, ...L.paths.flatMap((p) => [p.chip, p.badge && { x: p.badge.x - 9, w: 18 }])].filter((b) => b && b.w > 0).map((b) => [b.x, b.x + b.w]).sort((a, b) => a[0] - b[0]);
+  const cuts = [];
+  let end = -Infinity;
+  for (const [a, b] of boxes) { if (a > end + 8 && end > 0) cuts.push(Math.round((end + a) / 2)); end = Math.max(end, b); }
+  const bands = [];
+  let x0 = 0;
+  while (L.width - x0 > viewW) {
+    const fit = cuts.filter((c) => c > x0 && c - x0 <= viewW);
+    const c = fit.length ? fit.at(-1) : cuts.find((c) => c > x0); // a column wider than the view: its own band
+    if (c === undefined) break;
+    bands.push({ x0, x1: c }); x0 = c;
+  }
+  bands.push({ x0, x1: L.width });
+  return bands;
+}
+
 // ---- state diagrams (a layer's state_machine picture): top to bottom
 
 export const SM = { W: 300, NODE: 150, H: 28, NOTE_H: 48, DOT: 14, DUMMY: 14, GAP_X: 18, GAP_Y: 40, BACK: 10, CHILD_W: 108, CHILD_H: 24, STUB: 10, CHIP: 96 };
@@ -569,14 +591,23 @@ export function stateLayout(v, width = SM.W) {
       source: e.source ?? null, dashed: e.source === "spec", evidence: e.evidence ?? null,
       segments: segs.filter((x) => x.y1 !== x.y2 || x.x1 !== x.x2), arrow: { x: end.x2, y: end.y2 }, labelAt });
   }
-  // Each label as wide as the room up to the nearest other line or card to its right (at most 160 px).
+  // Each label as wide as the room up to the nearest other line or card beside it (at most 160 px): right of its line,
+  // or left of it (right-aligned) when its text doesn't fit on the right and the left has more room.
   const cards = [...at.values()].filter((n) => !n.id.startsWith("\0d"));
   for (const e of edges) {
     const l = e.labelAt;
     if (!l) continue;
-    const walls = [...edges.filter((o) => o !== e).flatMap((o) => o.segments.filter((x) => x.x1 === x.x2 && x.x1 > l.x && Math.max(x.y1, x.y2) > l.y && Math.min(x.y1, x.y2) < l.y + 13).map((x) => x.x1)),
-      ...cards.filter((n) => n.x > l.x && n.y < l.y + 13 && n.y + n.h > l.y).map((n) => n.x)];
-    l.w = Math.max(24, Math.min(160, ...walls.map((x) => x - l.x - 4)));
+    const line = l.x - 5, inBand = (y1, y2) => Math.max(y1, y2) > l.y && Math.min(y1, y2) < l.y + 13;
+    const segs = edges.filter((o) => o !== e).flatMap((o) => o.segments);
+    // Walls: other lines' upright stretches and the near ends of their level ones in the label's band, cards.
+    const xs = [...segs.filter((x) => x.x1 === x.x2 && inBand(x.y1, x.y2)).map((x) => x.x1),
+      ...segs.filter((x) => x.y1 === x.y2 && inBand(x.y1, x.y1)).flatMap((x) => [Math.min(x.x1, x.x2), Math.max(x.x1, x.x2)]),
+      ...cards.filter((n) => n.y < l.y + 13 && n.y + n.h > l.y).flatMap((n) => [n.x, n.x + n.w])];
+    const right = Math.min(160, ...xs.filter((x) => x > line).map((x) => x - l.x - 4));
+    const left = Math.min(160, line - 5 - lanesLeft, ...xs.filter((x) => x < line).map((x) => line - 5 - x - 4));
+    const need = e.text.length * 6 + 4;
+    if (right < need && left > right) Object.assign(l, { x: line - 5 - Math.max(24, Math.min(left, need)), w: Math.max(24, Math.min(left, need)), left: true });
+    else l.w = Math.max(24, right);
   }
   // Back: from the source's left side out to its lane, up, and into the target's left side (outermost lane: the longest).
   const backs = [...back].sort((a, b) => (layer.get(a.a) - layer.get(a.b)) - (layer.get(b.a) - layer.get(b.b))).map((e, k) => {

@@ -260,7 +260,7 @@ export function stateView(L, t, id, onJump) {
     e.segments.forEach((s, k) => els.push(s.y1 === s.y2 ? hline(`${id}-e${i}-${k}`, s.x1, s.x2, s.y1, c, e.dashed) : vline(`${id}-e${i}-${k}`, s.x1, s.y1, s.y2, c, e.dashed)));
     els.push(div().id(`${id}-a${i}`).absolute().left(e.arrow.x - 5).top(e.arrow.y - 11).text_size(9).text_color(c).child("▼"));
     if (e.text && e.labelAt) els.push(div().id(`${id}-l${i}`).absolute().left(e.labelAt.x).top(e.labelAt.y).w(e.labelAt.w).h(13).text_size(10.5).text_color(e.changed ? t.accent : t.muted)
-      .tooltip([e.text, sourceStyle(e.source).tip, e.evidence].filter(Boolean).join("\n")).child(div().truncate().child(e.text)));
+      .tooltip([e.text, sourceStyle(e.source).tip, e.evidence].filter(Boolean).join("\n")).child(div().truncate().when(Boolean(e.labelAt.left), (x) => x.text_right()).child(e.text)));
   });
   L.backs.forEach((b, i) => {
     const c = col(b), near = Math.min(b.sx, b.tx);

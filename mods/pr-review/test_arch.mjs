@@ -1,7 +1,7 @@
 // Run: node test_arch.mjs  (the architecture / blast radius layout: columns, lanes, ports, fans, stubs, hops, badges,
 // card sizes, focus, orchestrator states)
 import assert from "node:assert/strict";
-import { archLayout, archFocus, stateLayout, sourceStyle, hasSources, crossings, clampText, wrapLines, ARCH } from "./arch.js";
+import { archLayout, archBands, archFocus, stateLayout, sourceStyle, hasSources, crossings, clampText, wrapLines, ARCH } from "./arch.js";
 import { blastArch } from "./pr.js";
 
 const inside = (s, r) => (s.y1 === s.y2
@@ -345,4 +345,34 @@ const sync = {
 assert.deepEqual(wrapLines("aa bb cc", 5), ["aa bb", "cc"]);
 assert.deepEqual(clampText("one two three four five six", 9, 2), { text: "one two three…", lines: 2, cut: true });
 assert.deepEqual(clampText("short", 10, 3), { text: "short", lines: 1, cut: false });
+
+// Edge labels: one that doesn't fit right of its line (the next entry is close) goes left of it; no label lies on
+// another line, a card or another label.
+{
+  const v = { kind: "state", nodes: [{ id: "none", label: "No item" }, { id: "list", label: "Items as list", note: "read as empty" }, { id: "map", label: "Items as map" }],
+    transitions: [{ from: "none", to: "map", event: "add", action: "build the map from the first item" }, { from: "list", to: "map", event: "add", action: "LOG.warn, create overwrites" }] };
+  const L = stateLayout(v), box = (e) => ({ x: e.labelAt.x, y: e.labelAt.y, w: e.labelAt.w, h: 13 }), lab = L.edges.filter((e) => e.text);
+  assert.ok(lab.some((e) => e.labelAt.left), "one label on the left");
+  for (const e of lab) {
+    assert.ok(e.labelAt.w >= Math.min(120, e.text.length * 6), `${e.text}: only ${e.labelAt.w} px`);
+    for (const o of L.edges) if (o !== e) for (const g of o.segments) assert.ok(!boxOver(box(e), { x: Math.min(g.x1, g.x2), y: Math.min(g.y1, g.y2), w: Math.abs(g.x2 - g.x1) || 1, h: Math.abs(g.y2 - g.y1) || 1 }), `${e.text} on ${o.key}`);
+    for (const n of L.nodes) assert.ok(!boxOver(box(e), n), `${e.text} on ${n.id}`);
+    for (const o of lab) if (o !== e) assert.ok(!boxOver(box(e), box(o)), `${e.text} on ${o.text}`);
+  }
+}
+
+// Bands: a picture wider than the view is cut between cards into bands that each fit; one band when it fits.
+{
+  const arch = { groups: [{ id: "a", label: "A" }, { id: "b", label: "B" }, { id: "c", label: "C" }],
+    nodes: ["a1", "a2", "b1", "b2", "c1", "c2"].map((id) => ({ id, label: id, group: id[0] })),
+    edges: [["a1", "a2"], ["a2", "b1"], ["b1", "b2"], ["b2", "c1"], ["c1", "c2"]].map(([from, to]) => ({ from, to, label: "calls" })) };
+  const L = archLayout(arch);
+  assert.deepEqual(archBands(L, L.width + 10), [{ x0: 0, x1: L.width }]);
+  const view = Math.round(L.width / 2.5), B = archBands(L, view);
+  assert.ok(B.length >= 3, `${B.length} bands`);
+  assert.equal(B[0].x0, 0); assert.equal(B.at(-1).x1, L.width);
+  for (let k = 1; k < B.length; k++) assert.equal(B[k].x0, B[k - 1].x1);
+  for (const b of B) assert.ok(b.x1 - b.x0 <= view, "a band fits the view");
+  for (const b of B) for (const n of L.nodes) assert.ok(n.x + n.w <= b.x0 || n.x >= b.x1 || (n.x >= b.x0 && n.x + n.w <= b.x1), `cut through ${n.id}`);
+}
 console.log("ok");
