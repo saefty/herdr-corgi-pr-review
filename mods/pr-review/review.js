@@ -11,7 +11,7 @@
 // submit popover: one GitHub review (gh api) or, for a PR with an agent session, the prompt to that session.
 import { div } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, TextView, v_virtual_list, VirtualListScrollHandle, Textarea, TextareaState, Input, InputState } from "gpui-base";
-import { exec, hc, run, spaces, agents, focused, pickFolder, theme, settings, readTextFile, writeTextFile, shared, setShared, appHome, nextCommand, watchFolder, openOverlay, closeOverlay, props, home } from "herdr";
+import { exec, hc, run, spaces, agents, terminals, focused, pickFolder, theme, settings, readTextFile, writeTextFile, shared, setShared, appHome, nextCommand, watchFolder, openOverlay, closeOverlay, props, home } from "herdr";
 import { parseReports, findingStatus, fixPrompt, hash, touchReview, expireReviews, resumeFields, itemKeys, expandTabs, tokenAt } from "./pr.js";
 import * as C from "./context.js";
 import { hasTool, copyText, openUrl, loadSetup, readConfig } from "./setup-view.js";
@@ -1382,8 +1382,10 @@ export const ReviewMode = {
   // and reported to the PR's agent), main.
   fixView(job) {
     const commit = job && TH.fixCommit(job, this.replies, this.find.reports);
-    const agent = job?.terminal ? agents().find((a) => a.address === job.terminal) : null;
-    return job ? { job, commit, handed: Boolean(commit && job.handoff), status: agent?.status ?? (job.target === "main" ? "main agent" : "ended") } : null;
+    // agents() has only terminals shown in a pane; a sub-agent runs in the background, so terminals() (hc ls) too.
+    const agent = job?.terminal ? agents().find((a) => a.address === job.terminal) ?? terminals().find((x) => x.address === job.terminal && x.state === "live") : null;
+    const status = agent?.status === "blocked" ? "waits for your OK" : agent?.status;
+    return job ? { job, commit, handed: Boolean(commit && job.handoff), status: status ?? (job.target === "main" ? "main agent" : "ended") } : null;
   },
   // Comments by id: the pending ones and the sent threads.
   commentsById(ids) {

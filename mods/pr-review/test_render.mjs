@@ -42,7 +42,7 @@ const STUBS = {
     export const VirtualListScrollHandle = n, TextareaState = n, InputState = n, EditorState = n;`,
   herdr: `const S = globalThis.__rv, no = async () => { throw new Error("stub"); }, never = () => new Promise(() => {});
     export const exec = no, hc = no, readTextFile = no, pickFolder = no, writeTextFile = async () => {}, run = () => null;
-    export const spaces = () => [], panes = () => [], agents = () => [], focused = () => null, layout = () => null;
+    export const spaces = () => [], panes = () => [], agents = () => [], terminals = () => [], focused = () => null, layout = () => null;
     export const theme = () => new Proxy({}, { get: () => "#808080" }), settings = () => ({}), props = () => ({ part: "review" });
     export const shared = (k) => S.store.get(k), setShared = (k, v) => S.store.set(k, v), appHome = () => "/h", home = () => "/h";
     export const nextCommand = never, watchFolder = never, openOverlay = () => {}, closeOverlay = () => {};`,
