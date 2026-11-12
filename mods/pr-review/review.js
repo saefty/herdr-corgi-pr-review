@@ -2365,7 +2365,7 @@ export const ReviewMode = {
         .child(div().id("rv-av-fit").flex_none().px(10).h(28).flex().items_center().rounded(7).border_1().border_color(fit ? t.accent : t.border).cursor_pointer().text_size(12.5)
           .text_color(fit ? t.foreground : t.muted).tooltip("Narrow cards, so a wide picture fits the view").on_click((_e, cx) => { this.archFit = !fit; this.hsOf("rv-arch-canvas").x = 0; cx.notify(); }).child("Fit"))
         .child(div().id("rv-av-wrap").flex_none().px(10).h(28).flex().items_center().rounded(7).border_1().border_color(this.archWrapOn() ? t.accent : t.border).cursor_pointer().text_size(12.5)
-          .text_color(this.archWrapOn() ? t.foreground : t.muted).tooltip("On: a picture wider than the view in bands, top to bottom. Off: one row to scroll sideways. By itself: on while Ask is open")
+          .text_color(this.archWrapOn() ? t.foreground : t.muted).tooltip("On: a picture wider than the view in bands, top to bottom. Off: one row to scroll sideways")
           .on_click((_e, cx) => { this.archWrap = !this.archWrapOn(); this.hsOf("rv-arch-canvas").x = 0; cx.notify(); }).child("Wrap")))
       .child(this.archCanvas(t, L, opts))
       .child(this.drillPanel(t, "arch"))
@@ -2387,8 +2387,8 @@ export const ReviewMode = {
         div().id(`rv-arch-band${k}`).w(b.x1 - b.x0).h(L.height + 4).relative().overflow_hidden()
           .child(div().absolute().top(0).left(-b.x0).w(L.width).h(L.height + 4).children(pic(k)))]));
   },
-  // Wrap: as clicked, else on while the Ask drawer is open (it takes room from the picture), off otherwise.
-  archWrapOn() { return this.archWrap ?? this.drawerState() === "open"; },
+  // Wrap: only when clicked (by itself the page would jump whenever the room changes).
+  archWrapOn() { return this.archWrap === true; },
   // The picture shown: its layout with normal or narrow cards (Fit), memoized like stack.js archModel.
   archFitOn() {
     if (this.archFit !== undefined) return this.archFit;
