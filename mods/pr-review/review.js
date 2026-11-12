@@ -2368,7 +2368,7 @@ export const ReviewMode = {
           .on_click((_e, cx) => { this.archWrap = !this.archWrapOn(); this.hsOf("rv-arch-canvas").x = 0; cx.notify(); }).child("Wrap")))
       .child(this.archCanvas(t, L, opts))
       .child(this.archCard(t, a))
-      .child(this.drillPanel(t, "arch"))
+      .when(Boolean(this.archFocus), (e) => e.child(this.drillPanel(t, `arch:${this.archFocus}`)))
       .child(archLegend(L, t, "rv-arch-edges", "Edges", opts))
       .when(this.ai?.visuals?.length > 0, (e) => e.child(div().pt(6).text_size(13).font_semibold().text_color(t.muted).child("More views"))
         .child(div().max_w(760).child(more())));
@@ -2393,7 +2393,7 @@ export const ReviewMode = {
     const n = this.archFocus && a.nodes.find((x) => x.id === this.archFocus);
     if (!n) return div();
     const g = (a.groups ?? []).find((x) => x.id === n.group), at = n.at ?? n.evidence;
-    const explain = (_e, cx) => this.showDetails({ id: n.id, label: n.label ?? n.id, group: g?.label, at, kind: "node", description: n.description }, "arch", cx);
+    const explain = (_e, cx) => this.showDetails({ id: n.id, label: n.label ?? n.id, group: g?.label, at, kind: "node", description: n.description }, `arch:${n.id}`, cx, false, true);
     return v_flex().id("rv-arch-card").gap(8).p(12).rounded(10).border_1().border_color(t.border).bg(t.surface)
       .child(h_flex().gap(8).items_center().flex_wrap()
         .child(div().text_size(15).font_semibold().child(n.label ?? n.id))
@@ -2496,16 +2496,21 @@ export const ReviewMode = {
   },
   drillCacheKey(stack) { return drillKey(this.deepKey(), this.headNow?.() ?? this.head ?? "", stack); },
   drillResult(stack) { return this.deep.drills?.[this.drillCacheKey(stack)] ?? null; },
-  showDetails(item, from, cx, force = false) {
-    const stack = drillPush(this.drill?.from === from ? this.drill.stack : [], item);
-    this.drill = { from, stack };
-    if (force || !this.drillResult(stack)) this.runDrill(cx);
+  // Drill-downs per place (from: a layer, "arch:<card id>"), each with its own stack: several run at once, and each
+  // place shows its own when you come back to it. fresh: start at the item (a card's Explain), not one level deeper.
+  drillAt(from) { return (this.drills ??= new Map()).get(from) ?? null; },
+  setDrill(from, stack) { if (stack?.length) (this.drills ??= new Map()).set(from, { from, stack }); else this.drills?.delete(from); },
+  showDetails(item, from, cx, force = false, fresh = false) {
+    const stack = drillPush(fresh ? [] : this.drillAt(from)?.stack ?? [], item);
+    this.setDrill(from, stack);
+    if (force || !this.drillResult(stack)) this.runDrill(cx, from);
     cx.notify();
   },
-  runDrill(cx) {
-    const d = this.drill, ai = this.ai, key = this.deepKey();
-    if (!d || !ai || this.drillBusy) return;
-    const top = d.stack.at(-1), ck = this.drillCacheKey(d.stack), root = d.from === "arch" ? "Architecture" : plain(d.stack[0]?.label ?? "Layer");
+  runDrill(cx, from) {
+    const d = this.drillAt(from), ai = this.ai, key = this.deepKey(), busy = (this.drillsBusy ??= new Set()), errs = (this.drillErrs ??= new Map());
+    if (!d || !ai) return;
+    const top = d.stack.at(-1), ck = this.drillCacheKey(d.stack), root = d.from.startsWith("arch") ? "Architecture" : plain(d.stack[0]?.label ?? "Layer");
+    if (busy.has(ck)) return;
     const subject = { ...top, parent: d.stack.length > 1 ? d.stack.at(-2).label : null };
     const scope = top.kind === "node" ? scopeOf(ai, { node: top.id }) : top.kind === "layer" ? { kind: "layer", layer: { title: top.label, why: top.why, text: top.text, visuals: [], evidence: top.evidence } }
       : { kind: "node", node: { id: top.id, label: top.label, evidence: top.at ?? null }, edges: [] };
@@ -2513,12 +2518,12 @@ export const ReviewMode = {
     const req = { drill: { label: top.label, path: crumbs(d.stack, root).map((c) => c.label), subject }, model: model(), context: this.ctxReq(), root: this.lspRoot(), explore: Boolean(ai.explore),
       analysis: { title: ai.title, summary: ai.summary, layers: ai.steps.filter((x) => !x.pseudo).map((x) => ({ title: plain(x.title), why: plain(x.why) })) },
       picture: pictureOf(ai.arch), scope, hunks: hunksFor(files, this.exMode ? [] : this.hunks, top.hunks ?? []) };
-    this.drillBusy = ck; this.drillErr = null;
+    busy.add(ck); errs.delete(ck);
     cx.spawn(async (cx) => {
       const r = await exec("python3", [`${appHome()}/mods/pr-review/review.py`, JSON.stringify(req)], { timeout: 600000 }).catch((e) => ({ code: 1, stderr: String(e) }));
-      this.drillBusy = null;
+      busy.delete(ck);
       if (this.deepKey() !== key) return;
-      if (r.code !== 0) { this.drillErr = `Could not show details: ${(r.stderr || r.stdout).trim().slice(0, 200)}`; return cx.notify(); }
+      if (r.code !== 0) { errs.set(ck, `Could not show details: ${(r.stderr || r.stdout).trim().slice(0, 200)}`); return cx.notify(); }
       const out = JSON.parse(r.stdout);
       this.updateDeep(cx, (doc) => ({ ...doc, drills: cachePut(doc.drills, ck, { ...mapDrill(out.answer), cost: out.cost }) }));
       cx.notify();
@@ -2527,21 +2532,22 @@ export const ReviewMode = {
   // The sub-diagram under the picture (or the layer): breadcrumb (click a level to go back), the summary, the picture
   // with sample values, its cards to open further, Refresh and ✕.
   drillPanel(t, from) {
-    const d = this.drill;
-    if (!d || d.from !== from || !d.stack.length) return div();
-    const res = this.drillResult(d.stack), ck = this.drillCacheKey(d.stack), root = from === "arch" ? "Architecture" : "Layer", top = d.stack.at(-1);
+    const d = this.drillAt(from);
+    if (!d) return div();
+    const res = this.drillResult(d.stack), ck = this.drillCacheKey(d.stack), root = from.startsWith("arch") ? "Architecture" : "Layer", top = d.stack.at(-1);
+    const busy = this.drillsBusy?.has(ck), err = this.drillErrs?.get(ck);
     const crumb = (c, k) => div().id(`rv-crumb-${k}`).flex_none().text_size(12.5).text_color(c.depth === null ? t.muted : k === crumbs(d.stack, root).length - 1 ? t.foreground : t.accent)
-      .when(c.depth !== null && k < crumbs(d.stack, root).length - 1, (e) => e.cursor_pointer().tooltip("Go back to this level").on_click((_e, cx) => { this.drill = c.depth === 0 ? null : { from, stack: drillTo(d.stack, c.depth) }; cx.notify(); }))
+      .when(c.depth !== null && k < crumbs(d.stack, root).length - 1, (e) => e.cursor_pointer().tooltip("Go back to this level").on_click((_e, cx) => { this.setDrill(from, c.depth === 0 ? null : drillTo(d.stack, c.depth)); cx.notify(); }))
       .child(c.label);
     return v_flex().id(`rv-drill-${from}`).gap(8).p(12).rounded(10).border_1().border_color(t.border).bg(t.surface)
       .child(h_flex().flex_wrap().gap(6).items_center()
         .children(crumbs(d.stack, root).flatMap((c, k) => (k ? [div().text_color(t.dim).text_size(12).child("›"), crumb(c, k)] : [crumb(c, k)])))
         .child(div().flex_1())
-        .child(this.drillBusy === ck ? h_flex().gap(6).text_size(12).text_color(t.muted).child(div().child(SPIN[0]).frames(SPIN, 90)).child("Reading the code…")
-          : pill(`rv-drill-re-${from}`, t, "↻ Refresh", (_e, cx) => { this.runDrill(cx); cx.notify(); }).tooltip("Run the model call again for a fresh answer"))
-        .child(pill(`rv-drill-x-${from}`, t, "✕", (_e, cx) => { this.drill = null; cx.notify(); }).tooltip("Close the details").accessibility_label("Close details")))
-      .when(Boolean(this.drillErr), (e) => e.child(div().text_size(12.5).text_color(t.ansi1).whitespace_normal().child(this.drillErr)))
-      .when(!res && this.drillBusy !== ck && !this.drillErr, (e) => e.child(div().text_size(12.5).text_color(t.muted).child(`One ${MODELS[model()].label} call opens up ${top.label}.`)))
+        .child(busy ? h_flex().gap(6).text_size(12).text_color(t.muted).child(div().child(SPIN[0]).frames(SPIN, 90)).child("Reading the code…")
+          : pill(`rv-drill-re-${from}`, t, "↻ Refresh", (_e, cx) => { this.runDrill(cx, from); cx.notify(); }).tooltip("Run the model call again for a fresh answer"))
+        .child(pill(`rv-drill-x-${from}`, t, "✕", (_e, cx) => { this.setDrill(from, null); cx.notify(); }).tooltip("Close the details").accessibility_label("Close details")))
+      .when(Boolean(err), (e) => e.child(div().text_size(12.5).text_color(t.ansi1).whitespace_normal().child(err)))
+      .when(!res && !busy && !err, (e) => e.child(div().text_size(12.5).text_color(t.muted).child(`One ${MODELS[model()].label} call opens up ${top.label}.`)))
       .when(Boolean(res), (e) => e.child(div().text_size(13).line_height(1.5).whitespace_normal().child(res.summary))
         .child(visualCard(res.visual, t, `rv-drill-v-${from}`, (at, cx) => this.jumpTo(at, cx)))
         .when(res.visual.nodes.length > 0, (x) => x.child(h_flex().flex_wrap().gap(4).items_center().child(div().text_size(12).text_color(t.muted).child("Open further:"))
@@ -2581,7 +2587,7 @@ export const ReviewMode = {
       }));
     }
   },
-  leaveExplore() { if (this.exMode) { this.exMode = false; this.ai = this.prAiSaved ?? null; this.defFile = null; this.drill = null; } },
+  leaveExplore() { if (this.exMode) { this.exMode = false; this.ai = this.prAiSaved ?? null; this.defFile = null; this.drills = null; } },
   chooseExploreRepo(cx) {
     cx.spawn(async (cx) => { const dir = await pickFolder({ prompt: "Repository to explore" }); if (dir) { this.exRoot = await this.exploreRoot(dir); cx.notify(); } });
   },
@@ -2624,7 +2630,7 @@ export const ReviewMode = {
       const entry = (this.exIndex ?? []).find((x) => x.id === id) ?? {};
       this.exAi = exploreAi(JSON.parse(text));
       this.ex = { id, root: this.exAi.root, repo: this.exAi.repo, topic: this.exAi.topic, ctx: entry.ctx ?? null };
-      this.ai = this.exAi; this.page = "overview"; this.tab = "steps"; this.defFile = null; this.drill = null; this.archFocus = null;
+      this.ai = this.exAi; this.page = "overview"; this.tab = "steps"; this.defFile = null; this.drills = null; this.archFocus = null;
       this.applyExploreTrust();
       setShared("review.explore", { id, topic: this.ex.topic, repo: this.ex.repo, root: this.ex.root, at: Date.now() });
       cx.notify();
