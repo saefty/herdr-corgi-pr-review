@@ -2427,12 +2427,16 @@ export const ReviewMode = {
   },
   // The clicked card, under the picture: its whole description and the analysis's details (what it does overall, what
   // the PR changes in it). An analysis without details (older ones): Explain, one model call (the drill-down below).
+  // Two tabs keep it short: Overview (the card itself) and Layer analysis (the layers on its code), picked per card.
   archCard(t, a) {
     const n = this.archFocus && a.nodes.find((x) => x.id === this.archFocus);
     if (!n) return div();
     const g = (a.groups ?? []).find((x) => x.id === n.group), at = n.at ?? n.evidence;
     const explain = (_e, cx) => this.showDetails({ id: n.id, label: n.label ?? n.id, group: g?.label, at, kind: "node", description: n.description }, `arch:${n.id}`, cx, false, true);
-    return v_flex().id("rv-arch-card").gap(8).p(12).rounded(10).border_1().border_color(t.border).bg(t.surface)
+    const layers = this.cardLayerList(n), tab = layers.length && this.archCardTab?.id === n.id ? this.archCardTab.k : "overview";
+    const seg = (k, label) => div().id(`rv-arch-card-tab-${k}`).px(10).h(24).flex().items_center().rounded(5).cursor_pointer().text_size(12.5)
+      .bg(tab === k ? t.selected : t.chrome).text_color(tab === k ? t.foreground : t.muted).on_click((_e, cx) => { this.archCardTab = { id: n.id, k }; cx.notify(); }).child(label);
+    return v_flex().id("rv-arch-card").gap(10).p(12).rounded(10).border_1().border_color(t.border).bg(t.surface)
       .child(h_flex().gap(8).items_center().flex_wrap()
         .child(div().text_size(15).font_semibold().child(n.label ?? n.id))
         .child(div().text_size(12).text_color(t.muted).child([g?.label, n.type, n.status === "new" ? "added" : n.status].filter(Boolean).join(" · ")))
@@ -2442,53 +2446,64 @@ export const ReviewMode = {
           .tooltip(`One ${modelLabel(model())} call reads the code: what this does overall, what the PR changes in it, and a picture of its inside`))
         .when(this.drawerState() !== "open", (e) => e.child(pill("rv-arch-card-ask", t, "Ask", (_e, cx) => this.setDrawer("open", cx, null)).tooltip("Ask one model question about this card")))
         .child(pill("rv-arch-card-x", t, "✕", (_e, cx) => { this.archFocus = null; cx.notify(); }).tooltip("Close (Esc)").accessibility_label("Close card details")))
-      .child(this.archCardFacts(t, a, n, at))
-      .when(Boolean(n.description), (e) => e.child(div().text_size(13).text_color(t.muted).whitespace_normal().line_height(1.5).child(n.description)))
-      .child(n.details ? div().text_size(13.5).line_height(1.55).child(TextView.markdown(`rv-arch-det-${this.ai?.generated}-${n.id}`, n.details))
-        : div().text_size(12.5).text_color(t.muted).whitespace_normal().child("No further details for this card in this analysis: Refresh diagrams (above) adds them for every card, Explain reads just this one."))
-      .child(this.archCardLayers(t, n));
+      .when(layers.length > 0, (e) => e.child(h_flex().gap(2).p(2).self_start().rounded(7).border_1().border_color(t.border)
+        .child(seg("overview", "Overview")).child(seg("layers", `Layer analysis (${layers.length})`))))
+      .when(tab === "layers", (e) => e.child(this.archCardLayers(t, n, layers)))
+      .when(tab !== "layers", (e) => e.child(this.archCardFacts(t, a, n, at))
+        .when(Boolean(n.description), (e) => e.child(div().text_size(13).text_color(t.muted).whitespace_normal().line_height(1.5).child(n.description)))
+        .child(n.details ? div().pt(2).text_size(13.5).line_height(1.55).child(TextView.markdown(`rv-arch-det-${this.ai?.generated}-${n.id}`, n.details))
+          : div().text_size(12.5).text_color(t.muted).whitespace_normal().child("No further details for this card in this analysis: Refresh diagrams (above) adds them for every card, Explain reads just this one.")));
   },
-  // "In the layer analysis": the layers that look at the card's code (explore.js layersForNode), each opening here what
-  // the Layers view shows of it, so the card's flows are one click away. Memoized per analysis and card: filesOf walks
-  // the hunks. Open layer goes to it in the Layers view.
-  archCardLayers(t, n) {
+  // The layers that look at the card's code (explore.js layersForNode). Memoized per analysis and card: filesOf walks
+  // the hunks, and the tab's count needs the list on every render.
+  cardLayerList(n) {
     const m = this.cardLayers;
     if (m?.ai !== this.ai || m.byId !== this.byId || m.n !== n) this.cardLayers = { ai: this.ai, byId: this.byId, n, list: layersForNode(this.ai?.steps, n, (s) => this.filesOf(s)) };
-    const list = this.cardLayers.list, open = (this.cardLayersOpen ??= new Set());
-    if (!list.length) return div();
-    return v_flex().gap(6).pt(4)
-      .child(div().text_size(11.5).font_semibold().text_color(t.muted).child("IN THE LAYER ANALYSIS"))
-      .children(list.map((s, j) => {
-        const key = `${n.id}|${stepKey(s)}`, on = open.has(key), id = `rv-acl-${j}`;
-        return v_flex().gap(6)
-          .child(h_flex().gap(8).items_center()
-            .child(div().flex_1().min_w(0).truncate().text_size(13.5).font_semibold().child(plain(s.title)))
-            .when(Boolean(s.risk), (e) => e.child(riskBadge(t, s).id(`${id}-risk`).tooltip(`Risk of this layer: ${s.risk}`)))
-            .child(pill(`${id}-show`, t, on ? "Hide" : "🔍 Show", (_e, cx) => { if (on) open.delete(key); else open.add(key); cx.notify(); }, on)
-              .tooltip(on ? "Hide this layer's analysis" : "Show this layer's explanation, check questions and pictures here"))
-            .child(pill(`${id}-go`, t, "Open layer", (_e, cx) => { this.goStep(this.steps().indexOf(s), cx); cx.notify(); }).tooltip("Go to this layer in the Layers view")))
-          .when(on, (e) => e.child(v_flex().pl(12).gap(6).border_l(2).border_color(t.border)
-            .when(Boolean(s.why), (x) => x.child(div().text_size(13.5).line_height(1.5).child(TextView.markdown(`${id}-why-${stepKey(s)}`, s.why))))
-            .children(this.layerParts(s, t, "rv-acl", j, `arch:${stepKey(s)}`))));
-      }));
+    return this.cardLayers.list;
   },
-  // What the card is: its file (path:line, a click opens it; how many changed places of this PR are in it) and its
-  // links to the other cards (a click shows that card).
+  // The Layer analysis tab: a bordered box per layer; its header opens what the Layers view shows of it, drawn inside
+  // the box so it reads as that layer's, the card's flows one click away. Open layer goes to it in the Layers view.
+  archCardLayers(t, n, list) {
+    const open = (this.cardLayersOpen ??= new Set());
+    return v_flex().gap(6).children(list.map((s, j) => {
+      const key = `${n.id}|${stepKey(s)}`, on = open.has(key), id = `rv-acl-${j}`;
+      return v_flex().rounded(8).border_1().border_color(on ? t.accent : t.border)
+        .child(h_flex().id(`${id}-show`).px(10).py(6).gap(8).items_center().rounded(8).cursor_pointer().hover((x) => x.bg(t.hover))
+          .tooltip(on ? "Hide this layer's analysis" : "Show this layer's explanation, check questions and pictures here")
+          .on_click((_e, cx) => { if (on) open.delete(key); else open.add(key); cx.notify(); })
+          .child(div().flex_none().w(12).text_color(t.muted).child(on ? "▾" : "▸"))
+          .child(div().min_w(0).truncate().text_size(13.5).font_semibold().child(plain(s.title)))
+          .when(Boolean(s.risk), (e) => e.child(riskBadge(t, s).id(`${id}-risk`).tooltip(`Risk of this layer: ${s.risk}`))))
+        .when(on, (e) => e.child(v_flex().pl(30).pr(10).pt(8).pb(10).gap(6).border_t(1).border_color(t.border)
+          .when(Boolean(s.why), (x) => x.child(div().text_size(13.5).line_height(1.5).child(TextView.markdown(`${id}-why-${stepKey(s)}`, s.why))))
+          .children(this.layerParts(s, t, "rv-acl", j, `arch:${stepKey(s)}`))
+          .child(div().id(`${id}-go`).self_start().text_size(12.5).text_color(t.accent).cursor_pointer().hover((x) => x.underline()).tooltip("Go to this layer in the Layers view")
+            .on_click((_e, cx) => { this.goStep(this.steps().indexOf(s), cx); cx.notify(); }).child("Open layer →"))));
+    }));
+  },
+  // What the card is, as key: value rows: its file (path:line, a click opens it; how many changed places of this PR are
+  // in it) and its links to the other cards, incoming first, one line each (a click shows that card).
   archCardFacts(t, a, n, at) {
     const path = at ? String(at).replace(/:\d+.*$/, "") : null;
     const hs = path ? [...(this.fileHunks ?? new Map())].filter(([p]) => p === path || p.endsWith(`/${path}`) || path.endsWith(`/${p}`)).flatMap(([, h]) => h) : [];
     const name = (id) => a.nodes.find((x) => x.id === id)?.label ?? id;
-    const links = (a.edges ?? []).map((e, i) => [e, i]).filter(([e]) => e.from === n.id || e.to === n.id);
-    const row = (label, kids) => h_flex().gap(8).items_start().text_size(12.5).child(div().flex_none().w(84).text_color(t.muted).child(label)).child(h_flex().flex_1().min_w(0).flex_wrap().gap(6).children(kids));
-    return v_flex().gap(6)
-      .child(row("File", at ? [div().id("rv-arch-card-file").text_color(t.accent).cursor_pointer().hover((s) => s.underline()).tooltip("Open this place in the code").on_click((_e, cx) => this.jumpTo(at, cx)).child(String(at)),
-        div().text_color(t.muted).child(hs.length ? `${hs.length} changed ${hs.length === 1 ? "place" : "places"} in this PR` : "not in this PR's diff")]
-        : [div().text_color(t.muted).child("The analysis names no file for this card (Ask names it)")]))
-      .when(links.length > 0, (e) => e.child(row("Connections", links.map(([x, i]) => {
-        const out = x.from === n.id, other = out ? x.to : x.from;
-        return div().id(`rv-arch-card-l${i}`).px(8).py(2).rounded(6).border_1().border_color(t.border).cursor_pointer().hover((s) => s.bg(t.hover)).tooltip(`Show ${name(other)}`)
-          .on_click((_e, cx) => { this.archFocus = other; cx.notify(); }).child(`${out ? "→" : "←"} ${name(other)}${x.label ? `: ${x.label}` : ""}`);
-      }))));
+    const into = (e) => (e.to === n.id ? 0 : 1);
+    const links = (a.edges ?? []).map((e, i) => [e, i]).filter(([e]) => e.from === n.id || e.to === n.id).sort(([x], [y]) => into(x) - into(y));
+    const row = (label, body) => h_flex().gap(8).items_start().child(div().flex_none().w(84).text_color(t.muted).child(label)).child(body.flex_1().min_w(0));
+    return v_flex().gap(4).text_size(12.5).line_height(1.5)
+      .child(row("File", at ? h_flex().gap(8).flex_wrap()
+        .child(div().id("rv-arch-card-file").text_color(t.accent).cursor_pointer().hover((s) => s.underline()).tooltip("Open this place in the code").on_click((_e, cx) => this.jumpTo(at, cx)).child(String(at)))
+        .child(div().text_color(t.muted).child(hs.length ? `${hs.length} changed ${hs.length === 1 ? "place" : "places"} in this PR` : "not in this PR's diff"))
+        : div().text_color(t.muted).child("The analysis names no file for this card (Ask names it)")))
+      .when(links.length > 0, (e) => e.child(row("Connections", v_flex().gap(2).children(links.map(([x, i]) => {
+        const out = x.from === n.id, other = out ? x.to : x.from, arrow = out ? "→" : "←";
+        // The label on one line; the whole text in the tooltip.
+        return h_flex().id(`rv-arch-card-l${i}`).gap(6).min_w(0).rounded(4).cursor_pointer().hover((s) => s.bg(t.hover))
+          .tooltip(`${arrow} ${name(other)}${x.label ? `: ${x.label}` : ""}. Click to show it`).on_click((_e, cx) => { this.archFocus = other; cx.notify(); })
+          .child(div().flex_none().text_color(t.muted).child(arrow))
+          .child(div().flex_none().font_semibold().child(name(other)))
+          .when(Boolean(x.label), (e) => e.child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(x.label)));
+      })))));
   },
   // Wrap: only when clicked (by itself the page would jump whenever the room changes).
   archWrapOn() { return this.archWrap === true; },
