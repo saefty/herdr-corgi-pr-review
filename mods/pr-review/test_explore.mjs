@@ -136,3 +136,20 @@ assert.equal(X.exploreTrust({ repo: X.repoOfRemote("git@github.com:SaeFty/x"), r
 assert.equal(X.exploreTrust({ repo: "acme/x", root: "/r", login: "saefty" }), false);
 assert.equal(X.exploreTrust({ repo: "acme/x", root: "/r", login: "saefty", trustedRepos: ["acme/x"] }), true);
 console.log("explore trust ok");
+
+// ---- a card's layers: by file (changed files, evidence, picture places; path suffixes match) or a picture box named
+// like the card, in analysis order; pseudo layers never
+const lsteps = [
+  { title: "api", evidence: ["src/api.py:4"], visuals: [] },
+  { title: "flow", evidence: [], visuals: [{ nodes: [{ id: "h", at: "lambda/handler.py:12" }] }] },
+  { title: "named", evidence: [], visuals: [{ nodes: [{ id: "x", label: "Handler" }] }] },
+  { title: "changed", evidence: [], visuals: [] },
+  { title: "all", pseudo: true, evidence: ["lambda/handler.py:1"] },
+];
+const lfiles = (s) => (s.title === "changed" ? ["repo/lambda/handler.py"] : []);
+assert.deepEqual(X.layersForNode(lsteps, { id: "handler", label: "Handler", at: "lambda/handler.py:40" }, lfiles).map((s) => s.title), ["flow", "named", "changed"]);
+assert.deepEqual(X.layersForNode(lsteps, { id: "api", evidence: "api.py" }).map((s) => s.title), ["api"], "evidence without a line, a path suffix");
+assert.deepEqual(X.layersForNode(lsteps, { id: "h" }).map((s) => s.title), ["flow"], "no file: by picture box id");
+assert.deepEqual(X.layersForNode(lsteps, { id: "db", at: "src/db.py:1" }), []);
+assert.deepEqual(X.layersForNode(null, { id: "a" }), []);
+console.log("ok");

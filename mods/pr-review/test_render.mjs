@@ -53,7 +53,7 @@ registerHooks({
 });
 
 const { default: PrReview } = await import("./main.js");
-const { splitPatch, hunksOf, diffRows } = await import("./pr.js");
+const { splitPatch, hunksOf, diffRows, stepKey } = await import("./pr.js");
 const { foldOnOpen } = await import("./views.js");
 const cx = { notify() {}, timer: { after() {}, every() {} }, spawn() {}, focus_handle: () => ({ focus() {}, is_focused: () => false }), stop_propagation() {}, new() {} };
 
@@ -92,6 +92,15 @@ for (const n of [0, 3, 310]) {
     v.deep.drawer[v.deepKey()] = drawer; v.winW = winW;
     ok(`${n} files: Architecture page, drawer ${drawer} at ${winW} px`, () => v.render(cx));
   }
+  // A clicked card with its layer opened: the layer's explanation, questions and picture in the card.
+  v.ai.arch.nodes[0].at = "src/a.ts:3";
+  v.ai.steps.push({ title: "b", why: "w", text: "x", hunks: [], questions: ["q?"], risk: "high", evidence: ["src/a.ts:1"],
+    visuals: [{ kind: "flow", title: "f", nodes: [{ id: "n1", label: "N1", at: "src/a.ts:3" }, { id: "n2", label: "N2" }], edges: [{ from: "n1", to: "n2", label: "y" }] }] });
+  v.archFocus = "a"; v.cardLayersOpen = new Set([`a|${stepKey(v.ai.steps[1])}`]);
+  ok(`${n} files: Architecture page, a card with its layer`, () => v.render(cx));
+  assert.deepEqual(v.cardLayers.list, [v.ai.steps[1]]);
+  v.archFocus = null; v.page = null; v.cur = 1;
+  ok(`${n} files: the same layer open in the Layers view`, () => v.render(cx));
   v.tab = "files"; v.page = null; v.deep.drawer[v.deepKey()] = "open";
   ok(`${n} files: back to the list with the drawer open`, () => { v.render(cx); layout(0.5); v.autoFold(cx); });
 }

@@ -24,7 +24,7 @@ import { wheelStep, foldOnOpen, allocate, recenter, hsVisible } from "./views.js
 import { archView, archModel, archLegend, visualsCard, visualCard, statCard, segBar, foldCard, chip, legend, specTag, sourceLegend, SEVERITY_COLOR } from "./stack.js";
 import { hasSources, archLayout, archBands } from "./arch.js";
 import * as TH from "./threads.js";
-import { leftWidth, rowClick, CHIP_W, ASK_W, keyRoute, scopeLine, pictureOf, scopeOf, scopeFiles, hunksFor, mapAnswer, threadAdd, threadOf, history, highlightOf, rangeLabel, pinAnchor, pinAdd, pinDrop, pinsOf, pinsOn, codePins, drillPush, drillTo, crumbs, drillKey, cachePut, mapDrill, exploreId, exploreIndex, exploreAi, pathOf, lineOf, repoOfRemote, exploreTrust } from "./explore.js";
+import { leftWidth, rowClick, CHIP_W, ASK_W, keyRoute, scopeLine, pictureOf, scopeOf, scopeFiles, hunksFor, mapAnswer, threadAdd, threadOf, history, highlightOf, rangeLabel, pinAnchor, pinAdd, pinDrop, pinsOf, pinsOn, codePins, drillPush, drillTo, crumbs, drillKey, cachePut, mapDrill, exploreId, exploreIndex, exploreAi, pathOf, lineOf, repoOfRemote, exploreTrust, layersForNode } from "./explore.js";
 
 const LEVEL = { high: "ansi1", medium: "ansi3", low: "ansi4", skim: "muted" };
 const COVER = { seen: ["done", "ansi2"], partly: ["partly", "ansi3"], absent: ["missing", "ansi1"], extra: ["extra (not asked)", "ansi4"] };
@@ -2121,15 +2121,7 @@ export const ReviewMode = {
       .child(div().pl(26).text_size(12).text_color(t.muted).child(`${touched} ${touched === 1 ? "file" : "files"} touched`))
       .child(div().pl(26).text_size(13.5).line_height(1.5).text_color(on ? t.foreground : t.muted)
         .child(on ? TextView.markdown(`rv-why-${stepKey(s)}`, s.why) : div().truncate().child(plain(s.why))))
-      .when(on && Boolean(s.text), (e) => e.child(div().pl(26).text_size(13.5).line_height(1.5).text_color(t.foreground)
-        .child(TextView.markdown(`rv-ex-${stepKey(s)}`, s.text))))
-      .when(on && s.questions.length > 0, (e) => e.child(v_flex().pl(26).pt(2).gap(8)
-        .child(div().text_size(11.5).font_semibold().text_color(t.muted).child("CHECK"))
-        .children(s.questions.map((q, k) => h_flex().id(`rv-q-${i}-${k}`).tooltip("A question to check while you read this layer").gap(8).items_start().text_size(13.5).line_height(1.5)
-          .child(div().flex_none().text_color(t.accent).child("?"))
-          .child(div().flex_1().min_w(0).child(TextView.markdown(`rv-q-${stepKey(s)}-${k}`, this.asked(s, q))))))))
-      .when(on && s.visuals?.length > 0, (e) => e.child(div().pl(26).child(this.diagramsBar(t, `rv-dia-${i}`, "Refresh this view"))).child(div().pl(26).child(visualsCard(s.visuals, t, `rv-vis-${i}`, (at, cx) => this.jumpTo(at, cx),
-        this.visTab?.[i] ?? 0, (k, cx) => { this.visTab = { ...this.visTab, [i]: k }; cx.notify(); }, this.wrapX()))))
+      .when(on, (e) => e.children(this.layerParts(s, t, "rv", i, i, s.visuals?.length > 0 && this.diagramsBar(t, `rv-dia-${i}`, "Refresh this view")).map((x) => div().pl(26).child(x))))
       .when(on && !s.pseudo && Boolean(this.ai), (e) => e.child(h_flex().pl(26).gap(6).child(pill(`rv-ask-l${i}`, t, "Ask about this layer", (_e, cx) => {
         const k = (this.ai?.steps ?? []).indexOf(s); this.setDrawer("open", cx, k >= 0 ? { layer: k } : null); cx.stop_propagation(); }).tooltip("Ask one model question about this layer; the answer stays private"))
         .child(pill(`rv-drill-l${i}`, t, "Show details", (_e, cx) => { this.showDetails(this.layerSubject(s), `layer:${stepKey(s)}`, cx); cx.stop_propagation(); }).tooltip("One model call breaks this layer down further")))
@@ -2140,6 +2132,23 @@ export const ReviewMode = {
           (_e, cx) => { this.flowSel = { step: stepKey(s), k }; this.jumpTo(f.at, cx); cx.stop_propagation(); })));
       })))
       .when(on, (e) => e.children(this.openSugs().filter((x) => s.hunks.includes(x.hunk)).map((x) => this.sugCard(x, t, true))));
+  },
+
+  // A layer's explanation, check questions and pictures, as the Layers view shows them; a card's "In the layer
+  // analysis" shows the same. p, n: keep the ids unique per place; tab: the key of the shown picture in this.visTab;
+  // bar: drawn above the pictures.
+  layerParts(s, t, p, n, tab, bar = null) {
+    return [
+      Boolean(s.text) && div().text_size(13.5).line_height(1.5).text_color(t.foreground).child(TextView.markdown(`${p}-ex-${stepKey(s)}`, s.text)),
+      s.questions?.length > 0 && v_flex().pt(2).gap(8)
+        .child(div().text_size(11.5).font_semibold().text_color(t.muted).child("CHECK"))
+        .children(s.questions.map((q, k) => h_flex().id(`${p}-q-${n}-${k}`).tooltip("A question to check while you read this layer").gap(8).items_start().text_size(13.5).line_height(1.5)
+          .child(div().flex_none().text_color(t.accent).child("?"))
+          .child(div().flex_1().min_w(0).child(TextView.markdown(`${p}-q-${stepKey(s)}-${k}`, this.asked(s, q)))))),
+      bar,
+      s.visuals?.length > 0 && visualsCard(s.visuals, t, `${p}-vis-${n}`, (at, cx) => this.jumpTo(at, cx),
+        this.visTab?.[tab] ?? 0, (k, cx) => { this.visTab = { ...this.visTab, [tab]: k }; cx.notify(); }, this.wrapX()),
+    ].filter(Boolean);
   },
 
   // The flow whose trace shows inline: the one picked in the current step, else its first.
@@ -2436,7 +2445,32 @@ export const ReviewMode = {
       .child(this.archCardFacts(t, a, n, at))
       .when(Boolean(n.description), (e) => e.child(div().text_size(13).text_color(t.muted).whitespace_normal().line_height(1.5).child(n.description)))
       .child(n.details ? div().text_size(13.5).line_height(1.55).child(TextView.markdown(`rv-arch-det-${this.ai?.generated}-${n.id}`, n.details))
-        : div().text_size(12.5).text_color(t.muted).whitespace_normal().child("No further details for this card in this analysis: Refresh diagrams (above) adds them for every card, Explain reads just this one."));
+        : div().text_size(12.5).text_color(t.muted).whitespace_normal().child("No further details for this card in this analysis: Refresh diagrams (above) adds them for every card, Explain reads just this one."))
+      .child(this.archCardLayers(t, n));
+  },
+  // "In the layer analysis": the layers that look at the card's code (explore.js layersForNode), each opening here what
+  // the Layers view shows of it, so the card's flows are one click away. Memoized per analysis and card: filesOf walks
+  // the hunks. Open layer goes to it in the Layers view.
+  archCardLayers(t, n) {
+    const m = this.cardLayers;
+    if (m?.ai !== this.ai || m.byId !== this.byId || m.n !== n) this.cardLayers = { ai: this.ai, byId: this.byId, n, list: layersForNode(this.ai?.steps, n, (s) => this.filesOf(s)) };
+    const list = this.cardLayers.list, open = (this.cardLayersOpen ??= new Set());
+    if (!list.length) return div();
+    return v_flex().gap(6).pt(4)
+      .child(div().text_size(11.5).font_semibold().text_color(t.muted).child("IN THE LAYER ANALYSIS"))
+      .children(list.map((s, j) => {
+        const key = `${n.id}|${stepKey(s)}`, on = open.has(key), id = `rv-acl-${j}`;
+        return v_flex().gap(6)
+          .child(h_flex().gap(8).items_center()
+            .child(div().flex_1().min_w(0).truncate().text_size(13.5).font_semibold().child(plain(s.title)))
+            .when(Boolean(s.risk), (e) => e.child(riskBadge(t, s).id(`${id}-risk`).tooltip(`Risk of this layer: ${s.risk}`)))
+            .child(pill(`${id}-show`, t, on ? "Hide" : "🔍 Show", (_e, cx) => { if (on) open.delete(key); else open.add(key); cx.notify(); }, on)
+              .tooltip(on ? "Hide this layer's analysis" : "Show this layer's explanation, check questions and pictures here"))
+            .child(pill(`${id}-go`, t, "Open layer", (_e, cx) => { this.goStep(this.steps().indexOf(s), cx); cx.notify(); }).tooltip("Go to this layer in the Layers view")))
+          .when(on, (e) => e.child(v_flex().pl(12).gap(6).border_l(2).border_color(t.border)
+            .when(Boolean(s.why), (x) => x.child(div().text_size(13.5).line_height(1.5).child(TextView.markdown(`${id}-why-${stepKey(s)}`, s.why))))
+            .children(this.layerParts(s, t, "rv-acl", j, `arch:${stepKey(s)}`))));
+      }));
   },
   // What the card is: its file (path:line, a click opens it; how many changed places of this PR are in it) and its
   // links to the other cards (a click shows that card).

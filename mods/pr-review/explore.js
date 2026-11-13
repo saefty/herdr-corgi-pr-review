@@ -71,6 +71,16 @@ export function scopeFiles(scope) {
   return [...new Set(at.map(pathOf).filter(Boolean))];
 }
 
+// The analysis layers that look at an architecture card's code, in analysis order: one of the layer's files
+// (filesOf(s): its changed files; its evidence; its pictures' places) is the card's file, or one of its pictures has a
+// box with the card's id or label. Layers without analysis (pseudo) are left out.
+export function layersForNode(steps, node, filesOf = () => []) {
+  const path = pathOf(node?.at ?? node?.evidence), names = new Set([node?.id, node?.label].filter(Boolean));
+  return (steps ?? []).filter((s) => !s.pseudo && (
+    (path && [...filesOf(s), ...scopeFiles({ kind: "layer", layer: { evidence: s.evidence ?? [], visuals: s.visuals ?? [] } })].some((p) => sameFile(p, path)))
+    || (s.visuals ?? []).some((v) => (v.nodes ?? []).some((x) => names.has(x.id) || names.has(x.label)))));
+}
+
 // The diff hunks for those files (bounded), as {path, lines}; layerHunks: the hunk ids of a layer, taken first.
 export function hunksFor(paths, hunks, layerHunks = [], max = 12, maxChars = 24000) {
   const pick = [...(hunks ?? []).filter((h) => layerHunks.includes(h.id)), ...(hunks ?? []).filter((h) => !layerHunks.includes(h.id) && paths.some((p) => sameFile(h.path, p)))];
