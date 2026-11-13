@@ -209,14 +209,15 @@ const minimize = () => { const pr = shared("review.target"); if (pr) setShared("
 export function renderMini() {
   const t = theme(), pr = shared("review.minimized")?.target;
   if (!pr) return div();
-  const title = `#${pr.number ?? ""} ${pr.title ?? ""}`.trim();
-  return h_flex().id("rv-mini").h(34).pl(12).pr(4).gap(8).items_center().rounded_full().border_1().border_color(t.border).bg(t.popover)
-    .text_size(12.5).text_color(t.foreground)
+  // A small chip, so it covers little of the terminal under it: the PR number, its full title in the tooltip.
+  return h_flex().id("rv-mini").h(28).pl(10).pr(3).gap(6).items_center().rounded_full().border_1().border_color(t.border).bg(t.popover)
+    .text_size(12).text_color(t.foreground).tooltip(`${pr.repo ?? ""}#${pr.number ?? ""} ${pr.title ?? ""}`)
     .on_mouse_down("left", (_e, cx) => cx.stop_propagation()) // a press the mod doesn't stop would drag the float
-    .child(div().flex_none().text_color(t.muted).child("Review"))
-    .child(div().id("rv-mini-title").max_w(320).truncate().font_semibold().tooltip(`${pr.repo ?? ""}#${pr.number ?? ""} ${pr.title ?? ""}`).child(title))
-    .child(pill("rv-mini-open", t, "Open", () => startReview(pr)).tooltip("Back to the review, where you left it"))
-    .child(pill("rv-mini-x", t, "✕", () => setShared("review.minimized", null)).tooltip("Close the minimized review").accessibility_label("Close minimized review"));
+    .child(div().flex_none().font_semibold().child(`Review #${pr.number ?? ""}`))
+    .child(div().id("rv-mini-open").px(8).h(22).flex().items_center().rounded_full().cursor_pointer().text_color(t.accent).hover((x) => x.bg(t.hover))
+      .tooltip("Back to the review, where you left it").on_click(() => startReview(pr)).child("Open"))
+    .child(div().id("rv-mini-x").w(22).h(22).flex().items_center().justify_center().rounded_full().cursor_pointer().text_color(t.muted).hover((x) => x.bg(t.hover))
+      .tooltip("Close the minimized review").accessibility_label("Close minimized review").on_click(() => setShared("review.minimized", null)).child("✕"));
 }
 
 const pill = (id, t, label, click, on = false, color) => div().id(id).px(9).h(26).flex().items_center().rounded(6).border_1()
