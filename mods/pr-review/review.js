@@ -373,6 +373,14 @@ export const ReviewMode = {
     // For keys and scripted demos: a card's panel on the Architecture page (card:<node id>), the layers' order
     // (order:reading | order:risk) and Minimize, the same as their clicks.
     else if (name === "card") { this.page = "arch"; this.tab = "steps"; this.archFocus = arg || null; }
+    // The same model calls as their buttons (a click each, never by themselves): Refresh diagrams, and a card's
+    // Look inside / Explain (inside:<node id>).
+    else if (name === "diagrams") this.refreshDiagrams(cx);
+    else if (name === "inside") {
+      const n = (this.ai?.arch?.nodes ?? []).find((x) => x.id === arg);
+      if (n) { this.page = "arch"; this.tab = "steps"; this.archFocus = n.id;
+        this.showDetails({ id: n.id, label: n.label ?? n.id, group: (this.ai.arch.groups ?? []).find((g) => g.id === n.group)?.label, at: n.at ?? n.evidence, kind: "node", description: n.description }, `arch:${n.id}`, cx, false, true); }
+    }
     else if (name === "order") { if (arg === "reading" || arg === "risk") { this.order = arg; this.cur = 0; } }
     else if (name === "minimize") minimize();
     else if (name === "trust") this.trust("pr", cx);
