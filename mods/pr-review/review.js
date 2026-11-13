@@ -368,6 +368,11 @@ export const ReviewMode = {
     else if (name === "copy-link") copyText(this.prSel?.url ?? "");
     else if (name === "open-gh") { if (this.prSel?.url) openUrl(this.prSel.url); }
     else if (name === "model") { if (arg) setShared("review.model", arg); }
+    // For keys and scripted demos: a card's panel on the Architecture page (card:<node id>), the layers' order
+    // (order:reading | order:risk) and Minimize, the same as their clicks.
+    else if (name === "card") { this.page = "arch"; this.tab = "steps"; this.archFocus = arg || null; }
+    else if (name === "order") { if (arg === "reading" || arg === "risk") { this.order = arg; this.cur = 0; } }
+    else if (name === "minimize") minimize();
     else if (name === "trust") this.trust("pr", cx);
     else if (name === "cmenu") { const [k, ...key] = arg.split("|"), card = this.cardByKey(key.join("|")); card?.menu[Number(k)]?.[2]?.(cx); }
     else if (name === "ask") this.setDrawer(arg === "close" ? null : arg === "fold" ? "collapsed" : "open", cx); // the Ask drawer: open | fold | close
