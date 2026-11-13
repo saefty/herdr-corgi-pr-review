@@ -63,8 +63,13 @@ const codexChoices = () => Object.values(modelsDoc()).map((d) => d?.codex ?? [])
 const resolvedOf = (m) => Object.values(modelsDoc()).flatMap((d) => d?.claude ?? []).find((x) => x.value === m)?.resolved ?? m;
 // "$4 / $20 per MTok": input and output.
 const priceText = (m) => { const [i, o] = priceOf(resolvedOf(m)); return `$${i} / $${o} per MTok`; };
-// The choices for a context: the CLI's list, or the three classes until it answered.
-const modelChoices = (ctx) => (modelsDoc()[ctx]?.claude?.length ? modelsDoc()[ctx].claude : Object.entries(MODELS).map(([value, v]) => ({ value, label: v.label, description: "" })));
+// The choices for a context: the CLI's aliases (opus, fable, sonnet, haiku: each its family's newest model; older
+// models by full id are left out, unless one is the current pick), or the three classes until the CLI answered.
+const modelChoices = (ctx) => {
+  const list = modelsDoc()[ctx]?.claude ?? [], cur = model();
+  const shown = list.filter((c) => !c.value.startsWith("claude-") || c.value === cur);
+  return shown.length ? shown : Object.entries(MODELS).map(([value, v]) => ({ value, label: v.label, description: "" }));
+};
 const cacheDir = () => `${appHome()}/pr-data/cache`;
 const valuesOn = () => shared("review.values") !== false; // inline example values (flow traces), on by default
 const clock = (ms) => `${Math.floor(ms / 60000)}:${String(Math.floor(ms / 1000) % 60).padStart(2, "0")}`;
