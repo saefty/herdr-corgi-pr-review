@@ -279,8 +279,11 @@ const CATEGORIES = ["structure", "security", "data", "scope", "requirement", "bu
 function layerFindings(list, step) {
   return (list ?? []).map((f) => ({ f, file: String(f.file ?? "").trim().replace(/^\.\//, ""), line: Number(f.line) || 0, title: String(f.title ?? "").trim() }))
     .filter((x) => x.file && x.title)
-    .map(({ f, file, line, title }) => ({ id: `a${hash(`${step}|${file}|${title}`)}`, reviewer: "analysis", step, file, line, end: Number(f.end) || line,
-      severity: ["high", "medium", "low"].includes(f.severity) ? f.severity : "medium", category: CATEGORIES.includes(f.category) ? f.category : "structure",
+    // The id is what the finding is about (category, file, title), not its layer's hunks: those change with every push,
+    // and a finding the next analysis reports again keeps its status (Fix sent, Dismissed). `step` links it to its layer.
+    .map(({ f, file, line, title }) => ({ f, file, line, title, category: CATEGORIES.includes(f.category) ? f.category : "structure" }))
+    .map(({ f, file, line, title, category }) => ({ id: `a${hash(`${category}|${file}|${title}`)}`, reviewer: "analysis", step, file, line, end: Number(f.end) || line,
+      severity: ["high", "medium", "low"].includes(f.severity) ? f.severity : "medium", category,
       title, detail: String(f.detail ?? ""), suggestion: String(f.suggestion ?? "") }))
     .filter((x, i, all) => all.findIndex((y) => y.id === x.id) === i); // the same title twice in a file: one finding
 }
