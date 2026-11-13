@@ -201,7 +201,14 @@ const pill = (id, t, label, click, on = false, color) => div().id(id).px(9).h(26
   .border_color(on ? t.accent : t.border).text_size(12.5).text_color(color ?? (on ? t.foreground : t.muted)).cursor_pointer()
   .hover((s) => s.text_color(t.foreground)).on_mouse_down("left", stop).on_click(click).child(label);
 const badge = (t, label, color) => div().flex_none().px(6).py(1).rounded(5).border_1().border_color(color).text_size(11.5).font_semibold().text_color(color).child(label);
-const riskBadge = (t, s) => badge(t, s.risk, t[LEVEL[s.risk]] ?? t.muted);
+// A layer's "risk" is how closely to read it (what its code touches), not a finding: named and coloured as reading
+// depth, so it doesn't look like a problem next to the findings' high/medium/low.
+const FOCUS = { high: ["Read closely", "it touches security, data or migrations, auth or concurrency"], medium: ["Read", "it changes core logic or an API/contract"],
+  low: ["Glance", "configuration or small things"], skim: ["Skim", "tests, renames, formatting, generated code or docs"] };
+const focusLabel = (s) => FOCUS[s.risk]?.[0] ?? s.risk;
+const focusTip = (s) => (FOCUS[s.risk] ? `How closely to read this layer: ${FOCUS[s.risk][1]}. Not a finding.` : "How closely to read this layer");
+const focusColor = (t, s) => (s.risk === "high" ? t.accent : t.muted);
+const riskBadge = (t, s) => badge(t, focusLabel(s), focusColor(t, s));
 const kbd = (t, k) => div().px(5).min_w(18).h(18).flex().items_center().justify_center().rounded(4).border_1().border_color(t.border).bg(t.raised)
   .text_size(11).text_color(t.foreground).child(k);
 // A button drawn inside the virtual list (no handler there: onItem places the click by x).
@@ -2117,7 +2124,7 @@ export const ReviewMode = {
         .child(div().flex_1().min_w(0).text_size(14.5).font_semibold().text_color(s.stale ? t.dim : t.foreground).when(!on, (e) => e.truncate()).child(plain(s.title)))
         .when(Boolean(s.isNew), (e) => e.child(badge(t, "new", t.accent).id(`rv-new-${i}`).tooltip("New since the previous analysis")))
         .when(Boolean(s.stale), (e) => e.child(badge(t, "outdated", t.ansi3).id(`rv-old-${i}`).tooltip("These hunks are no longer in the diff: the code changed since the analysis")))
-        .when(!s.pseudo, (e) => e.child(riskBadge(t, s).id(`rv-risk-${i}`).tooltip(`Risk of this layer: ${s.risk}`))))
+        .when(!s.pseudo, (e) => e.child(riskBadge(t, s).id(`rv-risk-${i}`).tooltip(focusTip(s)))))
       .child(div().pl(26).text_size(12).text_color(t.muted).child(`${touched} ${touched === 1 ? "file" : "files"} touched`))
       .child(div().pl(26).text_size(13.5).line_height(1.5).text_color(on ? t.foreground : t.muted)
         .child(on ? TextView.markdown(`rv-why-${stepKey(s)}`, s.why) : div().truncate().child(plain(s.why))))
@@ -2200,7 +2207,7 @@ export const ReviewMode = {
   // What to look at first: high-risk layers not checked yet, failed repo rules, fixes to verify, high merge blockers.
   attention() {
     const out = [];
-    this.steps().forEach((s, i) => { if (s.risk === "high" && !s.pseudo && !this.done(s)) out.push({ label: plain(s.title), why: "High-risk layer", go: (cx) => this.goStep(i, cx) }); });
+    this.steps().forEach((s, i) => { if (s.risk === "high" && !s.pseudo && !this.done(s)) out.push({ label: plain(s.title), why: "Layer to read closely", go: (cx) => this.goStep(i, cx) }); });
     for (const r of this.ai?.rules ?? []) if (r.status === "fail") out.push({ label: r.rule, why: `Repo rule failed · ${r.source}`, go: (cx) => (r.where ? this.jumpTo(r.where, cx) : (this.page = "overview")) });
     const n = this.verifyList().length;
     if (n) out.push({ label: `${n} ${n === 1 ? "fix" : "fixes"} to verify`, why: "Sent to Fix before the last push", go: () => { this.page = "verify"; } });
@@ -2237,8 +2244,8 @@ export const ReviewMode = {
         .when(Boolean(ai?.scope), (e) => e.child(div().text_size(12.5).text_color(t.muted).whitespace_normal().child(scopeLine(ai.scope))))
         .when(Boolean(ai?.cut.length) && !ai?.scope, (e) => e.child(div().text_size(12.5).text_color(t.ansi3).whitespace_normal().child(`${ai.cut.length} hunks were too large for ${modelLabel(ai.model) ?? ai.model} and are not analyzed (an older analysis: re-analyze to read them).`)))
         .child(h_flex().flex_wrap().gap(6).items_center().text_size(12.5)
-          .child(h_flex().gap(2).p(2).rounded(7).border_1().border_color(t.border).children([["reading", "Layers"], ["risk", "By risk"]].map(([k, label]) =>
-            div().id(`rv-order-${k}`).tooltip((k === "risk" ? "List the layers with the riskiest first" : "List the layers in the order to read them")).px(8).h(22).flex().items_center().rounded(5).cursor_pointer().bg(this.order === k ? t.selected : t.chrome)
+          .child(h_flex().gap(2).p(2).rounded(7).border_1().border_color(t.border).children([["reading", "Layers"], ["risk", "By focus"]].map(([k, label]) =>
+            div().id(`rv-order-${k}`).tooltip((k === "risk" ? "List the layers that need the closest reading first" : "List the layers in the order to read them")).px(8).h(22).flex().items_center().rounded(5).cursor_pointer().bg(this.order === k ? t.selected : t.chrome)
               .text_color(this.order === k ? t.foreground : t.muted).on_click((_e, cx) => { this.order = k; this.cur = 0; cx.notify(); }).child(label))))
           .child(pill("rv-prev", t, "‹ Prev", (_e, cx) => { this.goStep(this.cur - 1, cx); cx.notify(); }).tooltip("Previous layer (k)"))
           .child(pill("rv-next", t, "Next ›", (_e, cx) => { this.goStep(this.cur + 1, cx); cx.notify(); }).tooltip("Next layer (j)"))
@@ -2474,8 +2481,8 @@ export const ReviewMode = {
           .on_click((_e, cx) => { open.set(key, !on); cx.notify(); })
           .child(div().flex_none().w(12).text_color(t.muted).child(on ? "▾" : "▸"))
           .child(div().min_w(0).truncate().text_size(13.5).font_semibold().child(plain(s.title)))
-          .when(Boolean(s.risk), (e) => e.child(riskBadge(t, s).id(`${id}-risk`).tooltip(`Risk of this layer: ${s.risk}`))))
-        .when(Boolean(s.why), (e) => e.child(div().mx(10).mb(8).pl(10).border_l(3).border_color(t[LEVEL[s.risk]] ?? t.border)
+          .when(Boolean(s.risk), (e) => e.child(riskBadge(t, s).id(`${id}-risk`).tooltip(focusTip(s)))))
+        .when(Boolean(s.why), (e) => e.child(div().mx(10).mb(8).pl(10).border_l(3).border_color(focusColor(t, s))
           .text_size(14).font_semibold().line_height(1.45).child(TextView.markdown(`${id}-why-${stepKey(s)}`, s.why))))
         .when(on, (e) => e.child(v_flex().pl(30).pr(10).pt(8).pb(10).gap(6).border_t(1).border_color(t.border)
           .children(this.layerParts(s, t, "rv-acl", j, `arch:${stepKey(s)}`))
@@ -3347,7 +3354,7 @@ export const ReviewMode = {
         .child(h_flex().h(24).gap(10).items_center()
           .child(div().id(`rv-lstep-${it.i}`).tooltip(this.done(s) ? "You checked this layer" : "Layer number").text_size(14).font_semibold().text_color(this.done(s) ? t.ansi2 : t.muted).child(this.done(s) ? "✓" : `${it.i + 1}`))
           .child(div().flex_1().min_w(0).truncate().text_size(15).font_semibold().child(plain(s.title)))
-          .when(!s.pseudo, (e) => e.child(riskBadge(t, s).id(`rv-lrb-${it.i}`).tooltip(`Risk of this layer: ${s.risk}`))))
+          .when(!s.pseudo, (e) => e.child(riskBadge(t, s).id(`rv-lrb-${it.i}`).tooltip(focusTip(s)))))
         .child(div().h(22).truncate().text_size(13.5).text_color(t.foreground).child(plain(s.why)))
         .children(s.questions.map((q) => div().h(24).truncate().text_size(13.5).text_color(t.muted).child(`?  ${plain(this.asked(s, q))}`)));
     }
