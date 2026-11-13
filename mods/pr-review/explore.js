@@ -145,8 +145,9 @@ export function pinAnchor(turn) {
   return null;
 }
 // doc: {<source>: {at, pins: [{id, anchor, summary, evidence, text, q, at}]}}; one pin per answer, bounded.
-export function pinAdd(doc, key, turn, now = Date.now()) {
-  const anchor = pinAnchor(turn);
+// stamp: {code, head} of a code pin, what its lines read when pinned (pr.js isStale).
+export function pinAdd(doc, key, turn, now = Date.now(), stamp = null) {
+  const anchor = pinAnchor(turn) && { ...pinAnchor(turn), ...(stamp ?? {}) };
   if (!anchor) return doc;
   const pin = { id: `p${turn.at ?? now}`, anchor, summary: pinSummary(turn.a?.text), evidence: turn.a?.evidence?.[0]?.at ?? null, text: turn.a?.text ?? "", q: turn.q ?? "", at: now };
   const pins = [...(doc?.[key]?.pins ?? []).filter((p) => p.id !== pin.id), pin].slice(-PINS), next = { ...(doc ?? {}), [key]: { at: now, pins } };

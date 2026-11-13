@@ -114,6 +114,29 @@ for (const n of [0, 3, 310]) {
   v.tab = "files"; v.page = null; v.deep.drawer[v.deepKey()] = "open";
   ok(`${n} files: back to the list with the drawer open`, () => { v.render(cx); layout(0.5); v.autoFold(cx); });
 }
+// The Comments tab and the diff with GitHub's resolved and outdated threads, a bot's old and new comments, and a
+// stale comment of yours (its line read "y" when written, "x" now).
+{
+  const { withThreadState } = await import("./threads.js");
+  const v = review(3), g = (id, user, extra) => ({ id, path: "src/f0.ts", line: id, side: "RIGHT", user, user_type: user.endsWith("[bot]") ? "Bot" : "User", at: `2024-01-0${id}`, commit_id: "c1", body: `b${id}`, ...extra });
+  v.gh = withThreadState([g(1, "anna"), g(2, "anna", { in_reply_to_id: 1 }), g(3, "lint[bot]"), g(4, "lint[bot]", { commit_id: "c2" }), g(5, "bob", { line: null, original_line: 9, outdated: true })],
+    [{ id: 1, resolved: true, outdated: false }]);
+  v.head = "new";
+  v.comments = [{ id: "s1", file: "src/f0.ts", start: 1, end: 1, old: false, text: "stale", code: "y", head: "old" }, { id: "s2", file: "src/f0.ts", start: 2, end: 2, old: false, text: "fresh", code: "x", head: "old" }];
+  assert.deepEqual([...v.staleNow()], ["s1"]);
+  assert.deepEqual([v.ghNow().resolved, v.ghNow().botsHidden, v.ghNow().list.map((x) => x.id)], [1, 1, [4, 5]], "resolved hidden, the bot's older commit hidden");
+  v.tab = "comments"; v.page = null;
+  ok("Comments tab: resolved, bots, outdated, stale", () => v.render(cx));
+  assert.ok(v.commentRowsNow().find((r) => r.id === "s1").stale && v.commentRowsNow().find((r) => r.id === "gh5").outdated);
+  v.showResolved = true; v.allBots = true;
+  ok("Comments tab: resolved and all bot comments shown", () => v.render(cx));
+  assert.ok(v.commentRowsNow().find((r) => r.id === "gh1").resolved);
+  v.tab = "files";
+  ok("Files: the cards with STALE, Resolved and an outdated comment at the file's end", () => { v.render(cx); layout(0); });
+  const items = v.filesItems().items;
+  assert.ok(items.some((it) => it.t === "gh" && it.loose && it.g.id === 5), "the outdated comment shows loose");
+  assert.ok(items.some((it) => it.t === "gh" && !it.loose && it.g.id === 1), "a resolved thread under its line once shown");
+}
 // The minimized review: nothing without one, an entry with Open and ✕ with one.
 globalThis.__rv.store.set("review.minimized", null);
 renderMini();

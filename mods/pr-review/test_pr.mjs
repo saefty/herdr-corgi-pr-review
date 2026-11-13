@@ -1,7 +1,7 @@
 // Run: node test_pr.mjs
 import assert from "node:assert/strict";
 import { diffRows, buildPrompt, nextChange, splitPatch, selection, lineLabel, anchorRow, buildReview, hunksOf, budget,
-  mapReview, suspectComment, fileRows, fileTree, reviewRequest, stepKey, lowValue, lineKey, rangeOf } from "./pr.js";
+  mapReview, suspectComment, fileRows, fileTree, reviewRequest, stepKey, lowValue, lineKey, rangeOf, codeOf, isStale } from "./pr.js";
 
 const rows = diffRows(["@@ -1,3 +1,3 @@", " a", "-b", "+B", " c", "@@ -10,2 +10,2 @@", " x", "+y"]);
 assert.deepEqual(rows[3], { kind: "+", number: 2, n: 2, text: "B" });
@@ -33,6 +33,18 @@ assert.equal(lineLabel(gone), "line 3 (old, removed)");
 assert.equal(anchorRow(r2, gone), 3);
 assert.equal(anchorRow(r2, sel), 5);
 assert.equal(anchorRow(r2, { end: 99, old: false }), -1);
+// STALE: a selection records its lines' text; the same lines changed after a push mark it, unknown ones never do.
+assert.equal(sel.code, "C\nD");
+assert.equal(gone.code, "c");
+assert.equal(codeOf(r2, { start: 19, end: 20, old: false }), undefined, "line 19 is not in the rows");
+const pushed = diffRows(["@@ -1,5 +1,5 @@", " a", " b", "-c", "+C", "+E", " e"]);
+const mine = { ...sel, head: "h1" };
+assert.equal(isStale(mine, "h2", codeOf(pushed, mine)), true, "line 4 reads E now");
+assert.equal(isStale(mine, "h2", codeOf(r2, mine)), false, "same lines after a push");
+assert.equal(isStale(mine, "h1", codeOf(pushed, mine)), false, "same head");
+assert.equal(isStale({ ...mine, head: null }, "h2", codeOf(pushed, mine)), true, "head unknown then: the text decides");
+assert.equal(isStale({ ...mine, code: undefined }, "h2", "x"), false, "an old comment without a record");
+assert.equal(isStale(mine, "h2", undefined), false, "its lines are not in the diff now");
 
 const review = buildReview({ pr: { number: 7, title: "Fix" }, comments: [{ file: "a.js", ...gone, hunk: "-c", text: "Why removed?" }, { file: "b.js", text: " Name? " }] });
 assert.equal(review, "PR #7 \"Fix\": code review with 2 points. Work through the points one by one: answer questions, make the requested changes. At the end, say briefly per point what you did." +
@@ -102,7 +114,7 @@ assert.deepEqual(mapReview({ steps: [{ title: "s", hunks: ["h1"] }], suspects: [
 
 // Suggestion -> pending comment: the same anchor a click on that line gives.
 const rows1 = diffRows(rh[0].lines), sc = suspectComment(rv.suspects[1], rows1, "id1");
-assert.deepEqual({ ...sc, hunk: undefined }, { id: "id1", file: "a.js", start: 11, end: 11, old: false, hunk: undefined, text: "boom", from: "ki" });
+assert.deepEqual({ ...sc, hunk: undefined }, { id: "id1", file: "a.js", start: 11, end: 11, old: false, hunk: undefined, code: "new", text: "boom", from: "ki" });
 assert.equal(sc.hunk, selection(rows1, rows1.findIndex((r) => r.kind === "+")).hunk);
 assert.equal(suspectComment({ ...rv.suspects[1], line: 500 }, rows1, "x"), null);
 

@@ -147,3 +147,27 @@ console.log("threads ok");
   assert.deepEqual(TH.showCounts({ rows, ai: 3, agents: 2 }), { mine: 4, ai: 4, agents: 2, github: 1, notes: 1 });
   console.log("comments tab ok");
 }
+// ---- GitHub: resolved threads, bots by their latest reviewed commit, outdated comments; STALE on own rows
+{
+  const g = (id, user, at, commit, extra = {}) => ({ id, path: "a.py", line: id, side: "RIGHT", user, user_type: user.endsWith("[bot]") ? "Bot" : "User", at, commit_id: commit, body: `b${id}`, ...extra });
+  const gh = [g(1, "anna", "2024-01-01", "c1"), g(2, "anna", "2024-01-01", "c1", { in_reply_to_id: 1 }),
+    g(3, "lint[bot]", "2024-01-02", "c1"), g(4, "lint[bot]", "2024-01-02", "c1"), g(5, "anna", "2024-01-03", "c1", { in_reply_to_id: 3 }),
+    g(6, "lint[bot]", "2024-01-05", "c2"), g(7, "ci", "2024-01-01", "c0", { user_type: "Bot" }), g(8, "anna", "2024-01-09", "c0")];
+  const st = TH.withThreadState(gh, [{ id: 1, resolved: true, outdated: false }, { id: 6, resolved: false, outdated: true }, { id: null, resolved: true }]);
+  assert.deepEqual(st.filter((x) => x.resolved).map((x) => x.id), [1, 2], "a resolved thread: its first comment and its replies");
+  assert.equal(st.find((x) => x.id === 6).outdated, true);
+  assert.ok(TH.isBot(gh[2]) && TH.isBot(gh[6]) && !TH.isBot(gh[0]));
+  const { kept, hidden } = TH.latestBotComments(st);
+  assert.deepEqual(kept.map((x) => x.id), [1, 2, 6, 7, 8], "lint[bot]'s comments on c1 go with the reply to them; ci keeps its only commit; people stay");
+  assert.equal(hidden, 3);
+  assert.deepEqual(TH.ghShown(st), { list: kept.filter((x) => !x.resolved), resolved: 1, botsHidden: 3 }, "by default: no resolved threads, no older bot comments");
+  assert.deepEqual(TH.ghShown(st, { resolved: true, allBots: true }).list.map((x) => x.id), [1, 2, 3, 4, 5, 6, 7, 8]);
+  // Outdated (line null) and STALE rows.
+  const rows = TH.commentRows({ pending: [{ id: "p1", file: "a.py", end: 2, text: "p" }], gh: [{ id: 9, path: "a.py", line: null, original_line: 4, outdated: true, resolved: true, body: "old" }],
+    notes: [{ id: "n1", anchor: { file: "a.py", end: 3 }, summary: "n" }], stale: (id) => id === "p1" || id === "n1" });
+  assert.deepEqual(rows.map((r) => [r.id, r.line, Boolean(r.stale), Boolean(r.outdated), Boolean(r.resolved)]), [["p1", 2, true, false, false], ["n1", 3, true, false, false], ["gh9", 4, false, true, true]]);
+  // Threads keep what the lines read when written.
+  const d2 = TH.addThreads({}, "k", [{ id: "c9", file: "a.py", start: 1, end: 1, text: "x", code: "line", head: "h1" }], { route: "agent" }, 1);
+  assert.deepEqual([TH.threadsOf(d2, "k")[0].code, TH.threadsOf(d2, "k")[0].head], ["line", "h1"]);
+  console.log("github comments ok");
+}

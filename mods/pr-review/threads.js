@@ -24,7 +24,8 @@ function bound(doc, key, threads, now, extra = {}) {
 // one sent again replaces its thread.
 export function addThreads(doc, key, comments, how, now = Date.now()) {
   const made = withIds(comments).map((c) => ({ id: c.id, file: c.file, start: c.start, end: c.end, old: Boolean(c.old), hunk: c.hunk ?? null, text: c.text, from: c.from ?? null,
-    route: how.route, sentAt: now, agent: how.agent ?? null, dry: Boolean(how.dry), ghId: how.gh?.[c.id]?.ghId ?? null, url: how.gh?.[c.id]?.url ?? null, followups: [] }));
+    route: how.route, sentAt: now, agent: how.agent ?? null, dry: Boolean(how.dry), ghId: how.gh?.[c.id]?.ghId ?? null, url: how.gh?.[c.id]?.url ?? null, followups: [],
+    code: c.code ?? null, head: c.head ?? null })); // what the lines read when written (pr.js isStale)
   const ids = new Set(made.map((t) => t.id));
   return bound(doc, key, [...threadsOf(doc, key).filter((t) => !ids.has(t.id)), ...made], now);
 }
@@ -216,16 +217,43 @@ export const SHOW_KINDS = [["mine", "Yours"], ["ai", "AI"], ["agents", "Agents"]
 export const showOf = (s) => Object.fromEntries(SHOW_KINDS.map(([k]) => [k, s?.[k] !== false])); // all on by default
 // Every comment of the PR as a row for the Comments tab: pending ones, sent threads (with their state and replies),
 // other people's GitHub comments, notes. state: pending | waiting | replied | fixed | declined | github | note.
-export function commentRows({ pending = [], threads = [], replies = {}, gh = [], ghOwn = () => false, notes = [] }) {
-  const rows = withIds(pending).map((c) => ({ id: c.id, kind: "pending", src: c.from === "ki" ? "ai" : "mine", file: c.file, line: c.end, old: Boolean(c.old), text: c.text, state: "pending", replies: 0 }));
+// stale(id): the person's own comment or note whose lines changed since (pr.js isStale).
+export function commentRows({ pending = [], threads = [], replies = {}, gh = [], ghOwn = () => false, notes = [], stale = () => false }) {
+  const rows = withIds(pending).map((c) => ({ id: c.id, kind: "pending", src: c.from === "ki" ? "ai" : "mine", file: c.file, line: c.end, old: Boolean(c.old), text: c.text, state: "pending", replies: 0, stale: stale(c.id) }));
   for (const t of threads) {
     const r = replies[t.id] ?? [], last = r.at(-1)?.status, g = ghRepliesTo(gh, t.ghId).length;
     const state = last === "fixed" ? "fixed" : last === "wontfix" ? "declined" : last || g ? "replied" : "waiting";
-    rows.push({ id: t.id, kind: "thread", src: "mine", file: t.file, line: t.end, old: Boolean(t.old), text: t.text, state, replies: r.length + g, route: t.route });
+    rows.push({ id: t.id, kind: "thread", src: "mine", file: t.file, line: t.end, old: Boolean(t.old), text: t.text, state, replies: r.length + g, route: t.route, stale: stale(t.id) });
   }
-  for (const g of gh) if (!ghOwn(g) && !g.in_reply_to_id) rows.push({ id: `gh${g.id}`, kind: "gh", src: "github", file: g.path, line: g.line, old: g.side === "LEFT", text: g.body ?? "", state: "github", replies: gh.filter((x) => x.in_reply_to_id === g.id).length, author: g.user });
-  for (const p of notes) if (p.anchor?.file) rows.push({ id: p.id, kind: "note", src: "notes", file: p.anchor.file, line: p.anchor.end, old: Boolean(p.anchor.old), text: p.summary, state: "note", replies: 0 });
+  for (const g of gh) if (!ghOwn(g) && !g.in_reply_to_id) rows.push({ id: `gh${g.id}`, kind: "gh", src: "github", file: g.path, line: g.line ?? g.original_line ?? 0, old: g.side === "LEFT", text: g.body ?? "", state: "github",
+    replies: gh.filter((x) => x.in_reply_to_id === g.id).length, author: g.user, resolved: Boolean(g.resolved), outdated: Boolean(g.outdated) });
+  for (const p of notes) if (p.anchor?.file) rows.push({ id: p.id, kind: "note", src: "notes", file: p.anchor.file, line: p.anchor.end, old: Boolean(p.anchor.old), text: p.summary, state: "note", replies: 0, stale: stale(p.id) });
   return rows.sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line);
+}
+
+// ---- GitHub comments: resolved threads, bots, outdated ones
+
+// The review threads' state (GraphQL reviewThreads nodes {resolved, outdated, id: the first comment's databaseId})
+// onto the REST comments: a thread's first comment has that id, its replies point to it with in_reply_to_id.
+export function withThreadState(gh, threads = []) {
+  const by = new Map(threads.filter((t) => t?.id != null).map((t) => [t.id, t]));
+  return gh.map((g) => { const t = by.get(g.in_reply_to_id ?? g.id); return t ? { ...g, resolved: Boolean(t.resolved), outdated: Boolean(g.outdated || t.outdated) } : g; });
+}
+export const isBot = (g) => g.user_type === "Bot" || /\[bot\]$/.test(g.user ?? "");
+// Bots comment again on every push: per bot only its comments on the commit it reviewed last (the newest comment's
+// commit_id) stay, with the replies to them. People's comments always stay. hidden: how many went.
+export function latestBotComments(gh) {
+  const last = {};
+  for (const g of gh) if (isBot(g) && !g.in_reply_to_id && (!last[g.user] || String(g.at) > String(last[g.user].at))) last[g.user] = g;
+  const drop = new Set(gh.filter((g) => isBot(g) && !g.in_reply_to_id && g.commit_id !== last[g.user].commit_id).map((g) => g.id));
+  const kept = gh.filter((g) => !drop.has(g.id) && !drop.has(g.in_reply_to_id));
+  return { kept, hidden: gh.length - kept.length };
+}
+// What the review shows of GitHub's comments: older bot comments only with allBots, resolved threads only with
+// resolved. Counts for the switches: resolved threads (after the bot filter) and the bot comments hidden.
+export function ghShown(gh, { resolved = false, allBots = false } = {}) {
+  const { kept, hidden } = latestBotComments(gh ?? []), list = allBots ? gh ?? [] : kept;
+  return { list: resolved ? list : list.filter((g) => !g.resolved), resolved: list.filter((g) => g.resolved && !g.in_reply_to_id).length, botsHidden: hidden };
 }
 // "5 comments · 2 pending · 1 waiting on agent · 2 fixed"
 export function commentSummary(rows) {

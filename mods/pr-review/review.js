@@ -19,7 +19,7 @@ import { highlightJob, highlightStep, highlightLines, langOf, colors, renderLine
 import { lookup, warm, contents, vscodeArgs, where, setTrusted } from "./defs.js";
 import { diffRows, hunksOf, selection, uiLine, lineKey, rangeOf, MODELS, tierOf, priceOf, reviewRequest, mapReview, suspectComment, stepKey, fileRows, fileTree, atLine, splitPatch } from "./pr.js";
 import { ghTarget, lowValue, markReviewed, sinceBase, verifyCandidates, applyVerification, blastArch, preMergeChecks, mergeBlockers, triageOf } from "./pr.js";
-import { diffLines, inDiff, ghReview, lineThreads, suggestionBlock, buildReview, layoutPlan, specElements, diagramsState } from "./pr.js";
+import { diffLines, inDiff, ghReview, lineThreads, suggestionBlock, buildReview, layoutPlan, specElements, diagramsState, codeOf, isStale } from "./pr.js";
 import { wheelStep, foldOnOpen, allocate, recenter, hsVisible } from "./views.js";
 import { archView, archModel, archLegend, visualsCard, visualCard, statCard, segBar, foldCard, chip, legend, specTag, sourceLegend, SEVERITY_COLOR } from "./stack.js";
 import { hasSources, archLayout, archBands } from "./arch.js";
@@ -97,6 +97,7 @@ const TAB_TIP = { files: "The changed files; tick the ones you have viewed", ste
 const COVER_TIP = { seen: "The diff does what this asks", partly: "The diff does only part of what this asks", absent: "Nothing in the diff does this", extra: "The diff does this, but it was not asked for" };
 const COMPOSE_TIP = { insertSuggestion: "Insert the selected lines as a GitHub suggestion block", closeComposer: "Close the composer without saving (Esc)", addDraft: "Add to your pending review; nothing is posted yet (⌘↩)", singleComment: "Post this one comment at once, or preview it first when it goes to an agent" };
 const STATE_TIP = { pending: "Pending: written by you, not sent yet", waiting: "Waiting on agent: sent, no reply yet", replied: "Agent replied, or someone answered on GitHub", fixed: "Fixed: the agent reports it done", declined: "Declined: the agent chose not to change it", github: "A comment from GitHub", note: "A pinned note, private to you" };
+const STALE_TIP = "The code here changed since this comment was written";
 const CARD_W = 720, CARD_MIN = 420, CARD_HEAD = 32, CARD_REPLY = 34, CARD_GAP = 6;
 const THREAD_COLOR = { fixed: "ansi2", answered: "accent", wontfix: "muted", question: "ansi3", sent: "ansi4", posted: "ansi4" };
 const PROBE = "0".repeat(40);
@@ -883,7 +884,7 @@ export const ReviewMode = {
   findingComment(f, cx) {
     const rows = this.rowsFor(f.file), i = rows.findIndex((r) => atLine(r, f.line, false));
     const anchor = i >= 0 ? selection(rows, i) : { start: f.line, end: f.line, old: false, hunk: f.code };
-    this.comments = [...this.comments, { id: Date.now().toString(36), file: f.file, ...anchor, text: `${f.title}: ${f.detail}${f.suggestion ? ` Suggested: ${f.suggestion}` : ""}`, from: f.reviewer }];
+    this.comments = [...this.comments, { id: Date.now().toString(36), file: f.file, ...anchor, head: this.head, text: `${f.title}: ${f.detail}${f.suggestion ? ` Suggested: ${f.suggestion}` : ""}`, from: f.reviewer }];
     this.persist(cx); this.note = "Added to the pending review"; cx.notify();
   },
 
@@ -1104,7 +1105,7 @@ export const ReviewMode = {
     if (items.length + rows.length > cap) { items.push({ t: "note", text: `${rows.length} lines not shown: the view holds about ${cap} lines at once. Collapse other files (click their header) to open this one.` }); return []; }
     const sugs = this.openSugs(path), cms = this.comments.filter((c) => c.file === path), used = new Set();
     const finds = this.findings().filter((f) => f.file === path && ["open", "progress", "recheck"].includes(this.fstatus(f)));
-    const own = this.ghOwn(), gh = this.gh.filter((g) => g.path === path && !own(g)), f = this.fsel, range = this.composing && f?.path === path && rangeOf(rows, f.a, f.b);
+    const own = this.ghOwn(), gh = this.ghNow().list.filter((g) => g.path === path && !own(g)), ghUsed = new Set(), f = this.fsel, range = this.composing && f?.path === path && rangeOf(rows, f.a, f.b);
     const ths = this.threads().filter((x) => x.file === path), notes = codePins(this.pins(), path);
     const show = this.show();
     const thread = { gh, editId: this.composing ? this.editing?.id ?? null : null, composeKey: range && at.compose === undefined ? lineKey(rows[range[1]]) : null };
@@ -1124,6 +1125,7 @@ export const ReviewMode = {
         if (it.t === "composeact" && at.compose !== items.length - 1) continue;
         if (it.t === "comment") { const k = it.c.from === "ki" ? "ai" : "mine"; if (show[k]) items.push(...this.cardItems("c", it.c)); else hide(k === "ai" ? "AI" : "Yours"); continue; }
         if (it.t === "cact") continue;
+        if (it.t === "gh") ghUsed.add(it.g);
         if (it.t === "gh" && !show.github) { hide("GitHub"); continue; }
         items.push(it);
       }
@@ -1133,7 +1135,8 @@ export const ReviewMode = {
       const n = Object.values(hidden).reduce((a, b) => a + b, 0);
       if (n) items.push({ t: "hidden", text: `${n} hidden · ${Object.keys(hidden).join(", ")}`, key: `${path}:${lineKey(r)}` });
     });
-    return cms.filter((c) => !used.has(c));
+    // What found no line here (pending comments, GitHub's outdated ones): the file's end shows them (filesItems).
+    return [...cms.filter((c) => !used.has(c)), ...gh.filter((g) => !ghUsed.has(g)).map((g) => ({ gh: g }))];
   },
 
   stepsItems(steps = this.steps()) {
@@ -1188,6 +1191,7 @@ export const ReviewMode = {
       const rows = this.memoRows(`0\0${f.path}`, f.path, hs, full, f);
       const loose = this.pushRows(items, at, rows, f.path, (r) => (r.h === undefined ? null : hs[r.h].id));
       for (const c of loose) {
+        if (c.gh) { if (this.show().github) items.push({ t: "gh", g: c.gh, loose: true }); continue; }
         if (this.composing && this.editing?.id === c.id && at.compose === undefined) { at.compose = items.length; items.push({ t: "compose", c, loose: true }, { t: "composeact", c }); }
         else items.push(...this.cardItems("c", c, true));
       }
@@ -1329,7 +1333,7 @@ export const ReviewMode = {
   takeSug(s, cx) {
     const h = this.byId.get(s.hunk), c = h && suspectComment(s, h.rows, Date.now().toString(36));
     if (!c) { this.note = "Could not accept: that line is no longer in the diff"; return; }
-    this.comments = [...this.comments, c]; this.persist(cx);
+    this.comments = [...this.comments, { ...c, head: this.head }]; this.persist(cx);
     this.prog.handled[s.key] = "taken"; this.saveProgress(cx); this.sug = null;
   },
 
@@ -1666,6 +1670,7 @@ export const ReviewMode = {
           .flex().items_center().justify_center().text_size(10).text_color(t.accent_foreground).opacity(selMode ? 1 : 0).hover((s) => s.opacity(1)).child(sel ? "✓" : "")))
         .child(avatar(c.author, c.src)).child(div().flex_none().font_semibold().text_color(c.src === "notes" ? t.ansi5 : t.foreground).child(c.author))
         .child(div().flex_none().text_color(t.muted).child(c.time)).child(pillC(c.status).id(`rv-chs-${c.key}`).tooltip(`Where this comment stands: ${c.status[0]}`))
+        .when(this.staleNow().has(c.id), (e) => e.child(pillC(["STALE", "ansi3"]).id(`rv-chst-${c.key}`).tooltip(STALE_TIP)))
         .child(div().flex_1())
         .when(Boolean(c.action), (e) => e.child(div().id(`rv-cha-${c.key}`).tooltip(c.action[0] === "Fix" ? "Fix this with an agent: a preview first; a sub-agent never pushes, the PR's agent takes the fix over and pushes" : c.action[0] === "Apply to PR" ? "Cherry-pick the fix onto the PR's checkout; nothing is pushed" : c.action[0] === "Go to fix" ? "Show the fix agent's terminal" : "Turn this note into a pending comment").accessibility_label(c.action[0]).w(z.action[1] - z.action[0]).h(22).flex_none().flex().items_center().justify_center().gap(4).rounded(5)
           .text_color(t.muted).hover((s) => s.bg(t.hover).text_color(t.foreground)).child(c.action[0] === "Fix" ? "✦ Fix" : c.action[0])))
@@ -1729,7 +1734,7 @@ export const ReviewMode = {
     const text = this.draft.value().trim(), anchor = this.selAnchor();
     if (!text) return null;
     if (!anchor) { this.note = "Select a line first (click its number; shift-click: a range)"; return null; }
-    return { id: Date.now().toString(36), file: this.fsel.path, ...anchor, text };
+    return { id: Date.now().toString(36), file: this.fsel.path, ...anchor, head: this.head, text };
   },
 
   // "Start a review" / "Add review comment" / "Update comment" (⌘↩): into the pending review.
@@ -1877,18 +1882,32 @@ export const ReviewMode = {
     cx.notify();
   },
 
-  // GitHub's review comments on this PR, under their lines (read only; outdated ones, without a line, are left out).
+  // GitHub's review comments on this PR, under their lines (read only). Outdated ones (no line now, GitHub's "Outdated")
+  // stay and show like other comments whose line is gone. One GraphQL call adds each thread's resolved state; when it
+  // fails the comments still show, just none as resolved.
   loadGhComments(cx) {
     const pr = this.prSel, m = /github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/.exec(pr?.url ?? "");
     if (!m || this.cfg?.dryRun) return; // dry run: no network (the demo)
-    const env = this.ctxEnv(this.ctxId()), argv = [...env, "gh", "api", "--paginate", `repos/${m[1]}/pulls/${m[2]}/comments?per_page=100`,
-      "--jq", ".[] | select(.line != null) | {id, path, line, side, user: .user.login, body, at: .created_at, in_reply_to_id, url: .html_url}"];
+    const env = this.ctxEnv(this.ctxId()), [owner, name] = m[1].split("/");
+    const rest = [...env, "gh", "api", "--paginate", `repos/${m[1]}/pulls/${m[2]}/comments?per_page=100`,
+      "--jq", ".[] | {id, path, line, original_line, side, user: .user.login, user_type: .user.type, commit_id, original_commit_id, outdated: (.line == null and .subject_type != \"file\"), body, at: .created_at, in_reply_to_id, url: .html_url}"];
+    const query = "query($owner: String!, $name: String!, $number: Int!, $endCursor: String) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { " +
+      "reviewThreads(first: 100, after: $endCursor) { pageInfo { hasNextPage endCursor } nodes { isResolved isOutdated comments(first: 1) { nodes { databaseId } } } } } } }";
+    const graph = [...env, "gh", "api", "graphql", "--paginate", "-f", `query=${query}`, "-f", `owner=${owner}`, "-f", `name=${name}`, "-F", `number=${m[2]}`,
+      "--jq", ".data.repository.pullRequest.reviewThreads.nodes[] | {id: .comments.nodes[0].databaseId, resolved: .isResolved, outdated: .isOutdated}"];
+    const lines = (r) => (r?.code === 0 ? r.stdout.split("\n").filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean) : null);
     cx.spawn(async (cx) => {
-      const r = await exec(argv[0], argv.slice(1), { timeout: 30000 }).catch(() => null);
+      const [r, t] = await Promise.all([rest, graph].map((a) => exec(a[0], a.slice(1), { timeout: 30000 }).catch(() => null)));
       if (r?.code !== 0 || this.prSel?.url !== pr.url) return;
-      this.gh = r.stdout.split("\n").filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+      this.gh = TH.withThreadState(lines(r), lines(t) ?? []);
       cx.notify();
     });
+  },
+  // GitHub's comments as the review shows them (threads.js ghShown), memoized: the Show switch's resolved and bots.
+  ghNow() {
+    const deps = [this.gh, this.showResolved, this.allBots];
+    if (!this.ghOf || this.ghOf.deps.some((d, i) => d !== deps[i])) this.ghOf = { deps, ...TH.ghShown(this.gh, { resolved: this.showResolved, allBots: this.allBots }) };
+    return this.ghOf;
   },
 
   onReviewKey(e, cx) {
@@ -2021,23 +2040,45 @@ export const ReviewMode = {
   toggleShow(k) { setShared("review.show", { ...this.show(), [k]: !this.show()[k] }); },
   // Every comment of the PR as rows (threads.js commentRows), memoized on what they come from.
   commentRowsNow() {
-    const deps = [this.comments, this.threadDoc, this.replies, this.gh, this.deep.pins, this.prSel?.url];
+    const gh = this.ghNow().list, stale = this.staleNow(), deps = [this.comments, this.threadDoc, this.replies, gh, this.deep.pins, this.prSel?.url, stale];
     if (!this.rowsOf || this.rowsOf.deps.some((d, i) => d !== deps[i])) {
-      this.rowsOf = { deps, rows: TH.commentRows({ pending: this.comments ?? [], threads: this.threads(), replies: this.replies, gh: this.gh, ghOwn: this.ghOwn(), notes: this.pins() }) };
+      // Your own posted threads keep all their GitHub replies; the rest is what the Show switch lets through.
+      const own = this.ghOwn();
+      this.rowsOf = { deps, rows: TH.commentRows({ pending: this.comments ?? [], threads: this.threads(), replies: this.replies, gh: [...this.gh.filter(own), ...gh.filter((g) => !own(g))],
+        ghOwn: own, notes: this.pins(), stale: (id) => stale.has(id) }) };
     }
     return this.rowsOf.rows;
+  },
+  // Your comments and notes whose lines changed since you wrote them (pr.js isStale), by id; memoized, since the
+  // cards ask on every render. Only ones that recorded their lines (new since this check) can be marked.
+  staleNow() {
+    const deps = [this.comments, this.threadDoc, this.deep.pins, this.fileHunks, this.head, this.prSel?.url];
+    if (!this.staleOf || this.staleOf.deps.some((d, i) => d !== deps[i])) {
+      const ids = new Set(), check = (id, a) => { if (a?.code != null && a.file && isStale(a, this.head, codeOf(this.rowsFor(a.file, true), a))) ids.add(id); };
+      for (const c of TH.withIds(this.comments ?? [])) check(c.id, c);
+      for (const th of this.threads()) check(th.id, th);
+      for (const p of this.pins()) check(p.id, p.anchor);
+      this.staleOf = { deps, ids };
+    }
+    return this.staleOf.ids;
   },
   showCountsNow() {
     const agents = Object.values(this.replies ?? {}).reduce((n, r) => n + r.length, 0);
     return TH.showCounts({ rows: this.commentRowsNow(), ai: this.openSugs().length + this.openFindings().length, agents });
   },
-  // The switch as chips: what shows in the diff, with counts.
+  // The switch as chips: what shows in the diff, with counts. Resolved GitHub threads (off by default) get a chip of
+  // their own while there are any; older bot comments a muted line that shows them all.
   showChips(t, id) {
-    const show = this.show(), counts = this.showCountsNow();
+    const show = this.show(), counts = this.showCountsNow(), g = this.ghNow();
+    const sw = (k, on, label, n, tip, click) => div().id(`${id}-${k}`).tooltip(tip).px(10).h(24).flex().items_center().gap(5).rounded(12).border_1().cursor_pointer().text_size(12)
+      .border_color(on ? t[SOURCE[k]] ?? t.accent : t.border).text_color(on ? t.foreground : t.dim).hover((s) => s.bg(t.hover))
+      .on_click((_e, cx) => { click(); cx.notify(); }).child(label).child(div().text_color(t.muted).child(String(n ?? 0)));
     return h_flex().flex_none().gap(6).items_center().child(div().text_size(12.5).text_color(t.muted).child("Show"))
-      .children(TH.SHOW_KINDS.map(([k, label]) => div().id(`${id}-${k}`).tooltip(`${SHOW_TIP[k]}: click to hide or show them in the diff`).px(10).h(24).flex().items_center().gap(5).rounded(12).border_1().cursor_pointer().text_size(12)
-        .border_color(show[k] ? t[SOURCE[k]] ?? t.accent : t.border).text_color(show[k] ? t.foreground : t.dim).hover((s) => s.bg(t.hover))
-        .on_click((_e, cx) => { this.toggleShow(k); cx.notify(); }).child(label).child(div().text_color(t.muted).child(String(counts[k] ?? 0)))));
+      .children(TH.SHOW_KINDS.map(([k, label]) => sw(k, show[k], label, counts[k], `${SHOW_TIP[k]}: click to hide or show them in the diff`, () => this.toggleShow(k))))
+      .when(g.resolved > 0, (e) => e.child(sw("resolved", this.showResolved, "Resolved", g.resolved, "GitHub threads marked resolved: hidden by default, click to show or hide them", () => { this.showResolved = !this.showResolved; })))
+      .when(g.botsHidden > 0, (e) => e.child(div().id(`${id}-bots`).tooltip(this.allBots ? "Show only each bot's comments on the commit it reviewed last" : "Bots comment again on every push: only each bot's comments on the commit it reviewed last show. Click to show them all")
+        .flex_none().text_size(12).text_color(t.muted).cursor_pointer().hover((s) => s.text_color(t.foreground)).on_click((_e, cx) => { this.allBots = !this.allBots; cx.notify(); })
+        .child(this.allBots ? `Hide ${g.botsHidden} older bot comments` : `${g.botsHidden} older bot ${g.botsHidden === 1 ? "comment" : "comments"} hidden`)));
   },
   commentsPane(t) {
     const all = this.commentRowsNow(), f = this.cfilter ?? "all", rows = TH.filterRows(all, f, this.show()), sel = new Set(this.selected());
@@ -2064,6 +2105,9 @@ export const ReviewMode = {
                 .child(div().w(40).flex_none().text_size(11.5).text_color(t.muted).child(`${r.old ? "−" : ""}${r.line}`))
                 .child(div().flex_1().min_w(0).truncate().text_size(13).child(plain(String(r.text).split("\n")[0])))
                 .when(r.replies > 0, (e) => e.child(div().id(`rv-crr-${r.id}`).tooltip(`${r.replies} replies in this thread`).flex_none().text_size(11.5).text_color(t.muted).child(`↩ ${r.replies}`)))
+                .when(Boolean(r.stale), (e) => e.child(badge(t, "STALE", t.ansi3).id(`rv-crst-${r.id}`).tooltip(STALE_TIP)))
+                .when(Boolean(r.outdated), (e) => e.child(badge(t, "Outdated", t.muted).id(`rv-cro-${r.id}`).tooltip("GitHub marks this comment outdated: the code it was on changed since")))
+                .when(Boolean(r.resolved), (e) => e.child(badge(t, "Resolved", t.ansi2).id(`rv-crv-${r.id}`).tooltip("This thread is resolved on GitHub")))
                 .child(div().id(`rv-crs-${r.id}`).tooltip(STATE_TIP[r.state] ?? st[0]).flex_none().px(6).h(18).flex().items_center().rounded(9).border_1().border_color(t[st[1]] ?? t.muted).text_size(11).text_color(t[st[1]] ?? t.muted).child(st[0]));
             })])))
         .child(Scrollbar.vertical("rv-comments-left").absolute().inset_0()));
@@ -2983,7 +3027,11 @@ export const ReviewMode = {
   },
 
   pins() { return pinsOf(this.deep.pins, this.deepKey()); },
-  pin(turn, cx) { const key = this.deepKey(); this.updateDeep(cx, (d) => ({ ...d, pins: pinAdd(d.pins, key, turn) })); },
+  // A code note records what its lines read (STALE once they change, staleNow).
+  pin(turn, cx) {
+    const key = this.deepKey(), a = pinAnchor(turn), code = a?.file ? codeOf(this.rowsFor(a.file, true), a) : undefined;
+    this.updateDeep(cx, (d) => ({ ...d, pins: pinAdd(d.pins, key, turn, Date.now(), code === undefined ? null : { code, head: this.head }) }));
+  },
   unpin(id, cx) { const key = this.deepKey(); this.updateDeep(cx, (d) => ({ ...d, pins: pinDrop(d.pins, key, id) })); },
   // A code note: still on a line of the diff, else outdated (kept, shown in the drawer).
   pinOutdated(pin) { const a = pin.anchor; return Boolean(a?.file) && !this.rowsFor(a.file, true).some((r) => atLine(r, a.end, a.old)); },
@@ -2992,7 +3040,7 @@ export const ReviewMode = {
     const a = pin.anchor, rows = a?.file ? this.rowsFor(a.file, true) : [], i = rows.findIndex((r) => atLine(r, a.end, a.old));
     if (i < 0) { this.note = "Not turned into a comment: its lines are no longer in the diff"; return cx.notify(); }
     const anchor = selection(rows, Math.max(0, rows.findIndex((r) => atLine(r, a.start, a.old))), i);
-    this.comments = [...this.comments, { id: Date.now().toString(36), file: a.file, ...anchor, text: pin.text }]; this.persist(cx);
+    this.comments = [...this.comments, { id: Date.now().toString(36), file: a.file, ...anchor, head: this.head, text: pin.text }]; this.persist(cx);
     this.note = "The note is a pending comment now: it goes out with your review"; cx.notify();
   },
 
@@ -3368,7 +3416,11 @@ export const ReviewMode = {
       return div().w_full().h(this.sizeOf(it)).pl(GUTTER).pr(16).pt(6).child(v_flex().size_full().px(12).pt(8).gap(6).border_l(4).border_r(1).border_t(1).border_b(1)
         .border_color(t.border).bg(t.raised).rounded(4).text_size(13.5)
         .child(h_flex().h(18).gap(8).items_center().text_size(12)
-          .child(div().font_semibold().text_color(t.foreground).child(g.user ?? "?")).child(div().text_color(t.muted).child(`on GitHub · ${g.at ? ago(g.at) : ""}`)))
+          .child(div().font_semibold().text_color(t.foreground).child(g.user ?? "?")).child(div().text_color(t.muted).child(`on GitHub · ${g.at ? ago(g.at) : ""}`))
+          // Its line is gone: say which one it was on (GitHub's original line).
+          .when(Boolean(it.loose), (e) => e.child(div().text_color(t.muted).child(g.line ?? g.original_line ? `· line ${g.line ?? g.original_line}, not shown` : "· on the file")))
+          .when(Boolean(g.outdated), (e) => e.child(badge(t, "Outdated", t.muted).id(`rv-gho-${g.id}`).tooltip("GitHub marks this comment outdated: the code it was on changed since")))
+          .when(Boolean(g.resolved), (e) => e.child(badge(t, "Resolved", t.ansi2).id(`rv-ghr-${g.id}`).tooltip("This thread is resolved on GitHub"))))
         .child(div().flex_1().min_h(0).overflow_hidden().line_height(1.55).whitespace_normal().text_color(t.foreground).child(plain(g.body))));
     }
     if (it.t === "compose") {

@@ -60,9 +60,21 @@ export function selection(rows, a, b = a, ctx = 3, max = 60) {
   while (start > 0 && !edge(rows[start]) && lo - start < ctx) start--;
   while (end + 1 < rows.length && !edge(rows[end + 1]) && end - hi < ctx) end++;
   end = Math.min(end, start + max - 1);
-  const prefix = { "+": "+", "-": "-", " ": " ", "@": "" };
-  return { start: nums[0], end: nums[nums.length - 1], old, hunk: rows.slice(start, end + 1).filter((r) => r.kind !== "gap").map((r) => (prefix[r.kind] ?? "") + r.text).join("\n") };
+  const prefix = { "+": "+", "-": "-", " ": " ", "@": "" }, at = { start: nums[0], end: nums[nums.length - 1], old };
+  // code: the selected lines' text, so a later push that changes them marks the comment STALE (isStale).
+  return { ...at, hunk: rows.slice(start, end + 1).filter((r) => r.kind !== "gap").map((r) => (prefix[r.kind] ?? "") + r.text).join("\n"), code: codeOf(rows.slice(lo, hi + 1), at) };
 }
+
+// The text of lines start..end on a comment's side; undefined unless every one of them is in the rows (a gap, or a
+// line gone from the diff: unknown, never a false STALE).
+export function codeOf(rows, { start, end, old }) {
+  if (start === undefined || end === undefined) return undefined;
+  const lines = rows.filter((r) => r.number >= start && r.number <= end && (old ? r.kind === "-" : r.kind === "+" || r.kind === " "));
+  return lines.length === end - start + 1 ? lines.map((r) => r.text).join("\n") : undefined;
+}
+// A local comment or note whose lines changed since it was written: it recorded their text (code), the head moved
+// (or one of the heads is unknown), and the same lines read otherwise now. Nothing recorded, or unknown now: not stale.
+export const isStale = (a, head, now) => a?.code != null && !(a.head && head && a.head === head) && now !== undefined && now.trim() !== String(a.code).trim();
 
 // The first row of the next (dir 1) or previous (-1) block of changed lines from row i; -1 when none.
 export function nextChange(rows, i, dir) {
