@@ -1,6 +1,6 @@
 // Run: node test_render.mjs  (the review view rendered against stand-ins for gpui-kit, gpui-base and herdr: the first
 // render, the Files list's layout and scrolling (autoFold), 0 / 3 / 310 files, the Architecture page with the Ask drawer
-// open, folded and squeezing. An exception, a null or non-finite number given to an element, a bad virtual-list size
+// open, folded and squeezing, a layer's findings and the Findings tab. An exception, a null or non-finite number given to an element, a bad virtual-list size
 // or key fails it; a ReferenceError here once showed in Herdr as "This view could not be re-rendered — Null".)
 import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
@@ -94,8 +94,9 @@ for (const n of [0, 3, 310]) {
   }
   // A clicked card with its layer opened: the layer's explanation, questions and picture in the card.
   v.ai.arch.nodes[0].at = "src/a.ts:3";
-  v.ai.steps.push({ title: "b", why: "w", text: "x", hunks: [], questions: ["q?"], risk: "high", evidence: ["src/a.ts:1"],
-    visuals: [{ kind: "flow", title: "f", nodes: [{ id: "n1", label: "N1", at: "src/a.ts:3" }, { id: "n2", label: "N2" }], edges: [{ from: "n1", to: "n2", label: "y" }] }] });
+  const lf = { id: "a1", reviewer: "analysis", step: "k", file: "src/f0.ts", line: 2, end: 2, severity: "high", category: "scope", title: "Unrelated", detail: "d", suggestion: "s" };
+  v.ai = { ...v.ai, steps: [...v.ai.steps, { title: "b", why: "w", text: "x", hunks: [], questions: ["q?"], risk: "high", evidence: ["src/a.ts:1"], findings: [lf], // a new analysis, as the view gets one
+    visuals: [{ kind: "flow", title: "f", nodes: [{ id: "n1", label: "N1", at: "src/a.ts:3" }, { id: "n2", label: "N2" }], edges: [{ from: "n1", to: "n2", label: "y" }] }] }] };
   v.archFocus = "a"; v.cardLayersOpen = null; // the first (riskiest) layer starts open
   ok(`${n} files: Architecture page, a card with its layer analysis open below the details`, () => v.render(cx));
   assert.deepEqual(v.cardLayers.list, [v.ai.steps[1]]);
@@ -103,6 +104,12 @@ for (const n of [0, 3, 310]) {
   ok(`${n} files: Architecture page, the layer closed (its highlight still shows)`, () => v.render(cx));
   v.archFocus = null; v.page = null; v.cur = 1;
   ok(`${n} files: the same layer open in the Layers view`, () => v.render(cx));
+  // Its analysis finding: in the layer above, and in the Findings tab (read live from the analysis, linked to its layer).
+  assert.deepEqual(v.findings().map((f) => f.id), ["a1"]); assert.equal(v.layerOf(lf), 1);
+  v.tab = "findings"; v.ffilter = { reviewer: "analysis", severity: "all", status: "open" };
+  ok(`${n} files: the Findings tab with an analysis finding`, () => v.render(cx));
+  v.ai = { ...v.ai, steps: v.ai.steps.map((s) => ({ ...s, findings: [] })) };
+  assert.deepEqual(v.findings(), [], "a finding the newest analysis no longer has is gone");
   v.tab = "files"; v.page = null; v.deep.drawer[v.deepKey()] = "open";
   ok(`${n} files: back to the list with the drawer open`, () => { v.render(cx); layout(0.5); v.autoFold(cx); });
 }

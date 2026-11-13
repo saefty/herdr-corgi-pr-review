@@ -83,7 +83,8 @@ const ctxDoc = () => shared(C.CONTEXTS_KEY);
 const prCtx = (pr) => C.prContext(ctxDoc(), pr, home());
 const ALL_REVIEWERS = { claude: ["Claude code review", "ansi5"], security: ["Security review", "ansi1"], codex: ["Codex review", "ansi6"] };
 // Codex is optional: offered only when `codex` is on PATH (Setup's last check). Labels stay for findings already there.
-const REVIEWERS = ALL_REVIEWERS;
+// The analysis files its own findings inside its layers: a label and colour here, never a run of its own.
+const REVIEWERS = { ...ALL_REVIEWERS, analysis: ["Architecture review", "ansi4"] };
 const reviewersNow = () => Object.entries(ALL_REVIEWERS).filter(([k]) => k !== "codex" || hasTool("codex"));
 const FSTATUS = { open: ["Open", "muted"], progress: ["In progress", "ansi3"], fixed: ["Fixed ✓", "ansi2"], dismissed: ["Dismissed", "dim"], recheck: ["Recheck (code changed)", "ansi3"] };
 const SEV = { high: "ansi1", medium: "ansi3", low: "ansi4" };
@@ -328,7 +329,7 @@ export const ReviewMode = {
     else if (name === "findings") this.tab = "findings";
     else if (name === "back") leave();
     else if (name === "finish") { this.finishOpen = !this.finishOpen; if (this.finishOpen) this.loadGhLogin(cx); }
-    else if (name === "discuss") { const f = this.find.list.find((x) => x.id === arg); if (f) this.discuss(f, cx); } // discuss:<finding id> (scripts, keys)
+    else if (name === "discuss") { const f = this.findings().find((x) => x.id === arg); if (f) this.discuss(f, cx); } // discuss:<finding id> (scripts, keys)
     else if (name === "keys") openOverlay({ mod: "pr-review", props: { part: "keys" }, kind: "popup", ...KEYS_POP });
     else if (name === "comment") { // comment:<path>:<line>[-<end>]: the composer under that new-side line (scripts, tests)
       const m = /^(.*):(\d+)(?:-(\d+))?$/.exec(arg);
@@ -558,7 +559,7 @@ export const ReviewMode = {
     const steps = this.ai?.steps ?? [];
     const th = TH.threadCounts(this.threads(), this.replies, this.gh);
     return { steps: steps.length, stepsChecked: steps.filter((s) => this.done(s)).length, files: this.patch?.length ?? 0, filesViewed: this.prog.seen.size,
-      comments: this.comments.length, threads: th.threads, replies: th.replies, fixedThreads: th.fixed, findingsOpen: this.find.list.filter((f) => ["open", "progress", "recheck"].includes(this.fstatus(f))).length };
+      comments: this.comments.length, threads: th.threads, replies: th.replies, fixedThreads: th.fixed, findingsOpen: this.findings().filter((f) => ["open", "progress", "recheck"].includes(this.fstatus(f))).length };
   },
 
   // This PR in pr-data/open-reviews.json (and shared "review.open"), 1.5 s after the last change: opened, worked on,
@@ -749,6 +750,22 @@ export const ReviewMode = {
 
   // ---- reviewer findings (reviewers.py): pr-data/findings/<url hash>.json, the agent's reports in .jsonl
 
+  // Every finding: the reviewers' (the findings file) and the analysis' own, read live from its layers, so one the
+  // newest analysis no longer has is gone everywhere. Only statuses are stored. Memoized: render calls this often.
+  findings() {
+    const ai = this.ai, list = this.find.list, m = this.findMemo;
+    if (m?.ai === ai && m.list === list) return m.all;
+    this.findMemo = { ai, list, all: [...list, ...(ai?.steps ?? []).flatMap((s) => s.findings ?? [])] };
+    return this.findMemo.all;
+  },
+  // The Findings tab with f marked; filters that would hide it are cleared.
+  openFinding(f) {
+    if (!this.shownFindings().some((x) => x.id === f.id)) this.ffilter = { reviewer: "all", severity: "all", status: "all" };
+    this.tab = "findings"; this.ffocus = f.id;
+  },
+  // The index (in steps()) of the layer an analysis finding belongs to, or -1.
+  layerOf(f) { return f.step ? this.steps().findIndex((s) => s.findings?.some((x) => x.id === f.id)) : -1; },
+
   async loadFindings(cx) {
     const url = this.prSel?.url;
     if (!url) return;
@@ -784,7 +801,7 @@ export const ReviewMode = {
   // The findings the filters let through (status "open" includes recheck and in progress).
   shownFindings() {
     const { reviewer, severity, status } = this.ffilter;
-    return this.find.list.filter((f) => (reviewer === "all" || f.reviewer === reviewer) && (severity === "all" || f.severity === severity)
+    return this.findings().filter((f) => (reviewer === "all" || f.reviewer === reviewer) && (severity === "all" || f.severity === severity)
       && (status === "all" || (status === "open" ? ["open", "progress", "recheck"].includes(this.fstatus(f)) : this.fstatus(f) === status)));
   },
 
@@ -810,7 +827,7 @@ export const ReviewMode = {
   },
 
   headNow() { return this.worktree?.head ?? this.head; },
-  verifyList() { return verifyCandidates(this.find.list, this.find.status, this.headNow(), (f) => this.fstatus(f)); },
+  verifyList() { return verifyCandidates(this.findings(), this.find.status, this.headNow(), (f) => this.fstatus(f)); },
 
   // "Verify fixes (N)" (a click): one call (verify.py, "PR fix verification") in the PR's context with the review's
   // model; fixed → ✓, not fixed → open again with the reason, unclear → as it was with the note.
@@ -1064,7 +1081,7 @@ export const ReviewMode = {
     const cap = this.rowCap ?? 9000;
     if (items.length + rows.length > cap) { items.push({ t: "note", text: `${rows.length} lines not shown: the view holds about ${cap} lines at once. Collapse other files (click their header) to open this one.` }); return []; }
     const sugs = this.openSugs(path), cms = this.comments.filter((c) => c.file === path), used = new Set();
-    const finds = this.find.list.filter((f) => f.file === path && ["open", "progress", "recheck"].includes(this.fstatus(f)));
+    const finds = this.findings().filter((f) => f.file === path && ["open", "progress", "recheck"].includes(this.fstatus(f)));
     const own = this.ghOwn(), gh = this.gh.filter((g) => g.path === path && !own(g)), f = this.fsel, range = this.composing && f?.path === path && rangeOf(rows, f.a, f.b);
     const ths = this.threads().filter((x) => x.file === path), notes = codePins(this.pins(), path);
     const show = this.show();
@@ -2157,6 +2174,15 @@ export const ReviewMode = {
         .children(s.questions.map((q, k) => h_flex().id(`${p}-q-${n}-${k}`).tooltip("A question to check while you read this layer").gap(8).items_start().text_size(13.5).line_height(1.5)
           .child(div().flex_none().text_color(t.accent).child("?"))
           .child(div().flex_1().min_w(0).child(TextView.markdown(`${p}-q-${stepKey(s)}-${k}`, this.asked(s, q)))))),
+      s.findings?.length > 0 && v_flex().pt(2).gap(6)
+        .child(div().text_size(11.5).font_semibold().text_color(t.muted).child("FINDINGS"))
+        .children(s.findings.map((f, k) => {
+          const settled = ["fixed", "dismissed"].includes(this.fstatus(f));
+          return h_flex().id(`${p}-f-${n}-${k}`).tooltip(`${f.category}: open this finding in the Findings tab`).gap(8).items_center().text_size(13.5).cursor_pointer()
+            .on_click((_e, cx) => { this.openFinding(f); cx.stop_propagation(); cx.notify(); })
+            .child(badge(t, f.severity, t[SEV[f.severity]]))
+            .child(div().flex_1().min_w(0).truncate().text_color(settled ? t.dim : t.foreground).child(f.title));
+        })),
       bar,
       s.visuals?.length > 0 && visualsCard(s.visuals, t, `${p}-vis-${n}`, (at, cx) => this.jumpTo(at, cx),
         this.visTab?.[tab] ?? 0, (k, cx) => { this.visTab = { ...this.visTab, [tab]: k }; cx.notify(); }, this.wrapX()),
@@ -2197,7 +2223,7 @@ export const ReviewMode = {
   // ---- the Layers tab: the left nav (pages, what needs attention, the layers) and the pages it opens
 
   checksNow() { return preMergeChecks({ title: this.pr?.title ?? this.prSel?.title, rules: this.ai?.rules ?? [], ctx: this.ctx }); },
-  openFindings() { return this.find.list.filter((f) => OPEN_ST.includes(this.fstatus(f))); },
+  openFindings() { return this.findings().filter((f) => OPEN_ST.includes(this.fstatus(f))); },
   blockersNow(checks = this.checksNow()) { return mergeBlockers({ checks, findings: this.openFindings(), unverified: this.verifyList().length, related: this.ctx }); },
   // The triage for this PR (pr.js triageOf, no LLM), for the registry and its consumers.
   triageNow() {
@@ -3049,7 +3075,7 @@ export const ReviewMode = {
   },
 
   verifyPage(t) {
-    const list = this.verifyList(), done = this.find.list.filter((f) => this.find.status[f.id]?.verify), m = model();
+    const list = this.verifyList(), done = this.findings().filter((f) => this.find.status[f.id]?.verify), m = model();
     const card = (f) => {
       const v = this.find.status[f.id]?.verify, c = { fixed: "ansi2", not_fixed: "ansi1", unclear: "ansi3" }[v?.result] ?? "muted";
       return v_flex().id(`rv-vf-${f.id}`).tooltip("Show this finding's line in the diff").gap(4).p(10).rounded(8).border_1().border_l(4).border_color(t[c]).bg(t.surface).cursor_pointer()
@@ -3137,7 +3163,7 @@ export const ReviewMode = {
   // Reviewer findings with filters (reviewer, severity, status), counts, the per-finding workflow, and the ones
   // outside the diff (clicking opens the file whole at that line's hunk, or its header).
   findingsPane(t) {
-    const all = this.find.list, shown = this.shownFindings(), f = this.ffilter, runs = this.find.runs;
+    const all = this.findings(), shown = this.shownFindings(), f = this.ffilter, runs = this.find.runs;
     const count = (pred) => all.filter(pred).length;
     const chip = (key, value, label, n) => div().id(`rv-ff-${key}-${value}`).tooltip(`Filter findings by ${key}: ${label}`).px(8).h(24).flex().items_center().rounded(6).cursor_pointer().text_size(12)
       .bg(f[key] === value ? t.selected : t.chrome).text_color(f[key] === value ? t.foreground : t.muted).border_1().border_color(f[key] === value ? t.accent : t.border)
@@ -3145,13 +3171,16 @@ export const ReviewMode = {
     const inDiff = shown.filter((x) => this.findRow(x) >= 0), outside = shown.filter((x) => this.findRow(x) < 0);
     const open = shown.filter((x) => ["open", "recheck"].includes(this.fstatus(x)));
     const card = (x) => {
-      const st = this.fstatus(x), c = t[REVIEWERS[x.reviewer]?.[1]] ?? t.accent, r = this.find.reports[x.id];
+      const st = this.fstatus(x), c = t[REVIEWERS[x.reviewer]?.[1]] ?? t.accent, r = this.find.reports[x.id], li = this.layerOf(x);
       return v_flex().id(`rv-fc-${x.id}`).flex_none().px(10).py(8).gap(6).rounded(8).border_1().border_l(4).border_color(this.ffocus === x.id ? t.accent : c).bg(t.surface).text_size(13.5)
         .child(h_flex().gap(8).items_center().child(badge(t, x.severity, t[SEV[x.severity]]).id(`rv-fsv-${x.id}`).tooltip(`${x.severity} severity`)).child(div().id(`rv-frv-${x.id}`).tooltip("The reviewer that found this").text_size(12).font_semibold().text_color(c).child(REVIEWERS[x.reviewer]?.[0] ?? x.reviewer))
           .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.muted).child(`${x.file.split("/").pop()}:${x.line}`))
           .child(div().id(`rv-fchk-${x.id}`).tooltip((st === "fixed" ? "Mark this finding as open again" : "Mark this finding as fixed")).accessibility_label("Toggle fixed").text_size(14).cursor_pointer().text_color(st === "fixed" ? t.ansi2 : t.muted)
             .on_click((_e, cx) => { this.setFinding(x, st === "fixed" ? "open" : "fixed", cx); cx.stop_propagation(); }).child(st === "fixed" ? "✓" : "○")))
         .child(div().id(`rv-ft-${x.id}`).tooltip("Show this finding's line in the diff").font_semibold().cursor_pointer().on_click((_e, cx) => { this.ffocus = x.id; this.jumpTo(`${x.file}:${x.line}`, cx); }).child(x.title))
+        // An analysis finding is part of its layer: name it, a click opens it.
+        .when(li >= 0, (e) => e.child(div().id(`rv-fly-${x.id}`).tooltip("Open the layer this finding belongs to").truncate().text_size(12).text_color(t.accent).cursor_pointer()
+          .on_click((_e, cx) => { this.goStep(li, cx); cx.notify(); }).child(`${x.category} · layer: ${plain(this.steps()[li]?.title)} →`)))
         .child(div().line_height(1.5).child(TextView.markdown(`rv-fd-${x.id}`, x.detail + (x.suggestion ? `\n\n**Suggested:** ${x.suggestion}` : ""))))
         .child(div().id(`rv-fst-${x.id}`).tooltip("Where this finding stands: open, in progress, fixed or dismissed").text_size(12).text_color(t[FSTATUS[st]?.[1]] ?? t.muted).child(`${FSTATUS[st]?.[0] ?? st}${r?.commit ? ` · ${String(r.commit).slice(0, 8)}` : ""}${r?.note ? ` · ${r.note}` : ""}`))
         .when(Boolean(this.find.status[x.id]?.verify), (e) => { const v = this.find.status[x.id].verify; return e.child(div().text_size(12).whitespace_normal()
@@ -3173,7 +3202,7 @@ export const ReviewMode = {
         .child(h_flex().gap(8).items_center().child(div().text_size(14.5).font_semibold().child("Severity findings"))
           .child(div().text_size(12.5).text_color(t.muted).child([`${all.length} ${all.length === 1 ? "finding" : "findings"}`, ...sevs.map(([k, n]) => `${n} ${k}`)].join(" · "))))
         .child(h_flex().flex_wrap().gap(4).child(chip("reviewer", "all", "All", all.length))
-          .children(Object.entries(REVIEWERS).filter(([k]) => reviewersNow().some(([n]) => n === k) || this.find.list.some((x) => x.reviewer === k)).map(([k, [label]]) => chip("reviewer", k, label.replace(" review", ""), count((x) => x.reviewer === k)))))
+          .children(Object.entries(REVIEWERS).filter(([k]) => reviewersNow().some(([n]) => n === k) || all.some((x) => x.reviewer === k)).map(([k, [label]]) => chip("reviewer", k, label.replace(" review", ""), count((x) => x.reviewer === k)))))
         .child(h_flex().flex_wrap().gap(4).child(chip("severity", "all", "Any severity"))
           .children(["high", "medium", "low"].map((v) => chip("severity", v, v, count((x) => x.severity === v)))))
         .child(h_flex().flex_wrap().gap(4).children([["open", "Open"], ["fixed", "Fixed"], ["dismissed", "Dismissed"], ["all", "All"]].map(([v, label]) =>
@@ -3493,7 +3522,7 @@ export const ReviewMode = {
           .child(h_flex().flex_none().p(8).gap(6).border_b(1).border_color(t.border)
             .child(tabBtn("files", `Files · ${this.shown().patch.length}`)).child(tabBtn("steps", `Layers${this.ai ? ` · ${this.ai.steps.filter((s) => !s.pseudo).length}` : ""}`))
             .child(tabBtn("comments", `Comments${this.commentRowsNow().length ? ` · ${this.commentRowsNow().length}` : ""}`))
-            .child(tabBtn("findings", `Findings${this.find.list.length ? ` · ${this.find.list.filter((x) => ["open", "progress", "recheck"].includes(this.fstatus(x))).length}` : ""}`)))
+            .child(tabBtn("findings", `Findings${this.findings().length ? ` · ${this.findings().filter((x) => ["open", "progress", "recheck"].includes(this.fstatus(x))).length}` : ""}`)))
           .child(this.tab === "steps" ? this.stepsPane(t) : this.tab === "findings" ? this.findingsPane(t) : this.tab === "comments" ? this.commentsPane(t) : this.filesPane(t)))
         .child(this.splitter(t))
         .child(v_flex().flex_1().min_w(0).h_full().relative()

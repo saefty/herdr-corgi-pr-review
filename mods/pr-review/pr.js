@@ -234,7 +234,8 @@ export const visualsOf = (x) => (Array.isArray(x?.visuals) ? x.visuals : x?.visu
 export const atLine = (r, n, old) => r.number === n && (old ? r.kind === "-" : r.kind === "+" || r.kind === " ");
 
 // The model's analysis with aliases turned into hunk ids (unknown ones dropped): steps in risk order (then reading
-// order), each with its explanation, questions (at most 3), flows (at most 3; traces at most 12 lines); every
+// order), each with its explanation, questions (at most 3), flows (at most 3; traces at most 12 lines), its own
+// findings (layerFindings); every
 // suggested line put on a row of its hunk (the hunk's first change when the model named a line it doesn't have: approx).
 export function mapReview(answer, hunks) {
   const byAlias = new Map(hunks.map((h) => [h.alias, h]));
@@ -246,7 +247,7 @@ export function mapReview(answer, hunks) {
       questions: (s.check_questions ?? s.questions ?? []).filter(Boolean).slice(0, 3), hunks: ids(s.hunks), n,
       flows: (s.flows ?? []).slice(0, 3).map((f) => ({ function: f.function ?? "", at: f.at ?? "", inputs: f.inputs ?? [], output: f.output ?? null,
         side_effects: f.side_effects ?? [], calls: f.calls ?? [], trace: (f.trace ?? []).slice(0, 12) })) };
-  }).sort((a, b) => RISKS.indexOf(a.risk) - RISKS.indexOf(b.risk) || a.order - b.order || a.n - b.n);
+  }).map((st) => ({ ...st, findings: layerFindings(answer.steps[st.n].findings, stepKey(st)) })).sort((a, b) => RISKS.indexOf(a.risk) - RISKS.indexOf(b.risk) || a.order - b.order || a.n - b.n);
   const suspects = [];
   const lines = [...(answer.suspects ?? []).map((s) => ({ ...s, text: s.reason })), ...(answer.steps ?? []).flatMap((s) => s.suggestions ?? [])];
   for (const s of lines) {
@@ -270,6 +271,18 @@ export function mapReview(answer, hunks) {
     arch: answer.architecture?.nodes?.length ? answer.architecture : null, visuals: visualsOf(answer), blast: answer.blast_radius?.units?.length ? answer.blast_radius : null,
     asks: (answer.asks ?? []).map((a) => ({ text: a.text ?? "", coverage: ["seen", "partly", "absent", "extra"].includes(a.coverage) ? a.coverage : "absent", hunks: ids(a.hunks),
       elements: (a.elements ?? []).map(String) })) };
+}
+
+const CATEGORIES = ["structure", "security", "data", "scope", "requirement", "bug"];
+// A layer's architecture-review findings in the reviewer findings' shape (reviewers.py normalize). They stay in their
+// layer: the id comes from the layer's key, file and title, so a status survives when a new analysis finds the same.
+function layerFindings(list, step) {
+  return (list ?? []).map((f) => ({ f, file: String(f.file ?? "").trim().replace(/^\.\//, ""), line: Number(f.line) || 0, title: String(f.title ?? "").trim() }))
+    .filter((x) => x.file && x.title)
+    .map(({ f, file, line, title }) => ({ id: `a${hash(`${step}|${file}|${title}`)}`, reviewer: "analysis", step, file, line, end: Number(f.end) || line,
+      severity: ["high", "medium", "low"].includes(f.severity) ? f.severity : "medium", category: CATEGORIES.includes(f.category) ? f.category : "structure",
+      title, detail: String(f.detail ?? ""), suggestion: String(f.suggestion ?? "") }))
+    .filter((x, i, all) => all.findIndex((y) => y.id === x.id) === i); // the same title twice in a file: one finding
 }
 
 // A suspicious line taken over as a pending review comment (rows: its hunk's or file's rows); null when not shown there.

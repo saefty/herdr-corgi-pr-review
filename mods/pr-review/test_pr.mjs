@@ -84,6 +84,19 @@ assert.deepEqual([lg.hunks, lg.questions.length, lg.why, lg.text, lg.order, lg.f
 assert.deepEqual(rv.suspects.map((s) => [s.line, s.old, s.approx, s.severity, s.reason]), [[11, true, false, "low", "gone"], [11, false, false, "high", "boom"], [11, true, true, "medium", "far"]]);
 assert.deepEqual(rv.asks.map((a) => [a.coverage, a.hunks]), [["extra", [rh[1].id]], ["absent", []]]);
 assert.equal(stepKey(lg), stepKey({ hunks: [rh[0].id], title: "renamed later" }));
+// Architecture-review findings stay in their layer, in the reviewer findings' shape, with an id from layer key, file and title.
+{
+  const fs = [{ file: "./a.js", line: 11, severity: "high", category: "scope", title: "Unrelated rename", detail: "d", suggestion: "s" },
+    { file: "a.js", line: 3, severity: "??", category: "??", title: "Unrelated rename" }, { file: "", title: "no file" }, { file: "b.js", line: "7", end: 9, title: "Leaky boundary" }];
+  const one = mapReview({ steps: [{ title: "logic", hunks: ["h1"], findings: fs }, { title: "tests", hunks: ["h2"] }] }, rh);
+  const [st] = one.steps, k = stepKey(st);
+  assert.deepEqual(st.findings.map((f) => [f.file, f.line, f.end, f.severity, f.category, f.reviewer, f.step]),
+    [["a.js", 11, 11, "high", "scope", "analysis", k], ["b.js", 7, 9, "medium", "structure", "analysis", k]]);
+  assert.equal(st.findings[0].suggestion, "s"); assert.deepEqual(one.steps[1].findings, []);
+  const again = mapReview({ steps: [{ title: "renamed", hunks: ["h1"], findings: [{ file: "a.js", line: 40, title: "Unrelated rename" }] }] }, rh);
+  assert.equal(again.steps[0].findings[0].id, st.findings[0].id); // same layer, file and title: the same finding (its status stays)
+  assert.notEqual(st.findings[0].id, st.findings[1].id);
+}
 // Stale hunk (no lines today): its suspects go, its step keeps the id so the UI can say "veraltet".
 assert.deepEqual(mapReview({ steps: [{ title: "s", hunks: ["h1"] }], suspects: [{ hunk: "h1", line: 1, reason: "r" }] }, [{ alias: "h1", id: "gone" }]).suspects, []);
 

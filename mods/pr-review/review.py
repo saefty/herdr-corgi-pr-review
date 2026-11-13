@@ -7,7 +7,7 @@ lines}], cut: [aliases left out for size]; incremental runs add previous (the sh
 ({base, head}) and full (today's whole-diff hunks [{alias, id, path, head}]) and send only the new hunks (n1..)}.
 One thorough run (--effort high; read-only tools in the worktree so it can check callers and types) for: a summary,
 the check against the task (PR title/body + the Jira ticket a key names, via acli when installed), and steps with risk,
-why it matters, an explanation, reading order, check questions, suggestions on lines and flows (example payloads in
+why it matters, an explanation, reading order, check questions, suggestions on lines, architecture-review findings and flows (example payloads in
 and out of changed functions, with a trace of values per line). Also behavior, merge risk, review effort, repo rule checks (rules
 from the checkout's CLAUDE.md/AGENTS.md/CONTRIBUTING.md/.github instructions/ADRs plus the configured global rules), an
 architecture picture, the blast radius (upstream candidates from git grep) and an optional picture per layer. Writes {source, model, model_id, hunks, answer, cut,
@@ -81,6 +81,11 @@ BLAST = {"type": "object", "required": ["units", "context"], "properties": {
         "id": S, "label": S, "type": S, "status": {"enum": ["added", "changed", "removed"]}, "files": STRINGS, "spots": {"type": "integer"}}}},
     "context": {"type": "array", "maxItems": 8, "items": {"type": "object", "required": ["id", "file", "direction", "relation", "links_to"], "properties": {
         "id": S, "file": S, "direction": {"enum": ["upstream", "downstream"]}, "relation": S, "links_to": S}}}}}
+# An architecture-review finding of one layer: a problem across lines or files, confirmed in the code. It lives in its
+# layer (no findings file); the UI gives it an id and reviewer "analysis".
+FINDING = {"type": "object", "required": ["file", "line", "severity", "category", "title", "detail", "suggestion"], "properties": {
+    "file": S, "line": {"type": "integer"}, "end": {"type": "integer"}, "severity": {"enum": LEVELS},
+    "category": {"enum": ["structure", "security", "data", "scope", "requirement", "bug"]}, "title": S, "detail": S, "suggestion": S}}
 SCHEMA = {"type": "object", "required": ["title", "summary", "behavior", "merge_risk", "effort", "rule_checks", "architecture", "blast_radius", "steps", "asks"], "properties": {
     "title": S, "summary": S, "behavior": S,
     "merge_risk": {"type": "object", "required": ["level", "why"], "properties": {"level": {"enum": ["minimal", "low", "medium", "high", "critical"]}, "why": S}},
@@ -96,6 +101,7 @@ SCHEMA = {"type": "object", "required": ["title", "summary", "behavior", "merge_
         "hunks": STRINGS, "check_questions": {**STRINGS, "maxItems": 3},
         "suggestions": {"type": "array", "items": {"type": "object", "required": ["hunk", "line", "side", "severity", "text"], "properties": {
             "hunk": S, "line": {"type": "integer"}, "side": {"enum": ["new", "old"]}, "severity": {"enum": LEVELS}, "text": S}}},
+        "findings": {"type": "array", "items": FINDING},
         "flows": {"type": "array", "maxItems": 3, "items": FLOW}, "visuals": VISUALS, "skimmed": {"type": "boolean"}}}}}}
 
 
@@ -264,7 +270,14 @@ def prompt(hunks, cut, task_text, tools, rules="", candidates=(), previous=None,
             "understood); hunks (aliases like h1); check_questions (1-3 concrete questions on what to check in exactly these lines; "
             "at most one for skim); suggestions (concrete suspicious lines in these hunks: hunk, line (the number before the line), "
             "side (new for + and context, old for removed lines), severity (high|medium|low), text (one sentence that works as a "
-            "review comment); empty when nothing is confirmed); flows (at most 3, only where it helps: changed or new functions with "
+            "review comment); empty when nothing is confirmed); findings (an architecture review of this layer: problems confirmed in "
+            "the code at the level of structure and across files, kept apart from suggestions (single suspicious lines): file, line "
+            "(new side), end (optional), severity (high|medium|low), category (structure: coupling, boundaries, encapsulation, "
+            "responsibilities; security: exposure, auth, secrets, permissions; data: storage, retention, personal data, migrations; "
+            "scope: a change unrelated to the intent or requirements of the PR; requirement: something the PR description or "
+            "ticket asks for that the code doesn't do; bug), title (one line), detail (2-3 sentences), suggestion (one sentence); "
+            "each in the layer whose code it is about; scope and requirement findings point at the line of the unrelated change "
+            "or of the gap (where the missing part belongs); no style nits; empty when nothing is confirmed); flows (at most 3, only where it helps: changed or new functions with "
             "function, at (file:line in the new version), inputs (name, type, example), output (type, example), side_effects, calls; "
             "examples concrete and realistic, derived from the code (types, structs, JSON bodies, DTOs, SQL rows, events), at most "
             "12 lines, invent nothing; trace: ONE example input followed through the function like in a debugger: per line path, "
@@ -473,7 +486,8 @@ def merge_incremental(prev, answer, inc, full):
     prev: that saved analysis; answer: the model's on the new hunks inc [{alias n1.., path, lines}]; full: today's PR
     diff hunks [{alias, id, path, head}]. Previous steps point at the same hunk ids (gone ones keep their id under an
     alias o<k>, so they show as outdated); new steps point at today's hunks overlapping their new lines, are marked
-    new and go first in reading order. Suggestions follow their hunk (new-side lines only). Returns (hunks, answer).
+    new and go first in reading order. Suggestions follow their hunk (new-side lines only); findings (file and line, no
+    hunk) stay in their step: old layers keep theirs, new layers bring their own. Returns (hunks, answer).
     ponytail: merge risk, effort, rules and pictures stay the previous ones (they judged the whole PR)."""
     alias_of = {h["id"]: h["alias"] for h in full}
     hunks = [{"alias": h["alias"], "id": h["id"]} for h in full]

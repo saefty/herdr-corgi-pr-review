@@ -49,13 +49,14 @@ with tempfile.TemporaryDirectory() as d:
     llm.CONFIG = saved
 assert review.repo_rules(None) == "" or "Global conventions" in review.repo_rules(None)  # the real settings, if any
 p = review.prompt([], [], "PR: x", False, rules="### R\nno globals", candidates=[("src/perm.ts", "invite")])
+assert "findings (an architecture review" in p and "category" in str(review.SCHEMA["properties"]["steps"])
 assert "rule_checks" in p and "no globals" in p and "src/perm.ts (names invite)" in p and "FOLLOW-UP" not in p
 assert "FOLLOW-UP" in review.prompt([], [], "PR: x", False, previous="Title: t") and "Task:" not in review.prompt([], [], "PR: x", False, previous="Title: t")
 
 # Incremental merge: old steps keep same-id hunks (gone ones become o<k>), new steps point at today's overlapping hunks.
 prev = {"hunks": [{"alias": "h1", "id": "a.py:1"}, {"alias": "h2", "id": "b.py:2"}],
         "answer": {"title": "T", "summary": "S", "merge_risk": {"level": "low", "why": ""}, "asks": [{"text": "q", "coverage": "seen", "hunks": ["h1", "h2"]}],
-                   "steps": [{"title": "old", "hunks": ["h1", "h2"], "suggestions": [{"hunk": "h1", "line": 3, "side": "new", "severity": "low", "text": "t"}]}]}}
+                   "steps": [{"title": "old", "hunks": ["h1", "h2"], "suggestions": [{"hunk": "h1", "line": 3, "side": "new", "severity": "low", "text": "t"}], "findings": [{"file": "a.py", "line": 2, "severity": "medium", "category": "structure", "title": "f", "detail": "d", "suggestion": "s"}]}]}}
 full = [{"alias": "h1", "id": "a.py:1", "path": "a.py", "head": "@@ -1,3 +1,4 @@"}, {"alias": "h2", "id": "b.py:9", "path": "b.py", "head": "@@ -10,2 +10,6 @@"}]
 inc = [{"alias": "n1", "path": "b.py", "lines": ["@@ -12,1 +12,3 @@", "+x"]}]
 ans = {"summary": "new bits", "steps": [{"title": "new", "reading_order": 1, "hunks": ["n1"], "suggestions": [{"hunk": "n1", "line": 13, "side": "new", "severity": "high", "text": "u"}, {"hunk": "n1", "line": 1, "side": "old", "severity": "low", "text": "v"}]}]}
@@ -64,6 +65,7 @@ assert hunks == [{"alias": "h1", "id": "a.py:1"}, {"alias": "h2", "id": "b.py:9"
 new, old = merged["steps"]
 assert new["new"] and new["hunks"] == ["h2"] and [g["hunk"] for g in new["suggestions"]] == ["h2"] and new["reading_order"] < 1
 assert old["hunks"] == ["h1", "o2"] and old["suggestions"][0]["hunk"] == "h1" and not old.get("new")
+assert old["findings"][0]["title"] == "f" and not new.get("findings")  # findings stay in their layer
 assert merged["asks"][0]["hunks"] == ["h1", "o2"] and merged["merge_risk"]["level"] == "low" and "new bits" in merged["summary"]
 assert review.span("@@ -5 +7 @@") == (7, 7) and review.span("@@ -5,2 +7,0 @@") == (7, 7)
 print("ok rules/incremental")
@@ -74,7 +76,7 @@ d = pathlib.Path(tempfile.mkdtemp())
 prev = {"generated": "2026-01-01T00:00:00", "hunks": [{"alias": "h1", "id": "x"}], "cost": 0.4, "answer": {
     "title": "T", "summary": "S", "behavior": "B", "asks": [{"text": "a", "coverage": "seen", "hunks": ["h1"]}],
     "architecture": {"groups": [], "nodes": [{"id": "old"}], "edges": []}, "visuals": [],
-    "steps": [{"title": "one", "explanation": "e1", "hunks": ["h1"], "visual": {"kind": "flow", "nodes": [{"id": "v"}]}}, {"title": "two", "hunks": []}]}}
+    "steps": [{"title": "one", "explanation": "e1", "hunks": ["h1"], "findings": [{"file": "a.py", "line": 2, "severity": "medium", "category": "structure", "title": "f", "detail": "d", "suggestion": "s"}], "visual": {"kind": "flow", "nodes": [{"id": "v"}]}}, {"title": "two", "hunks": []}]}}
 (d / "a.json").write_text(json.dumps(prev))
 (d / "latest.json").write_text(json.dumps(prev))
 (d / "other.json").write_text(json.dumps({**prev, "generated": "2026-02-02T00:00:00"}))
@@ -96,6 +98,7 @@ assert seen["feature"] == "Review diagrams" and seen["schema"] is review.DIAGRAM
 assert out["answer"]["architecture"]["nodes"][0]["id"] == "new" and out["answer"]["visuals"][0]["title"] == "Loan"
 assert [s.get("visuals") for s in out["answer"]["steps"]] == [[], [{"kind": "flow", "title": "f", "nodes": [{"id": "n"}], "edges": []}]]
 assert "visual" not in out["answer"]["steps"][0]  # the old single picture goes with the rest
+assert out["answer"]["steps"][0]["findings"][0]["title"] == "f"  # refreshing pictures keeps the layer's findings
 for k in ("title", "summary", "behavior", "asks"):
     assert out["answer"][k] == prev["answer"][k], k  # the text stays
 assert [s["title"] for s in out["answer"]["steps"]] == ["one", "two"] and out["generated"] == prev["generated"] and out["cost"] == 0.4
