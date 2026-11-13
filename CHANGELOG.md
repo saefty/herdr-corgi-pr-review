@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.9.0 (2026-11-13)
+
+### Features
+
+- review: model pickers list the models the claude and codex CLIs offer
+- review: the model picker shows each model's token price and prices its estimate by it
+- arch: drill from a card into the layer analysis of its code
+- arch: the card's overview shows the layer analysis with each layer's highlight, riskiest first
+- review: the analysis files architecture-review findings inside its layers
+- review: minimize a review to one entry at the top, open or close it from there
+- review: card, order and minimize commands, for keys and scripted demos
+- review: resolved threads, a bot filter by latest reviewed commit, and stale marks on local comments
+- review: diagrams and inside commands, the same model calls as their buttons
+
+### Fixes
+
+- arch: a tidier card panel with Overview and Layer analysis tabs
+- review: name a layer's level as reading depth (Read closely, Read, Glance, Skim), not as risk
+- review: the model picker lists the current models only (the CLI's aliases)
+- review: an analysis finding's id is what it is about, so its status survives a push
+- review: the minimized review is a small chip, its title in the tooltip
+- review: Go to's Review PR and Resume review open the review while the PR panel is hidden
+- review: syntax colours in slices outside render, so a big file no longer interrupts the panel
+
 ## 0.8.1 (2026-11-12)
 
 ### Features
