@@ -1,6 +1,6 @@
 // Run: node test_syntax.mjs
 import assert from "node:assert/strict";
-import { tokenize, langOf, highlightRows, highlightLines, colors, contrast, runs, renderLine, refAt } from "./syntax.js";
+import { tokenize, langOf, highlightRows, highlightLines, colors, contrast, runs, renderLine, refAt, highlightJob, highlightStep } from "./syntax.js";
 
 // [text, kind] pairs of a line, for readable asserts.
 const kinds = (line, lang, state = null) => tokenize(line, lang, state).spans.map((s) => [line.slice(s.start, s.end), s.kind]);
@@ -140,4 +140,13 @@ for (const [name, set, lang] of [["js", big, "js"], ["python", py, "python"]]) {
 const t1 = performance.now();
 highlightRows(big, "js", "big.js"); highlightRows(big, "js", "big.js");
 console.log(`10k lines, memoized second call included: ${(performance.now() - t1).toFixed(1)} ms`);
+// Sliced highlighting gives the same spans as one pass, whatever the slice size (a negative budget stops every 32 rows).
+{
+  const rows = Array.from({ length: 200 }, (_, i) => ({ kind: i % 7 === 0 ? "-" : i % 5 === 0 ? " " : "+", text: i % 9 === 0 ? "/* open" : i % 9 === 3 ? "close */ const x = 1;" : `let v${i} = "s";` }));
+  const job = highlightJob(rows, "js");
+  let out = null, steps = 0;
+  while (!(out = highlightStep(job, -1))) steps++;
+  assert.deepEqual(out, highlightRows(rows, "js"));
+  assert.ok(steps >= 5, `${steps} slices`);
+}
 console.log("syntax ok");

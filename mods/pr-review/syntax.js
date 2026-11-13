@@ -273,17 +273,28 @@ export function highlightRows(rows, lang, key = null) {
   if (!lang) return rows.map(() => EMPTY);
   const k = key === null ? null : `${key}\0${lang}\0${rows.length}\0${hashRows(rows)}`;
   if (k !== null && memo.has(k)) return memo.get(k);
-  let olds = null, news = null;
-  const out = rows.map((r) => {
-    if (r.kind === "@") { olds = news = null; return EMPTY; }
-    const text = r.text ?? "";
-    if (r.kind === "-") { const t = tokenize(text, lang, olds); olds = t.state; return t.spans; }
-    const t = tokenize(text, lang, news); news = t.state;
-    if (r.kind !== "+") olds = tokenize(text, lang, olds).state; // context: both sides see it
-    return t.spans;
-  });
+  const out = highlightStep(highlightJob(rows, lang), Infinity);
   if (k !== null) { if (memo.size > 400) memo.delete(memo.keys().next().value); memo.set(k, out); }
   return out;
+}
+// The same highlighting a slice at a time, for files too big for one script slice (Herdr stops one after ~50 ms):
+// highlightStep tokenizes for about `ms`, keeps its place in the job, and returns the spans once the last row is done
+// (null until then). Old and new sides carry their own state, as in a diff.
+export const highlightJob = (rows, lang) => ({ rows, lang, i: 0, olds: null, news: null, out: new Array(rows.length) });
+export function highlightStep(job, ms = 10) {
+  if (!job.lang) return job.rows.map(() => EMPTY);
+  const end = Date.now() + ms;
+  for (; job.i < job.rows.length; job.i++) {
+    const r = job.rows[job.i];
+    if (r.kind === "@") { job.olds = job.news = null; job.out[job.i] = EMPTY; }
+    else if (r.kind === "-") { const t = tokenize(r.text ?? "", job.lang, job.olds); job.olds = t.state; job.out[job.i] = t.spans; }
+    else {
+      const t = tokenize(r.text ?? "", job.lang, job.news); job.news = t.state; job.out[job.i] = t.spans;
+      if (r.kind !== "+") job.olds = tokenize(r.text ?? "", job.lang, job.olds).state; // context: both sides see it
+    }
+    if ((job.i & 31) === 31 && Date.now() > end) { job.i++; return null; }
+  }
+  return job.out;
 }
 /** The memoized result of highlightRows, or undefined when it still has to be computed (never tokenizes). */
 export function cachedRows(rows, lang, key) {

@@ -15,7 +15,7 @@ import { exec, hc, run, spaces, agents, terminals, focused, pickFolder, theme, s
 import { parseReports, findingStatus, fixPrompt, hash, touchReview, expireReviews, resumeFields, itemKeys, expandTabs, tokenAt } from "./pr.js";
 import * as C from "./context.js";
 import { hasTool, copyText, openUrl, loadSetup, readConfig } from "./setup-view.js";
-import { highlightRows, highlightLines, langOf, colors, renderLine, refAt } from "./syntax.js";
+import { highlightJob, highlightStep, highlightLines, langOf, colors, renderLine, refAt } from "./syntax.js";
 import { lookup, warm, contents, vscodeArgs, where, setTrusted } from "./defs.js";
 import { diffRows, hunksOf, selection, uiLine, lineKey, rangeOf, MODELS, tierOf, priceOf, reviewRequest, mapReview, suspectComment, stepKey, fileRows, fileTree, atLine, splitPatch } from "./pr.js";
 import { ghTarget, lowValue, markReviewed, sinceBase, verifyCandidates, applyVerification, blastArch, preMergeChecks, mergeBlockers, triageOf } from "./pr.js";
@@ -3427,7 +3427,10 @@ export const ReviewMode = {
   drainHighlight(cx) {
     const start = Date.now();
     for (const [k, job] of this.hlQueue ?? []) {
-      job.inf.spans = highlightRows(job.shown, job.lang, job.hkey);
+      job.hl ??= highlightJob(job.shown, job.lang); // a big file takes several slices: the job keeps its place
+      const out = highlightStep(job.hl, Math.max(1, 12 - (Date.now() - start)));
+      if (!out) break;
+      job.inf.spans = out;
       this.hlQueue.delete(k);
       if (Date.now() - start > 12) break;
     }

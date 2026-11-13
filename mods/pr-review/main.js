@@ -24,7 +24,7 @@ import { setupBanner, renderSetup, loadSetup, runSetup, openUrl, readConfig } fr
 import { chip, triageTip, PRIORITY_TIP } from "./stack.js";
 import { panelState, bodyTab, capped, IN_PROGRESS_MAX, diffTooLarge, filesToDiff } from "./views.js";
 import { ReviewMode, startReview, startExplore, saveKey, flowCard, modelPills, modelLabel, renderReviews, renderAgentBar, renderKeys, renderCardMenu, renderMini } from "./review.js";
-import { highlightRows, langOf, colors, renderLine, editorSyntax } from "./syntax.js";
+import { highlightJob, highlightStep, langOf, colors, renderLine, editorSyntax } from "./syntax.js";
 
 // Same mapping as the shipped files panel.
 const LANG = { ts: "js", tsx: "js", mts: "js", cts: "js", jsx: "js", mjs: "js", toml: "yaml", jsonc: "json", svelte: "html", vue: "html" };
@@ -706,6 +706,15 @@ export default class PrReview extends View {
     this.pickTarget(mine ?? { url: ref.url, repo: ref.repo, number: Number(ref.number), cwd: sr, source: "open", context: this.contextOfPr(ref.repo, sr, null) }, cx, true);
   }
 
+  // One slice of the open file's highlighting; the next one after a timer, until the file is done (then a redraw).
+  highlightMore(cx, hl) {
+    cx.timer.after(0, (cx) => {
+      if (this.hl !== hl) return; // another file opened meanwhile
+      const out = highlightStep(hl.job, 10);
+      if (out) { hl.spans = out; cx.notify(); } else this.highlightMore(cx, hl);
+    });
+  }
+
   // "Open PR…": a URL or owner/repo#123, opened like a listed PR.
   openRef(cx) {
     const ref = parsePrRef(this.openRefInput.value());
@@ -909,7 +918,10 @@ export default class PrReview extends View {
     const mine = this.comments.filter((c) => c.file === this.open), at = new Map(), loose = [];
     for (const c of mine) { const i = anchorRow(this.rows, c); if (i < 0) loose.push(c); else at.set(i, [...(at.get(i) ?? []), c]); }
     const shown = this.rows.slice(this.from, this.from + 1500);
-    this.spans = highlightRows(this.rows, langOf(this.open ?? ""), `${this.context}:${this.open}`); // memoized per content
+    // Syntax colours outside render, a slice at a time (a big file takes longer than Herdr's ~50 ms per slice); the
+    // rows show plain until their file is done.
+    if (this.hl?.rows !== this.rows) { this.hl = { rows: this.rows, job: highlightJob(this.rows, langOf(this.open ?? "")), spans: null }; this.highlightMore(cx, this.hl); }
+    this.spans = this.hl.spans;
     const diffId = `pr-diff-${this.uid}-${this.from}`; // a new id starts scrolled to the top: how j/k bring a change into view
     const state = this.view === "setup" ? "setup" : panelState({ chosen: this.prSel ?? this.branchPicked, picking: this.picking });
     const tab = bodyTab(this.view), chosen = this.prSel ? "PR" : "branch";
