@@ -96,11 +96,11 @@ for (const n of [0, 3, 310]) {
   v.ai.arch.nodes[0].at = "src/a.ts:3";
   v.ai.steps.push({ title: "b", why: "w", text: "x", hunks: [], questions: ["q?"], risk: "high", evidence: ["src/a.ts:1"],
     visuals: [{ kind: "flow", title: "f", nodes: [{ id: "n1", label: "N1", at: "src/a.ts:3" }, { id: "n2", label: "N2" }], edges: [{ from: "n1", to: "n2", label: "y" }] }] });
-  v.archFocus = "a"; v.cardLayersOpen = new Set([`a|${stepKey(v.ai.steps[1])}`]);
-  ok(`${n} files: Architecture page, a card's Overview tab`, () => v.render(cx));
+  v.archFocus = "a"; v.cardLayersOpen = null; // the first (riskiest) layer starts open
+  ok(`${n} files: Architecture page, a card with its layer analysis open below the details`, () => v.render(cx));
   assert.deepEqual(v.cardLayers.list, [v.ai.steps[1]]);
-  v.archCardTab = { id: "a", k: "layers" };
-  ok(`${n} files: Architecture page, a card's Layer analysis tab with its layer open`, () => v.render(cx));
+  v.cardLayersOpen = new Map([[`a|${stepKey(v.ai.steps[1])}`, false]]);
+  ok(`${n} files: Architecture page, the layer closed (its highlight still shows)`, () => v.render(cx));
   v.archFocus = null; v.page = null; v.cur = 1;
   ok(`${n} files: the same layer open in the Layers view`, () => v.render(cx));
   v.tab = "files"; v.page = null; v.deep.drawer[v.deepKey()] = "open";

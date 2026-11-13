@@ -2433,9 +2433,7 @@ export const ReviewMode = {
     if (!n) return div();
     const g = (a.groups ?? []).find((x) => x.id === n.group), at = n.at ?? n.evidence;
     const explain = (_e, cx) => this.showDetails({ id: n.id, label: n.label ?? n.id, group: g?.label, at, kind: "node", description: n.description }, `arch:${n.id}`, cx, false, true);
-    const layers = this.cardLayerList(n), tab = layers.length && this.archCardTab?.id === n.id ? this.archCardTab.k : "overview";
-    const seg = (k, label) => div().id(`rv-arch-card-tab-${k}`).px(10).h(24).flex().items_center().rounded(5).cursor_pointer().text_size(12.5)
-      .bg(tab === k ? t.selected : t.chrome).text_color(tab === k ? t.foreground : t.muted).on_click((_e, cx) => { this.archCardTab = { id: n.id, k }; cx.notify(); }).child(label);
+    const layers = this.cardLayerList(n);
     return v_flex().id("rv-arch-card").gap(10).p(12).rounded(10).border_1().border_color(t.border).bg(t.surface)
       .child(h_flex().gap(8).items_center().flex_wrap()
         .child(div().text_size(15).font_semibold().child(n.label ?? n.id))
@@ -2446,13 +2444,13 @@ export const ReviewMode = {
           .tooltip(`One ${modelLabel(model())} call reads the code: what this does overall, what the PR changes in it, and a picture of its inside`))
         .when(this.drawerState() !== "open", (e) => e.child(pill("rv-arch-card-ask", t, "Ask", (_e, cx) => this.setDrawer("open", cx, null)).tooltip("Ask one model question about this card")))
         .child(pill("rv-arch-card-x", t, "✕", (_e, cx) => { this.archFocus = null; cx.notify(); }).tooltip("Close (Esc)").accessibility_label("Close card details")))
-      .when(layers.length > 0, (e) => e.child(h_flex().gap(2).p(2).self_start().rounded(7).border_1().border_color(t.border)
-        .child(seg("overview", "Overview")).child(seg("layers", `Layer analysis (${layers.length})`))))
-      .when(tab === "layers", (e) => e.child(this.archCardLayers(t, n, layers)))
-      .when(tab !== "layers", (e) => e.child(this.archCardFacts(t, a, n, at))
-        .when(Boolean(n.description), (e) => e.child(div().text_size(13).text_color(t.muted).whitespace_normal().line_height(1.5).child(n.description)))
-        .child(n.details ? div().pt(2).text_size(13.5).line_height(1.55).child(TextView.markdown(`rv-arch-det-${this.ai?.generated}-${n.id}`, n.details))
-          : div().text_size(12.5).text_color(t.muted).whitespace_normal().child("No further details for this card in this analysis: Refresh diagrams (above) adds them for every card, Explain reads just this one.")));
+      .child(this.archCardFacts(t, a, n, at))
+      .when(Boolean(n.description), (e) => e.child(div().text_size(13).text_color(t.muted).whitespace_normal().line_height(1.5).child(n.description)))
+      .child(n.details ? div().pt(2).text_size(13.5).line_height(1.55).child(TextView.markdown(`rv-arch-det-${this.ai?.generated}-${n.id}`, n.details))
+        : div().text_size(12.5).text_color(t.muted).whitespace_normal().child("No further details for this card in this analysis: Refresh diagrams (above) adds them for every card, Explain reads just this one."))
+      // What the layer analysis found in this card's code, in the same view: no tab to discover.
+      .when(layers.length > 0, (e) => e.child(div().pt(6).text_size(11.5).font_semibold().text_color(t.muted).child("FROM THE LAYER ANALYSIS"))
+        .child(this.archCardLayers(t, n, layers)));
   },
   // The layers that look at the card's code (explore.js layersForNode). Memoized per analysis and card: filesOf walks
   // the hunks, and the tab's count needs the list on every render.
@@ -2463,19 +2461,23 @@ export const ReviewMode = {
   },
   // The Layer analysis tab: a bordered box per layer; its header opens what the Layers view shows of it, drawn inside
   // the box so it reads as that layer's, the card's flows one click away. Open layer goes to it in the Layers view.
+  // Riskiest first; the first layer starts open, the rest closed (cardLayersOpen: key -> true/false once toggled). Each
+  // shows its highlight (the analysis' own one-line finding, whatever it is) even closed, with a bar in its risk colour.
   archCardLayers(t, n, list) {
-    const open = (this.cardLayersOpen ??= new Set());
-    return v_flex().gap(6).children(list.map((s, j) => {
-      const key = `${n.id}|${stepKey(s)}`, on = open.has(key), id = `rv-acl-${j}`;
+    const open = (this.cardLayersOpen ??= new Map()), rank = { high: 0, medium: 1, low: 2, skim: 3 };
+    const sorted = list.map((s, i) => [s, i]).sort(([a, i], [b, k]) => (rank[a.risk] ?? 4) - (rank[b.risk] ?? 4) || i - k).map(([s]) => s);
+    return v_flex().gap(6).children(sorted.map((s, j) => {
+      const key = `${n.id}|${stepKey(s)}`, on = open.get(key) ?? j === 0, id = `rv-acl-${j}`;
       return v_flex().rounded(8).border_1().border_color(on ? t.accent : t.border)
         .child(h_flex().id(`${id}-show`).px(10).py(6).gap(8).items_center().rounded(8).cursor_pointer().hover((x) => x.bg(t.hover))
           .tooltip(on ? "Hide this layer's analysis" : "Show this layer's explanation, check questions and pictures here")
-          .on_click((_e, cx) => { if (on) open.delete(key); else open.add(key); cx.notify(); })
+          .on_click((_e, cx) => { open.set(key, !on); cx.notify(); })
           .child(div().flex_none().w(12).text_color(t.muted).child(on ? "▾" : "▸"))
           .child(div().min_w(0).truncate().text_size(13.5).font_semibold().child(plain(s.title)))
           .when(Boolean(s.risk), (e) => e.child(riskBadge(t, s).id(`${id}-risk`).tooltip(`Risk of this layer: ${s.risk}`))))
+        .when(Boolean(s.why), (e) => e.child(div().mx(10).mb(8).pl(10).border_l(3).border_color(t[LEVEL[s.risk]] ?? t.border)
+          .text_size(14).font_semibold().line_height(1.45).child(TextView.markdown(`${id}-why-${stepKey(s)}`, s.why))))
         .when(on, (e) => e.child(v_flex().pl(30).pr(10).pt(8).pb(10).gap(6).border_t(1).border_color(t.border)
-          .when(Boolean(s.why), (x) => x.child(div().text_size(13.5).line_height(1.5).child(TextView.markdown(`${id}-why-${stepKey(s)}`, s.why))))
           .children(this.layerParts(s, t, "rv-acl", j, `arch:${stepKey(s)}`))
           .child(div().id(`${id}-go`).self_start().text_size(12.5).text_color(t.accent).cursor_pointer().hover((x) => x.underline()).tooltip("Go to this layer in the Layers view")
             .on_click((_e, cx) => { this.goStep(this.steps().indexOf(s), cx); cx.notify(); }).child("Open layer →"))));
