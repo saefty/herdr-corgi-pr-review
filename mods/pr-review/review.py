@@ -566,7 +566,7 @@ def main_diagrams(req):
     extra = ("--allowedTools", *READ_ONLY, "--disallowedTools", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch") if tools else ()
     meta = {}
     answer = llm.claude(FEATURE_DIAGRAMS, diagrams_prompt(req["hunks"], prev, t and t["text"], tools, lang), context=ctx, model=model,
-                        schema=DIAGRAMS_SCHEMA, system=SYSTEM.format(lang=lang), budget=BUDGET_DIAGRAMS[model], timeout=TIMEOUT,
+                        schema=DIAGRAMS_SCHEMA, system=SYSTEM.format(lang=lang), budget=BUDGET_DIAGRAMS[llm.tier(model)], timeout=TIMEOUT,
                         cwd=wt if tools else pathlib.Path.home(), tools="Read,Grep,Glob,Bash" if tools else "", meta=meta, extra=extra)
     if not answer:
         raise RuntimeError(f"{FEATURE_DIAGRAMS}: no answer")
@@ -626,7 +626,7 @@ def main_ask(req):
     model, lang, rt = req["model"], llm.language(), read_tools(req.get("root"))
     meta = {}
     answer = llm.claude(FEATURE_ASK, ask_prompt(req, bool(rt["tools"]), lang), context=req.get("context"), model=model, schema=ASK_SCHEMA,
-                        system=SYSTEM.format(lang=lang), budget=BUDGET_ASK[model], timeout=TIMEOUT, cwd=rt["cwd"], tools=rt["tools"],
+                        system=SYSTEM.format(lang=lang), budget=BUDGET_ASK[llm.tier(model)], timeout=TIMEOUT, cwd=rt["cwd"], tools=rt["tools"],
                         meta=meta, extra=rt["extra"])
     if not answer:
         raise RuntimeError(f"{FEATURE_ASK}: no answer")
@@ -666,7 +666,7 @@ def main_drill(req):
     model, lang, rt = req["model"], llm.language(), read_tools(req.get("root"))
     meta = {}
     answer = llm.claude(FEATURE_DRILL, drill_prompt(req, bool(rt["tools"]), lang), context=req.get("context"), model=model, schema=DRILL_SCHEMA,
-                        system=SYSTEM.format(lang=lang), budget=BUDGET_DRILL[model], timeout=TIMEOUT, cwd=rt["cwd"], tools=rt["tools"],
+                        system=SYSTEM.format(lang=lang), budget=BUDGET_DRILL[llm.tier(model)], timeout=TIMEOUT, cwd=rt["cwd"], tools=rt["tools"],
                         meta=meta, extra=rt["extra"])
     if not answer:
         raise RuntimeError(f"{FEATURE_DRILL}: no answer")
@@ -691,16 +691,16 @@ def main(req):
     candidates = blast_candidates(wt, paths) if tools else []
     run = req.get("run") or str(pathlib.Path(req["out"]).with_suffix("")) + ".run"
     index = write_run(run, hunks)
-    cap, aliases = BUDGET[model], [h["alias"] for h in hunks]
+    cap, aliases = BUDGET[llm.tier(model)], [h["alias"] for h in hunks]
     # Read-only tools in the checkout plus the run's folder (the patches); without a checkout, only the folder.
     extra = ("--effort", "high", "--add-dir", run, "--allowedTools", *READ_ONLY, "--disallowedTools", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch")
     call = lambda feature, text, schema, budget, meta: llm.claude(feature, text, context=ctx, model=model, schema=schema, system=SYSTEM.format(lang=lang),  # noqa: E731
                                                               budget=budget, timeout=TIMEOUT, cwd=wt if tools else run, tools="Read,Grep,Glob,Bash", meta=meta, extra=extra)
-    cohorts = None if prev else cohorts_of(hunks, INLINE[model])
+    cohorts = None if prev else cohorts_of(hunks, INLINE[llm.tier(model)])
     metas = []
     if not cohorts:
         meta = {}
-        text = prompt(pick_inline(hunks, INLINE[model]), [], t and t["text"], True, rules=repo_rules(wt), candidates=candidates,
+        text = prompt(pick_inline(hunks, INLINE[llm.tier(model)]), [], t and t["text"], True, rules=repo_rules(wt), candidates=candidates,
                       previous=prev and previous_digest(prev), lang=lang, index=index, patches=pathlib.Path(run) / "patches")
         answer = call(FEATURE_INC if prev else FEATURE, text, SCHEMA, cap, meta)
         metas.append(meta)
@@ -732,7 +732,7 @@ def analyze_cohorts(req, cohorts, hunks, index, run, t, candidates, wt, lang, ca
     layers are the cohorts' layers; the merge orders them. Progress: "Pass k of n" in the status file."""
     from concurrent.futures import ThreadPoolExecutor, as_completed
     n = len(cohorts) + 1
-    cb, mb = pass_budgets(BUDGET[req["model"]], len(cohorts))
+    cb, mb = pass_budgets(BUDGET[llm.tier(req["model"])], len(cohorts))
     patches = pathlib.Path(run) / "patches"
 
     def one(k):
@@ -741,7 +741,7 @@ def analyze_cohorts(req, cohorts, hunks, index, run, t, candidates, wt, lang, ca
         text = (f"This is pass {k + 1} of {n} over a big pull request: analyze only the hunks of this cohort (the index lists them; "
                 "a merge pass draws the whole picture later). Answer with summary (this cohort in 2 sentences) and steps for these "
                 "hunks only, following the rules below; architecture, rules and the rest come later.\n\n"
-                + prompt(pick_inline(c, INLINE[req["model"]]), [], None, True, lang=lang, index=[i for i in index if i["alias"] in names], patches=patches))
+                + prompt(pick_inline(c, INLINE[llm.tier(req["model"])]), [], None, True, lang=lang, index=[i for i in index if i["alias"] in names], patches=patches))
         out = call(f"{FEATURE} (pass {k + 1} of {n})", text, COHORT_SCHEMA, cb[k], meta)
         return k, out or {"summary": "", "steps": []}, meta
 

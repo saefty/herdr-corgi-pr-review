@@ -17,7 +17,7 @@ import * as C from "./context.js";
 import { hasTool, copyText, openUrl, loadSetup, readConfig } from "./setup-view.js";
 import { highlightRows, highlightLines, langOf, colors, renderLine, refAt } from "./syntax.js";
 import { lookup, warm, contents, vscodeArgs, where, setTrusted } from "./defs.js";
-import { diffRows, hunksOf, selection, uiLine, lineKey, rangeOf, MODELS, reviewRequest, mapReview, suspectComment, stepKey, fileRows, fileTree, atLine, splitPatch } from "./pr.js";
+import { diffRows, hunksOf, selection, uiLine, lineKey, rangeOf, MODELS, tierOf, reviewRequest, mapReview, suspectComment, stepKey, fileRows, fileTree, atLine, splitPatch } from "./pr.js";
 import { ghTarget, lowValue, markReviewed, sinceBase, verifyCandidates, applyVerification, blastArch, preMergeChecks, mergeBlockers, triageOf } from "./pr.js";
 import { diffLines, inDiff, ghReview, lineThreads, suggestionBlock, buildReview, layoutPlan, specElements, diagramsState } from "./pr.js";
 import { wheelStep, foldOnOpen, allocate, recenter, hsVisible } from "./views.js";
@@ -49,11 +49,22 @@ const MAX_PROGRESS = 100;
 const openFile = () => `${appHome()}/pr-data/open-reviews.json`;
 // shared("review.registry") is every entry, done ones too, with {at}: for plug-ins that mirror reviews elsewhere
 // (PROVIDERS.md). Written on each registry change, 1.5 s after the last edit.
-const model = () => (MODELS[shared("review.model")] ? shared("review.model") : "sonnet");
+// The AI analysis' model: any value the claude CLI offers (models.py), Sonnet until one is picked.
+const model = () => { const m = shared("review.model"); return typeof m === "string" && m ? m : "sonnet"; };
+// The models the CLIs offer per context ({at, claude, codex}, models.py), shared so the Reviews popup sees them too;
+// pr-data/models.json keeps them across restarts.
+const modelsFile = () => `${appHome()}/pr-data/models.json`;
+const modelsDoc = () => shared("review.models") ?? {};
+// A model's name as its CLI calls it ("Opus 5.5"), else the class label, else the value itself.
+export const modelLabel = (m) => Object.values(modelsDoc()).flatMap((d) => d?.claude ?? []).find((x) => x.value === m)?.label ?? MODELS[m]?.label ?? m;
+// Codex's models (one login for every context): from whichever context asked last.
+const codexChoices = () => Object.values(modelsDoc()).map((d) => d?.codex ?? []).find((l) => l.length) ?? [];
+// The choices for a context: the CLI's list, or the three classes until it answered.
+const modelChoices = (ctx) => (modelsDoc()[ctx]?.claude?.length ? modelsDoc()[ctx].claude : Object.entries(MODELS).map(([value, v]) => ({ value, label: v.label, description: "" })));
 const cacheDir = () => `${appHome()}/pr-data/cache`;
 const valuesOn = () => shared("review.values") !== false; // inline example values (flow traces), on by default
 const clock = (ms) => `${Math.floor(ms / 60000)}:${String(Math.floor(ms / 1000) % 60).padStart(2, "0")}`;
-const CAP = { haiku: 1, sonnet: 3, opus: 10 }; // review.py BUDGET
+const CAP = { haiku: 1, sonnet: 3, opus: 10 }; // review.py BUDGET, per tierOf class
 const findDir = () => `${appHome()}/pr-data/findings`;
 const threadsFile = () => `${appHome()}/pr-data/threads.json`; // sent and posted comments as threads (threads.js bounds it)
 const repliesDir = () => `${appHome()}/pr-data/replies`; // the agent's answers, <pr hash>.jsonl
@@ -99,6 +110,11 @@ export function renderReviews() {
             : r.error ? r.error : r.at ? `${r.count} findings · ${r.cost != null ? `$${Number(r.cost).toFixed(3)} · ` : ""}${clock(r.ms ?? 0)} · ${ago(r.at)}${k === "codex" ? " · Codex price not reported" : ""}` : "not run yet")))
         .child(r.busy ? div().child(SPIN[0]).frames(SPIN, 90) : pill(`rv-rrun-${k}`, t, r.at ? "Run again" : "Run", () => { run(`pr-review.reviewer:${k}`); closeOverlay(props().overlay); }).tooltip("Run this reviewer read-only on the PR head"));
     }))
+    .when(hasTool("codex") && codexChoices().length > 0, (e) => e.child(v_flex().px(8).gap(4)
+      .child(div().text_size(11.5).text_color(t.muted).child("Codex review model"))
+      .child(h_flex().gap(4).flex_wrap().children([{ value: "", label: "Codex default" }, ...codexChoices()].map((c) =>
+        pill(`rv-cxm-${c.value || "default"}`, t, c.label, () => setShared("review.codexModel", c.value), (shared("review.codexModel") || "") === c.value)
+          .tooltip(c.description || "The model in Codex's own settings"))))))
     .child(div().px(8).pt(2).text_size(11.5).text_color(t.muted).child(`Claude reviews run read-only in a checkout of the PR head${C.tagged(ctxDoc()) ? ", with the PR's context" : ""}.${hasTool("codex") ? " Codex uses its own login." : ""}`));
 }
 
@@ -188,8 +204,14 @@ const kbd = (t, k) => div().px(5).min_w(18).h(18).flex().items_center().justify_
 const button = (t, label, border, color) => div().w(BTN).h(28).flex_none().flex().items_center().justify_center().rounded(6).border_1()
   .border_color(border).bg(t.background).text_size(12.5).text_color(color).child(label);
 // The model picker (shared "review.model": the AI analysis, Sonnet by default).
-export const modelPills = (t, id) => h_flex().gap(4).children(Object.entries(MODELS).map(([k, v]) =>
-  pill(`${id}-${k}`, t, v.label, () => setShared("review.model", k), model() === k).tooltip(`Use ${v.label} for the AI calls`)));
+// The picker's short form: the CLI's aliases (opus, sonnet, …: each its family's newest), else the three classes.
+export const modelPills = (t, id) => {
+  const seen = new Map();
+  for (const c of Object.values(modelsDoc()).flatMap((d) => d?.claude ?? [])) if (!c.value.startsWith("claude-") && !seen.has(c.value)) seen.set(c.value, c.label);
+  const pills = seen.size ? [...seen] : Object.entries(MODELS).map(([k, v]) => [k, v.label]);
+  return h_flex().gap(4).flex_wrap().children(pills.map(([k, label]) =>
+    pill(`${id}-${k}`, t, label, () => setShared("review.model", k), model() === k).tooltip(`Use ${label} for the AI calls`)));
+};
 
 // What goes into and out of a changed function (review.py "flows"): signature, In and Out examples, side effects.
 // onJump(event, cx): the function name was clicked.
@@ -259,6 +281,7 @@ export const ReviewMode = {
     }
     this.prSel = shared("review.target") ?? null;
     cx.spawn(async (cx) => { this.cfg = await readConfig(); await loadSetup(this, cx); });
+    if (!shared("review.models")) cx.spawn(async (cx) => { try { setShared("review.models", JSON.parse(await readTextFile(modelsFile()))); cx.notify(); } catch { /* none yet */ } });
     // Ask about this: one input (the Architecture page's or the shown layer's), threads and drill-downs from deep.json.
     this.askIn = InputState.new({ placeholder: "Ask about this… (Enter)" });
     this.askIn.on("submit", (_e, cx) => this.askNow(cx));
@@ -311,7 +334,7 @@ export const ReviewMode = {
     }
     else if (name === "copy-link") copyText(this.prSel?.url ?? "");
     else if (name === "open-gh") { if (this.prSel?.url) openUrl(this.prSel.url); }
-    else if (name === "model") { if (MODELS[arg]) setShared("review.model", arg); }
+    else if (name === "model") { if (arg) setShared("review.model", arg); }
     else if (name === "trust") this.trust("pr", cx);
     else if (name === "cmenu") { const [k, ...key] = arg.split("|"), card = this.cardByKey(key.join("|")); card?.menu[Number(k)]?.[2]?.(cx); }
     else if (name === "ask") this.setDrawer(arg === "close" ? null : arg === "fold" ? "collapsed" : "open", cx); // the Ask drawer: open | fold | close
@@ -727,7 +750,7 @@ export const ReviewMode = {
     const pr = this.prSel, w = this.worktree;
     if (!reviewersNow().some(([k]) => k === kind) || !pr?.url) return;
     if (!w || w.local) { this.note = !w ? "Could not run: the PR head is not checked out yet" : "Could not run: reviewers need a PR (not a branch diff)"; return cx.notify(); }
-    const req = { kind, url: pr.url, number: pr.number, context: this.ctxReq(), model: model(), worktree: w.path, base: pr.base ?? "main",
+    const req = { kind, url: pr.url, number: pr.number, context: this.ctxReq(), model: model(), codexModel: shared("review.codexModel") || null, worktree: w.path, base: pr.base ?? "main",
       head: w.head, level: "medium", file: `${findDir()}/${hash(pr.url)}.json` };
     this.find.runs[kind] = { busy: true, started: new Date().toISOString() };
     setShared("review.reviewers", { ...this.find.runs });
@@ -2028,7 +2051,7 @@ export const ReviewMode = {
     const t = theme(), pr = shared("review.target"), meta = shared("review.meta") ?? {};
     const pending = meta.url === pr?.url ? meta.pending ?? 0 : 0, selected = meta.url === pr?.url ? meta.selected ?? 0 : 0;
     const title = pr ? `#${pr.number} ${pr.title ?? ""}` : "Review";
-    const runs = Object.values(shared("review.reviewers") ?? {}), openRuns = () => openOverlay({ mod: "pr-review", props: { part: "reviews" }, kind: "popup", width: 460, height: 250 });
+    const runs = Object.values(shared("review.reviewers") ?? {}), openRuns = () => openOverlay({ mod: "pr-review", props: { part: "reviews" }, kind: "popup", width: 460, height: codexChoices().length ? 330 : 250 });
     const runLabel = runs.some((r) => r.busy) ? "Reviews running ⋯" : "Run review ▾";
     return h_flex().id("rv-bar").size_full().pl(84).pr(16).gap(12).items_center().bg(t.chrome).text_color(t.foreground).text_size(13.5)
       .child(pill("rv-back", t, "← Back", () => leave()).tooltip("Leave the review and return to the previous layout (Esc)").flex_none())
@@ -2063,7 +2086,7 @@ export const ReviewMode = {
       ok + bad > 0 && link("rv-ck", h_flex().gap(4).child("Pre-merge checks").child(div().text_color(t.ansi2).child(`✓${ok}`)).child(div().text_color(bad ? t.ansi1 : t.muted).child(`✗${bad}`)),
         (_e, cx) => { this.tab = "steps"; this.page = "overview"; cx.notify(); }).tooltip("Pre-merge checks passed and failed; click for the Overview page"),
     ].filter(Boolean);
-    const modelText = this.aiBusy ? `${MODELS[this.aiBusy.model]?.label} analyzing…` : `${MODELS[m].label}${ai?.cost != null && ai.model === m ? ` · $${Number(ai.cost).toFixed(2)}` : ""}`;
+    const modelText = this.aiBusy ? `${modelLabel(this.aiBusy.model)} analyzing…` : `${modelLabel(m)}${ai?.cost != null && ai.model === m ? ` · $${Number(ai.cost).toFixed(2)}` : ""}`;
     return h_flex().id("rv-meta").flex_none().flex_wrap().min_h(40).px(16).py(6).gap(10).items_center().border_b(1).border_color(t.border).bg(t.chrome).text_size(12.5).text_color(t.muted)
       .children(facts.flatMap((f, k) => (k ? [sep(), f] : [f])))
       .child(div().flex_1())
@@ -2071,7 +2094,7 @@ export const ReviewMode = {
       .when(Boolean(this.worktree?.path) && !this.trustedPr(), (e) => e.child(link("rv-trust", div().text_color(t.ansi3).child("Restricted Mode · Trust"), (_e, cx) => this.trust("pr", cx))
         .tooltip("Someone else's code: language servers don't run anything from the repository, so go-to-definition may find less. Click to trust this PR.")))
       .child(link("rv-model", h_flex().gap(4).child(this.aiBusy ? div().child(SPIN[0]).frames(SPIN, 90) : div()).child(modelText).child("▾"),
-        menu("models", Object.entries(MODELS).map(([k, v]) => [`${k === m ? "✓ " : ""}${v.label} · ${this.estimate(k)}`, false, `model:${k}`]), 280)).tooltip("Pick the model for the AI analysis; each option shows its cost estimate").accessibility_label("Model"))
+        menu("models", modelChoices(this.ctxId()).map((c) => [`${c.value === m ? "✓ " : ""}${c.label} · ${this.estimate(c.value)}`, false, `model:${c.value}`]), 320)).tooltip("Pick the model for the AI analysis; each option shows its cost estimate").accessibility_label("Model"))
       .child(sep())
       .child(link("rv-values", div().text_color(valuesOn() ? t.foreground : t.muted).child(`Values ${valuesOn() ? "on" : "off"}`), () => setShared("review.values", !valuesOn())).tooltip("Example values from the flow traces, shown inline in the diff: click to switch"))
       .child(link("rv-keys", div().child("?"), () => openOverlay({ mod: "pr-review", props: { part: "keys" }, kind: "popup", ...KEYS_POP })).tooltip("Keyboard shortcuts").accessibility_label("Keyboard shortcuts"))
@@ -2187,19 +2210,19 @@ export const ReviewMode = {
     return v_flex().flex_1().min_h(0)
       .child(v_flex().flex_none().px(14).py(10).gap(8).border_b(1).border_color(t.border)
         .when(Boolean(ai), (e) => e.child(div().text_size(12).text_color(t.muted)
-          .child(`${MODELS[ai.model]?.label ?? ai.model}${ai.cost != null ? ` · $${ai.cost.toFixed(3)}` : ""}${ai.budget ? ` of $${ai.budget} cap` : ""}${ai.ms ? ` · ${clock(ai.ms)}` : ""} · ${ago(ai.generated)}${ai.exact ? "" : " · older diff"}${ai.incremental ? " · incl. changes since last review" : ""}`)))
+          .child(`${modelLabel(ai.model) ?? ai.model}${ai.cost != null ? ` · $${ai.cost.toFixed(3)}` : ""}${ai.budget ? ` of $${ai.budget} cap` : ""}${ai.ms ? ` · ${clock(ai.ms)}` : ""} · ${ago(ai.generated)}${ai.exact ? "" : " · older diff"}${ai.incremental ? " · incl. changes since last review" : ""}`)))
         .when(Boolean(ai?.mergeRisk || ai?.effort), (e) => e.child(this.riskBadges(t, ai, "rv-lb")))
         .when(!ai && !this.aiBusy, (e) => e.child(v_flex().gap(8).py(4)
-          .child(div().text_size(13.5).line_height(1.5).child(`No ${MODELS[m].label} analysis for this diff yet. One thorough run reads the code around the changes and groups them into layers by intent, with explanations, check questions, suspicious lines, merge risk, review effort, repo rule checks, pictures and example values. It can take several minutes.`))
-          .child(h_flex().gap(10).items_center().child(run(`Analyze with ${MODELS[m].label}`))
+          .child(div().text_size(13.5).line_height(1.5).child(`No ${modelLabel(m)} analysis for this diff yet. One thorough run reads the code around the changes and groups them into layers by intent, with explanations, check questions, suspicious lines, merge risk, review effort, repo rule checks, pictures and example values. It can take several minutes.`))
+          .child(h_flex().gap(10).items_center().child(run(`Analyze with ${modelLabel(m)}`))
             .child(div().text_size(12).text_color(t.muted).child(this.estimate(m))))))
         .when(Boolean(this.aiBusy), (e) => e.child(h_flex().gap(8).items_center().text_size(13).text_color(t.muted).child(div().child(SPIN[0]).frames(SPIN, 90))
-          .child(div().flex_1().child(`${MODELS[this.aiBusy.model]?.label} is reading ${this.aiBusy.incremental ? "the new changes" : "the code"}${this.aiBusy.passes ? ` · Pass ${this.aiBusy.pass} of ${this.aiBusy.passes}` : ""} · ${clock(Date.now() - this.aiBusy.started)} · cap $${CAP[this.aiBusy.model]}`))
+          .child(div().flex_1().child(`${modelLabel(this.aiBusy.model)} is reading ${this.aiBusy.incremental ? "the new changes" : "the code"}${this.aiBusy.passes ? ` · Pass ${this.aiBusy.pass} of ${this.aiBusy.passes}` : ""} · ${clock(Date.now() - this.aiBusy.started)} · cap $${CAP[tierOf(this.aiBusy.model)]}`))
           .child(pill("rv-cancel", t, "Cancel", (_e, cx) => this.cancelAi(cx), false, t.ansi1).tooltip("Stop the running analysis"))))
         .when(Boolean(this.aiError), (e) => e.child(div().text_size(12.5).text_color(t.ansi1).whitespace_normal().child(this.aiError)))
         .when(Boolean(ai && !ai.exact), (e) => e.child(div().text_size(12.5).text_color(t.ansi3).whitespace_normal().child(canInc ? "Analysis of an older diff: re-analyze, or analyze only the new changes." : "Analysis of an older diff: re-analyze for the current state.")))
         .when(Boolean(ai?.scope), (e) => e.child(div().text_size(12.5).text_color(t.muted).whitespace_normal().child(scopeLine(ai.scope))))
-        .when(Boolean(ai?.cut.length) && !ai?.scope, (e) => e.child(div().text_size(12.5).text_color(t.ansi3).whitespace_normal().child(`${ai.cut.length} hunks were too large for ${MODELS[ai.model]?.label ?? ai.model} and are not analyzed (an older analysis: re-analyze to read them).`)))
+        .when(Boolean(ai?.cut.length) && !ai?.scope, (e) => e.child(div().text_size(12.5).text_color(t.ansi3).whitespace_normal().child(`${ai.cut.length} hunks were too large for ${modelLabel(ai.model) ?? ai.model} and are not analyzed (an older analysis: re-analyze to read them).`)))
         .child(h_flex().flex_wrap().gap(6).items_center().text_size(12.5)
           .child(h_flex().gap(2).p(2).rounded(7).border_1().border_color(t.border).children([["reading", "Layers"], ["risk", "By risk"]].map(([k, label]) =>
             div().id(`rv-order-${k}`).tooltip((k === "risk" ? "List the layers with the riskiest first" : "List the layers in the order to read them")).px(8).h(22).flex().items_center().rounded(5).cursor_pointer().bg(this.order === k ? t.selected : t.chrome)
@@ -2403,7 +2426,7 @@ export const ReviewMode = {
         .child(div().flex_1())
         .when(Boolean(at), (e) => e.child(pill("rv-arch-card-open", t, "Open ↗", (_e, cx) => this.jumpTo(at, cx)).tooltip(`Open ${at}`)))
         .child(pill("rv-arch-card-explain", t, n.details ? "Look inside" : "Explain", explain, false, n.details ? null : t.foreground)
-          .tooltip(`One ${MODELS[model()].label} call reads the code: what this does overall, what the PR changes in it, and a picture of its inside`))
+          .tooltip(`One ${modelLabel(model())} call reads the code: what this does overall, what the PR changes in it, and a picture of its inside`))
         .when(this.drawerState() !== "open", (e) => e.child(pill("rv-arch-card-ask", t, "Ask", (_e, cx) => this.setDrawer("open", cx, null)).tooltip("Ask one model question about this card")))
         .child(pill("rv-arch-card-x", t, "✕", (_e, cx) => { this.archFocus = null; cx.notify(); }).tooltip("Close (Esc)").accessibility_label("Close card details")))
       .child(this.archCardFacts(t, a, n, at))
@@ -2488,7 +2511,7 @@ export const ReviewMode = {
         .text_color(busy ? t.muted : t.solid_foreground).cursor_pointer().on_click(click).child(busy ? `${label}…` : label))
       .child(div().text_size(12.5).text_color(t.muted).whitespace_normal().child(what));
     return h_flex().gap(12).items_start()
-      .child(card("rv-start-ai", `Analyze with ${MODELS[m].label}`, `Understand the change: layers in reading order, pictures, sample values and a walkthrough. ${this.estimate(m)}.`, (_e, cx) => this.loadAi(cx, "run"), Boolean(this.aiBusy)))
+      .child(card("rv-start-ai", `Analyze with ${modelLabel(m)}`, `Understand the change: layers in reading order, pictures, sample values and a walkthrough. ${this.estimate(m)}.`, (_e, cx) => this.loadAi(cx, "run"), Boolean(this.aiBusy)))
       .child(card("rv-start-cr", "Run Claude code review", "Find problems: bugs and risks as findings on their lines, each with Fix and Verify.", (_e, cx) => this.runReviewer("claude", cx), Boolean(cr.busy)));
   },
 
@@ -2568,7 +2591,7 @@ export const ReviewMode = {
           : pill(`rv-drill-re-${from}`, t, "↻ Refresh", (_e, cx) => { this.runDrill(cx, from); cx.notify(); }).tooltip("Run the model call again for a fresh answer"))
         .child(pill(`rv-drill-x-${from}`, t, "✕", (_e, cx) => { this.setDrill(from, null); cx.notify(); }).tooltip("Close the details").accessibility_label("Close details")))
       .when(Boolean(err), (e) => e.child(div().text_size(12.5).text_color(t.ansi1).whitespace_normal().child(err)))
-      .when(!res && !busy && !err, (e) => e.child(div().text_size(12.5).text_color(t.muted).child(`One ${MODELS[model()].label} call opens up ${top.label}.`)))
+      .when(!res && !busy && !err, (e) => e.child(div().text_size(12.5).text_color(t.muted).child(`One ${modelLabel(model())} call opens up ${top.label}.`)))
       .when(Boolean(res), (e) => e.child(div().text_size(13).line_height(1.5).child(TextView.markdown(`rv-drill-s-${from}-${d.stack.length}-${top.id}`, res.summary || "")))
         .child(visualCard(res.visual, t, `rv-drill-v-${from}`, (at, cx) => this.jumpTo(at, cx)))
         .when(res.visual.nodes.length > 0, (x) => x.child(h_flex().flex_wrap().gap(4).items_center().child(div().text_size(12).text_color(t.muted).child("Open further:"))
@@ -2726,7 +2749,7 @@ export const ReviewMode = {
   exploreOverview(t) {
     const ai = this.exAi;
     return v_flex().gap(14).max_w(1000)
-      .child(div().text_size(12).text_color(t.muted).child(`${MODELS[ai.model]?.label ?? ai.model ?? ""}${ai.cost != null ? ` · $${Number(ai.cost).toFixed(3)}` : ""}${ai.budget ? ` of $${ai.budget} cap` : ""} · ${ago(ai.generated)} · ${ai.repo ?? ai.root}`))
+      .child(div().text_size(12).text_color(t.muted).child(`${modelLabel(ai.model) ?? ai.model ?? ""}${ai.cost != null ? ` · $${Number(ai.cost).toFixed(3)}` : ""}${ai.budget ? ` of $${ai.budget} cap` : ""} · ${ago(ai.generated)} · ${ai.repo ?? ai.root}`))
       .child(div().text_size(22).font_semibold().line_height(1.3).whitespace_normal().child(ai.title || ai.topic))
       .child(div().text_size(14).line_height(1.5).whitespace_normal().child(TextView.markdown(`rv-exs-${ai.generated}`, ai.summary || "")))
       .child(h_flex().gap(8).child(pill("rv-ex-ask", t, "Ask about this", (_e, cx) => this.setDrawer("open", cx, null)).tooltip("Ask one model question about this exploration")).child(pill("rv-ex-arch", t, "Architecture", (_e, cx) => { this.page = "arch"; cx.notify(); }).tooltip("Open the architecture picture")))
@@ -2767,12 +2790,12 @@ export const ReviewMode = {
           .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Input.new(this.exTopic).h_full().text_size(14).text_color(t.foreground)))
         .child(h_flex().gap(10).items_center()
           .child(modelPills(t, "rv-ex-m"))
-          .child(div().text_size(12).text_color(t.muted).child(`cap $${CAP[m]}`))
+          .child(div().text_size(12).text_color(t.muted).child(`cap $${CAP[tierOf(m)]}`))
           .child(div().flex_1())
           .child(div().id("rv-ex-go").tooltip("One model call walks through the code for this topic; the cost is capped").px(14).h(32).flex().items_center().rounded(8).text_size(13.5).font_semibold().bg(busy ? t.raised : t.solid).text_color(busy ? t.muted : t.solid_foreground)
             .cursor_pointer().on_click((_e, cx) => this.runExplore(cx)).child(busy ? "Exploring…" : "Explore")))
         .when(Boolean(busy), (e) => e.child(h_flex().gap(8).items_center().text_size(13).text_color(t.muted).child(div().child(SPIN[0]).frames(SPIN, 90))
-          .child(`${MODELS[busy.model]?.label} is reading the code · ${clock(Date.now() - busy.started)} · cap $${CAP[busy.model]}`)))
+          .child(`${modelLabel(busy.model)} is reading the code · ${clock(Date.now() - busy.started)} · cap $${CAP[tierOf(busy.model)]}`)))
         .when(Boolean(this.exErr), (e) => e.child(div().text_size(12.5).text_color(t.ansi1).whitespace_normal().child(this.exErr)))
         .when((this.exIndex ?? []).length > 0, (e) => e.child(div().pt(10).text_size(11.5).font_semibold().text_color(t.muted).child(`EXPLORATIONS · ${this.exIndex.length}`))
           .children(this.exIndex.map((x) => h_flex().id(`rv-exi-${x.id}`).tooltip("Open this saved exploration").gap(8).px(8).h(32).items_center().rounded(6).cursor_pointer().hover((s) => s.bg(t.hover))
@@ -2903,7 +2926,7 @@ export const ReviewMode = {
           .child(div().id(`${id}-in`).tooltip("Your question: one model call about the selected code or layer; Enter asks").flex_1().min_w(0).h(30).px(8).flex().items_center().rounded(6).border_1().border_color(t.border).bg(t.background).cursor_text()
             .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Input.new(this.askIn).h_full().text_size(13).text_color(t.foreground)))
           .child(this.askBusy ? div().flex_none().child(SPIN[0]).frames(SPIN, 90) : pill(`${id}-go`, t, "Ask", (_e, cx) => this.askNow(cx), false, t.foreground).tooltip("Ask: one model call about the selected code, card or layer (Enter)")))
-        .child(div().text_size(11.5).text_color(t.muted).whitespace_normal().child(`One ${MODELS[model()].label} call with the analysis${this.hunks ? ", the diff" : ""} and this thread. Click a card or select lines to ask about them.`)))
+        .child(div().text_size(11.5).text_color(t.muted).whitespace_normal().child(`One ${modelLabel(model())} call with the analysis${this.hunks ? ", the diff" : ""} and this thread. Click a card or select lines to ask about them.`)))
       .child(div().flex_1().min_h(0).relative()
         .child(v_flex().id(`${id}-scroll`).absolute().inset_0().overflow_y_scroll().p(10).gap(8)
           .when(Boolean(this.askBusy), (e) => e.child(div().text_size(12.5).text_color(t.muted).whitespace_normal().child(`${this.askBusy.q} · reading…`)))
@@ -2972,7 +2995,7 @@ export const ReviewMode = {
     };
     return v_flex().gap(12)
       .child(div().text_size(20).font_semibold().child("Verify"))
-      .child(div().text_size(13.5).text_color(t.muted).whitespace_normal().child(`Findings sent to Fix before the last push. One ${MODELS[m].label} call reads what changed in their files since and says fixed, not fixed or unclear: fixed ones get ✓, not fixed ones open again with the reason.`))
+      .child(div().text_size(13.5).text_color(t.muted).whitespace_normal().child(`Findings sent to Fix before the last push. One ${modelLabel(m)} call reads what changed in their files since and says fixed, not fixed or unclear: fixed ones get ✓, not fixed ones open again with the reason.`))
       .child(h_flex().gap(10).items_center()
         .child(div().id("rv-verify").tooltip("One model call checks whether the findings sent to Fix are fixed now").px(14).h(32).flex().items_center().rounded(8).text_size(13.5).font_semibold().bg(list.length && !this.verifyBusy ? t.solid : t.raised)
           .text_color(list.length && !this.verifyBusy ? t.solid_foreground : t.muted).when(list.length > 0, (e) => e.cursor_pointer()).on_click((_e, cx) => this.runVerify(cx))
@@ -2983,13 +3006,31 @@ export const ReviewMode = {
       .when(done.length > 0, (e) => e.child(div().pt(6).text_size(11.5).font_semibold().text_color(t.muted).child(`VERIFIED · ${done.length}`)).children(done.map(card)));
   },
 
+  // The CLIs' models for this PR's context (models.py), asked at most once a day per context: Claude lists what that
+  // account may use, Codex what it offers. Kept in shared "review.models" and pr-data/models.json.
+  loadModels(cx) {
+    const ctx = this.ctxReq(), id = ctx?.id ?? "default", d = modelsDoc()[id], busy = (this.modelsBusy ??= new Set());
+    if ((d && Date.now() - d.at < 86400000) || busy.has(id)) return;
+    busy.add(id);
+    cx.spawn(async (cx) => {
+      const r = await exec("python3", [`${appHome()}/mods/pr-review/models.py`, JSON.stringify({ context: ctx })], { timeout: 90000 }).catch(() => null);
+      let out = null;
+      try { out = r?.code === 0 ? JSON.parse(r.stdout) : null; } catch { /* no answer */ }
+      if (!out?.claude?.length && !out?.codex?.length) return; // busy stays: no second try this session
+      busy.delete(id);
+      const doc = { ...modelsDoc(), [id]: { at: Date.now(), claude: out.claude ?? [], codex: out.codex ?? [] } };
+      setShared("review.models", doc);
+      writeTextFile(modelsFile(), JSON.stringify(doc)).catch(() => null);
+      cx.notify();
+    });
+  },
   // A rough price before running: input from the diff size, output and thinking from earlier runs; the cap is review.py's.
   estimate(m) {
-    const chars = Math.min(MODELS[m].chars, (this.hunks ?? []).reduce((n, h) => n + h.lines.reduce((k, l) => k + l.length + 1, 0), 0));
-    const [inp, out] = { haiku: [1, 5], sonnet: [3, 15], opus: [5, 25] }[m];
+    const chars = Math.min(MODELS[tierOf(m)].chars, (this.hunks ?? []).reduce((n, h) => n + h.lines.reduce((k, l) => k + l.length + 1, 0), 0));
+    const [inp, out] = { haiku: [1, 5], sonnet: [3, 15], opus: [5, 25] }[tierOf(m)];
     // ponytail: reading the code with tools multiplies input; ×4 from the first runs, a guess until the ledger says more.
     const usd = (((chars / 3.5 + 3000) * 4) * inp + 15000 * out) / 1e6;
-    return `≈ $${usd.toFixed(2)} · cap $${CAP[m]}`;
+    return `≈ $${usd.toFixed(2)} · cap $${CAP[tierOf(m)]}`;
   },
 
   // Statements with their source: a "spec" tag before spec-only ones (only in the description/ticket, not in the
@@ -3325,6 +3366,7 @@ export const ReviewMode = {
       cx.timer.after(0, (cx) => { this.refreshQueued = false; this.refresh(cx); });
     }
     if (this.hunks && model() !== this.aiModel && !this.aiBusy) this.loadAi(cx, "cache");
+    if (this.prSel) this.loadModels(cx);
     if (this.winW) this.listW = this.winW - this.leftW() - SPLIT - (this.drawerSqueezes() ? 380 : 0); // the diff column's width: card heights wrap to it
     // Lines a pinned answer cites: marked in the diff's gutter (memoized on the pins).
     if (this.pinMarksOf !== this.pins()) { this.pinMarksOf = this.pins(); this.pinMarks = new Set(this.pinMarksOf.flatMap((p) => (p.evidence ? [p.evidence.replace(/^(.*?):(\d+).*$/, "$1:$2")] : []))); }

@@ -126,6 +126,15 @@ const was = MODELS0.haiku.chars; MODELS0.haiku.chars = 100;
 const capped = reviewRequest({ url: "u", files: rq, model: "haiku", context: { id: "default", env: null }, dir: "/d" });
 MODELS0.haiku.chars = was;
 assert.deepEqual([capped.req.hunks.map((h) => h.alias), capped.req.cut], [["h2", "h3"], ["h1"]]);
+// A model from the CLI's list: its class sets the budget, and its id is safe in a file name.
+const { tierOf } = await import("./pr.js");
+assert.deepEqual(["haiku", "claude-haiku-4-5-20251001", "sonnet", "claude-sonnet-5", "opus", "fable", "claude-fable-5-1[1m]", undefined].map(tierOf),
+  ["haiku", "haiku", "sonnet", "sonnet", "opus", "opus", "opus", "opus"]);
+MODELS0.haiku.chars = 100;
+const byId = reviewRequest({ url: "u", files: rq, model: "claude-haiku-4-5[1m]", context: { id: "default", env: null }, dir: "/d" });
+MODELS0.haiku.chars = was;
+assert.deepEqual(byId.req.cut, ["h1"], "a haiku id gets haiku's budget");
+assert.ok(byId.out.endsWith("-claude-haiku-4-5_1m_.json") && byId.req.model === "claude-haiku-4-5[1m]", byId.out);
 
 // Range selection by line keys: survives new row arrays, works either way round and across hunks of a file;
 // expanded context in between is part of it, a hidden gap is left out of the quoted code.

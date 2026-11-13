@@ -173,8 +173,11 @@ export function budget(hunks, max = 60000) {
 
 // ---- the review layout (review.js)
 
-// Models for the AI review: the claude CLI's alias, its label, how many diff characters it is sent.
+// The budget classes of the AI review's models: a label (until the CLI's list names the model) and how many diff
+// characters a run is sent. The models themselves come from the claude CLI (models.py); tierOf files each one here.
 export const MODELS = { haiku: { label: "Haiku", chars: 60000 }, sonnet: { label: "Sonnet", chars: 150000 }, opus: { label: "Opus", chars: 150000 } };
+// A model's class, as llm.tier: haiku, sonnet, or opus (the bigger ones, and any model not named).
+export const tierOf = (m) => (/haiku/i.test(m ?? "") ? "haiku" : /sonnet/i.test(m ?? "") ? "sonnet" : "opus");
 
 // Lockfiles, snapshots, minified and generated code: sent last, so they are what a size cap cuts first.
 export const lowValue = (path) => /(^|\/)([^/]*\.lock|package-lock\.json|pnpm-lock\.yaml|go\.sum)$|\.snap$|\.min\.(js|css)$|(^|\/)(dist|vendor|generated|__generated__)\//.test(path);
@@ -185,11 +188,12 @@ export const lowValue = (path) => /(^|\/)([^/]*\.lock|package-lock\.json|pnpm-lo
 // hunks: hunksOf(files) when the caller has it already (a big diff takes too long to hash twice in one slice).
 export function reviewRequest({ url, pr = url, worktree = null, files, hunks: made = null, model, context, dir }) {
   const hunks = made ?? hunksOf(files);
-  const { sent, cut } = budget([...hunks.filter((h) => !lowValue(h.path)), ...hunks.filter((h) => lowValue(h.path))], MODELS[model].chars);
+  const { sent, cut } = budget([...hunks.filter((h) => !lowValue(h.path)), ...hunks.filter((h) => lowValue(h.path))], MODELS[tierOf(model)].chars);
   const at = new Map(hunks.map((h, i) => [h.alias, i]));
   sent.sort((a, b) => at.get(a.alias) - at.get(b.alias));
   cut.sort((a, b) => at.get(a) - at.get(b));
-  const base = `${dir}/rv-${hash(url)}`, out = `${base}-${hash(hunks.map((h) => h.id).sort().join(","))}-${model}.json`, latest = `${base}-${model}.json`;
+  const m = String(model).replace(/[^\w.-]/g, "_"); // a model id in a file name
+  const base = `${dir}/rv-${hash(url)}`, out = `${base}-${hash(hunks.map((h) => h.id).sort().join(","))}-${m}.json`, latest = `${base}-${m}.json`;
   return { hunks, out, latest, status: `${out}.status`,
     req: { out, latest, status: `${out}.status`, model, context, pr, source: url, worktree, hunks: sent.map(({ alias, id, path, lines }) => ({ alias, id, path, lines })), cut } };
 }

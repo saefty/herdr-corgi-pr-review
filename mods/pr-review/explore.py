@@ -66,13 +66,13 @@ def main(req):
         raise RuntimeError(f"{root} is not a folder")
     meta = {}
     answer = llm.claude(FEATURE, prompt(req["topic"], req.get("repo"), lang), context=req.get("context"), model=model, schema=SCHEMA,
-                        system=SYSTEM.format(lang=lang), budget=review.BUDGET[model], timeout=review.TIMEOUT, cwd=root, tools="Read,Grep,Glob",
+                        system=SYSTEM.format(lang=lang), budget=review.BUDGET[llm.tier(model)], timeout=review.TIMEOUT, cwd=root, tools="Read,Grep,Glob",
                         meta=meta, extra=("--effort", "high", "--allowedTools", "Read", "Grep", "Glob",
                                           "--disallowedTools", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch", "Bash"))
     if not answer:
         raise RuntimeError(f"{FEATURE}: no answer")
     result = {"topic": req["topic"], "root": root, "repo": req.get("repo"), "model": model, "model_id": meta.get("model_id", model),
-              "cost": meta.get("cost"), "ms": meta.get("ms"), "budget": review.BUDGET[model], "answer": existing(answer),
+              "cost": meta.get("cost"), "ms": meta.get("ms"), "budget": review.BUDGET[llm.tier(model)], "answer": existing(answer),
               "generated": dt.datetime.now().astimezone().isoformat()}
     review.save(req["out"], result)
     return result

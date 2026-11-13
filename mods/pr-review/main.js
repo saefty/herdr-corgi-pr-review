@@ -16,14 +16,14 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar, Editor, EditorState, TextView } from "gpui-base";
 import { spaces, panes, focused, agents, exec, hc, run, theme, settings, readTextFile, writeTextFile, shared, setShared, appHome, home, layout, props, watchFolder, nextCommand } from "herdr";
-import { diffRows, buildPrompt, splitPatch, selection, nextChange, lineLabel, anchorRow, buildReview, hunksOf, hash, uiLine, MODELS, reviewRequest, mapReview, progressLine, triageOf } from "./pr.js";
+import { diffRows, buildPrompt, splitPatch, selection, nextChange, lineLabel, anchorRow, buildReview, hunksOf, hash, uiLine, reviewRequest, mapReview, progressLine, triageOf } from "./pr.js";
 import { parsePrRef, ghTarget, pruneSources } from "./pr.js";
 import * as C from "./context.js";
 import { loadDiff, saveDiff } from "./diffcache.js";
 import { setupBanner, renderSetup, loadSetup, runSetup, openUrl, readConfig } from "./setup-view.js";
 import { chip, triageTip, PRIORITY_TIP } from "./stack.js";
 import { panelState, bodyTab, capped, IN_PROGRESS_MAX, diffTooLarge, filesToDiff } from "./views.js";
-import { ReviewMode, startReview, startExplore, saveKey, flowCard, modelPills, renderReviews, renderAgentBar, renderKeys, renderCardMenu } from "./review.js";
+import { ReviewMode, startReview, startExplore, saveKey, flowCard, modelPills, modelLabel, renderReviews, renderAgentBar, renderKeys, renderCardMenu } from "./review.js";
 import { highlightRows, langOf, colors, renderLine, editorSyntax } from "./syntax.js";
 
 // Same mapping as the shipped files panel.
@@ -37,7 +37,7 @@ const MEMO = 8, WATCHES = 3; // remembered contexts; repos watched at once
 const IGNORED = /\/(node_modules|target|dist|build|\.venv|__pycache__)\/|\/\.git\/(?!HEAD$|index$|refs\/)/; // changes that don't make a diff dirty
 const cacheDir = () => `${appHome()}/pr-data/cache`;
 // The model for walkthroughs and the review analysis: the review layout's picker (shared), Sonnet by default.
-const walkModel = () => (MODELS[shared("review.model")] ? shared("review.model") : "sonnet");
+const walkModel = () => { const m = shared("review.model"); return typeof m === "string" && m ? m : "sonnet"; }; // as review.js model()
 const STATE = { open: "ansi2", draft: "dim", merged: "ansi5", closed: "ansi1" };
 const WEIGHT = { key: ["key", "ansi3"], skim: ["skim", "dim"] };
 const COVER = { seen: ["done", "ansi2"], partly: ["partly", "ansi3"], absent: ["missing", "ansi1"] };
@@ -550,7 +550,7 @@ export default class PrReview extends View {
       .child(Scrollbar.vertical(sid).absolute().inset_0());
     if (!w) {
       return scroll(v_flex().p(14).gap(10).text_color(t.dim)
-        .child(div().whitespace_normal().child(this.sourceKey() ? `No ${MODELS[walkModel()].label} analysis for this diff yet. The walkthrough is the review's AI analysis in reading order.` : "No diff."))
+        .child(div().whitespace_normal().child(this.sourceKey() ? `No ${modelLabel(walkModel())} analysis for this diff yet. The walkthrough is the review's AI analysis in reading order.` : "No diff."))
         .when(Boolean(this.pr?.url), (e) => e.child(h_flex().flex_wrap().gap(8).child(modelPills(t, `walk-m0-${this.uid}`))
           .child(pill(`walk-make-${this.uid}`, t, "Analyze in review ↗", (_e, cx) => this.openWalk(cx, true), false, "Open the review layout, where you start the AI analysis yourself")))));
     }
@@ -566,7 +566,7 @@ export default class PrReview extends View {
         .child(div().font_semibold().whitespace_normal().child(w.title || "Walkthrough"))
         .child(div().text_size(12).text_color(t.muted).whitespace_normal().child(w.summary))
         .child(h_flex().gap(8).items_center().text_size(11).text_color(t.dim)
-          .child(div().flex_1().min_w(0).truncate().child(`${done} of ${w.steps.length} read · ${MODELS[w.model]?.label ?? "Haiku"}${w.cost != null ? ` · $${w.cost.toFixed(3)}` : ""}${w.cut?.length ? ` · ${w.cut.length} hunks cut` : ""}`))
+          .child(div().flex_1().min_w(0).truncate().child(`${done} of ${w.steps.length} read · ${modelLabel(w.model) ?? "Haiku"}${w.cost != null ? ` · $${w.cost.toFixed(3)}` : ""}${w.cut?.length ? ` · ${w.cut.length} hunks cut` : ""}`))
           .when(Boolean(this.walkBusy), (e) => e.child(div().child(SPIN[0]).frames(SPIN, 90)))
           .child(pill(`walk-more-${this.uid}`, t, "⋯", (_e, cx) => { this.walkMore = !this.walkMore; cx.notify(); }, this.walkMore, "Show or hide the model choice and more options", "More walkthrough options")))
         .when(Boolean(this.walkMore), (e) => e.child(h_flex().flex_wrap().gap(8).items_center().pt(2)

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Automated reviewers for the review layout: Claude's /code-review, Claude's /security-review, `codex review`.
 
-argv[1]: JSON {kind: "claude"|"security"|"codex", url, number, context ({id, env}: the PR's), model
-(haiku|sonnet|opus), worktree (a detached checkout of the PR head, worktree.py), base (the PR's base branch),
+argv[1]: JSON {kind: "claude"|"security"|"codex", url, number, context ({id, env}: the PR's), model (a Claude
+model or alias from models.py), codexModel (a Codex slug from models.py; none: Codex's default), worktree (a detached checkout of the PR head, worktree.py), base (the PR's base branch),
 head (sha), level (code-review effort: low|medium|high), file (pr-data/findings/<url hash>.json)}.
 Runs the reviewer read-only in the worktree (Claude: Read/Grep/Glob/Agent and read-only git/gh Bash only, no edits;
 Codex: sandbox_mode=read-only), turns its answer into findings {id, reviewer, file, line, end, severity, title,
@@ -105,7 +105,7 @@ def claude_review(req, command):
     def ask(text, skills):
         meta = {}
         answer = llm.claude(FEATURE[req["kind"]], text + ASK_JSON, context=req.get("context"), model=req["model"],
-                            schema=FINDINGS, budget=BUDGET[req["model"]], timeout=TIMEOUT, tools="Read,Grep,Glob,Agent,Bash",
+                            schema=FINDINGS, budget=BUDGET[llm.tier(req["model"])], timeout=TIMEOUT, tools="Read,Grep,Glob,Agent,Bash",
                             cwd=req["worktree"], skills=skills, meta=meta,
                             extra=("--allowedTools", *READ_ONLY, "--disallowedTools", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch"))
         return answer, meta
@@ -126,8 +126,9 @@ def codex_review(req):
     codex = shutil.which("codex")
     if not codex:
         raise RuntimeError("codex is not installed (optional): see Setup")
+    pick = ["-c", f"model={json.dumps(req['codexModel'])}"] if req.get("codexModel") else []  # else Codex's own default
     r = subprocess.run([codex, "review", "--base", f"origin/{req['base']}",
-                        "-c", 'sandbox_mode="read-only"', "-c", 'approval_policy="never"'],
+                        "-c", 'sandbox_mode="read-only"', "-c", 'approval_policy="never"', *pick],
                        cwd=req["worktree"], capture_output=True, text=True, timeout=TIMEOUT)
     ms = int((time.monotonic() - started) * 1000)
     text = (r.stdout or "") + ("\n" + r.stderr if r.returncode != 0 else "")

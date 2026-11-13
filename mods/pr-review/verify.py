@@ -53,7 +53,7 @@ def prompt(req):
 def main(req):
     meta = {}
     answer = llm.claude(FEATURE, prompt(req), context=req.get("context"), model=req["model"], schema=SCHEMA,
-                        budget=BUDGET.get(req["model"], 1.0), timeout=540, meta=meta)
+                        budget=BUDGET[llm.tier(req["model"])], timeout=540, meta=meta)
     ids = {i["id"] for i in req["items"]}
     return {"results": [r for r in (answer or {}).get("results", []) if r.get("id") in ids], "cost": meta.get("cost")}
 

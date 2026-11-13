@@ -67,6 +67,12 @@ def log(feature, context_id, model, cost, tokens=0, ms=0, ok=True, tool="claude"
         old.unlink(missing_ok=True)
 
 
+def tier(model):
+    """A model's budget class for the caps: haiku, sonnet, or opus (the bigger ones, and any model not named)."""
+    m = str(model or "").lower()
+    return "haiku" if "haiku" in m else "sonnet" if "sonnet" in m else "opus"
+
+
 def claude(feature, prompt, *, context=None, model="haiku", schema=None, system=None, budget=0.2,
            timeout=180, tools="", cwd=None, extra=(), meta=None, skills=False):
     """Runs `claude -p`, records the call, returns structured_output (with a schema) or the result text.
