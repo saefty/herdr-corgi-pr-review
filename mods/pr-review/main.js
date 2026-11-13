@@ -868,7 +868,22 @@ export default class PrReview extends View {
     if (this.part === "agentbar") return renderAgentBar();
     if (this.part === "keys") return renderKeys();
     if (this.part === "cmenu") return renderCardMenu();
-    if (this.part === "mini") return renderMini();
+    if (this.part === "mini") {
+      // Go to hands PRs over through "pr.goto"; with the PR panel hidden nothing else takes it, and the mini part is in
+      // the main layout: resume a review in progress, else open the PR in the review layout.
+      const g = shared("pr.goto");
+      if (g?.url && !this.gotoQueued) {
+        this.gotoQueued = true;
+        cx.timer.after(0, () => {
+          this.gotoQueued = false;
+          const h = shared("pr.goto"), r = h?.url && (shared("review.open") ?? []).find((x) => x.url === h.url), ref = h?.url && !r ? parsePrRef(h.url) : null;
+          if (!r && !ref) return;
+          setShared("pr.goto", null);
+          startReview(r ? r.target ?? r : { url: ref.url, repo: ref.repo, number: Number(ref.number), source: "open" });
+        });
+      }
+      return renderMini();
+    }
     if (this.part === "review") {
       // Go to hands PRs over through "pr.goto"; the panel isn't mounted while the review layout shows, so take it here.
       if (shared("pr.goto")?.url && !this.gotoQueued) { this.gotoQueued = true; cx.timer.after(0, (cx) => { this.gotoQueued = false; this.takeGoto(cx); }); }
