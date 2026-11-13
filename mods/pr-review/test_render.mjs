@@ -55,6 +55,7 @@ registerHooks({
 const { default: PrReview } = await import("./main.js");
 const { splitPatch, hunksOf, diffRows, stepKey } = await import("./pr.js");
 const { foldOnOpen } = await import("./views.js");
+const { renderMini } = await import("./review.js");
 const cx = { notify() {}, timer: { after() {}, every() {} }, spawn() {}, focus_handle: () => ({ focus() {}, is_focused: () => false }), stop_propagation() {}, new() {} };
 
 function review(files) {
@@ -113,4 +114,10 @@ for (const n of [0, 3, 310]) {
   v.tab = "files"; v.page = null; v.deep.drawer[v.deepKey()] = "open";
   ok(`${n} files: back to the list with the drawer open`, () => { v.render(cx); layout(0.5); v.autoFold(cx); });
 }
+// The minimized review: nothing without one, an entry with Open and ✕ with one.
+globalThis.__rv.store.set("review.minimized", null);
+renderMini();
+globalThis.__rv.store.set("review.minimized", { target: { url: "https://github.com/o/r/pull/7", number: 7, title: "feat: x", repo: "o/r" }, at: 1 });
+renderMini();
+globalThis.__rv.store.set("review.minimized", null);
 console.log("render ok");

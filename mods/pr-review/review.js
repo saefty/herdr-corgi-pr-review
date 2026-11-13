@@ -183,6 +183,7 @@ export async function startReview(target) {
   setShared("review.layout", plan.name);
   setShared("review.explore", null);
   setShared("review.target", target);
+  if (shared("review.minimized")?.target?.url === target?.url) setShared("review.minimized", null); // back in it: no entry
   run("layout.switch", { name: plan.name });
 }
 
@@ -202,6 +203,21 @@ export async function startExplore(root = null) {
   run("layout.switch", { name: plan.name });
 }
 const leave = () => run("layout.switch", { name: shared("review.back") || "main" });
+// Minimize: back to the previous layout with the review kept as one entry (part "mini", a float in the main layout):
+// Open brings it back where it was, ✕ drops it. One at a time: minimizing another review replaces it.
+const minimize = () => { const pr = shared("review.target"); if (pr) setShared("review.minimized", { target: pr, at: Date.now() }); leave(); };
+export function renderMini() {
+  const t = theme(), pr = shared("review.minimized")?.target;
+  if (!pr) return div();
+  const title = `#${pr.number ?? ""} ${pr.title ?? ""}`.trim();
+  return h_flex().id("rv-mini").h(34).pl(12).pr(4).gap(8).items_center().rounded_full().border_1().border_color(t.border).bg(t.popover)
+    .text_size(12.5).text_color(t.foreground)
+    .on_mouse_down("left", (_e, cx) => cx.stop_propagation()) // a press the mod doesn't stop would drag the float
+    .child(div().flex_none().text_color(t.muted).child("Review"))
+    .child(div().id("rv-mini-title").max_w(320).truncate().font_semibold().tooltip(`${pr.repo ?? ""}#${pr.number ?? ""} ${pr.title ?? ""}`).child(title))
+    .child(pill("rv-mini-open", t, "Open", () => startReview(pr)).tooltip("Back to the review, where you left it"))
+    .child(pill("rv-mini-x", t, "✕", () => setShared("review.minimized", null)).tooltip("Close the minimized review").accessibility_label("Close minimized review"));
+}
 
 const pill = (id, t, label, click, on = false, color) => div().id(id).px(9).h(26).flex().items_center().rounded(6).border_1()
   .border_color(on ? t.accent : t.border).text_size(12.5).text_color(color ?? (on ? t.foreground : t.muted)).cursor_pointer()
@@ -2088,6 +2104,8 @@ export const ReviewMode = {
     const runLabel = runs.some((r) => r.busy) ? "Reviews running ⋯" : "Run review ▾";
     return h_flex().id("rv-bar").size_full().pl(84).pr(16).gap(12).items_center().bg(t.chrome).text_color(t.foreground).text_size(13.5)
       .child(pill("rv-back", t, "← Back", () => leave()).tooltip("Leave the review and return to the previous layout (Esc)").flex_none())
+      .when(Boolean(pr), (e) => e.child(pill("rv-min", t, "▁ Minimize", () => minimize()).flex_none()
+        .tooltip("Go back to your chats and keep this review as one entry at the top; open it from there where you left it")))
       .child(div().id("rv-title").flex_1().min_w(0).truncate().font_semibold().text_size(14).tooltip(title).child(title))
       .when(Boolean(pr), (e) => e.child(div().id("rv-bar-repo").tooltip("Repository and PR number").flex_none().text_size(12).text_color(t.muted).child(`${pr.repo ?? ""}#${pr.number ?? ""}`))
         .child(badge(t, pr.state ?? "?", t[{ open: "ansi2", draft: "dim", merged: "ansi5", closed: "ansi1" }[pr.state]] ?? t.dim).id("rv-bar-state").tooltip("The PR's state on GitHub"))
