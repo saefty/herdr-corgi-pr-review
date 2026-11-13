@@ -178,6 +178,16 @@ export function budget(hunks, max = 60000) {
 export const MODELS = { haiku: { label: "Haiku", chars: 60000 }, sonnet: { label: "Sonnet", chars: 150000 }, opus: { label: "Opus", chars: 150000 } };
 // A model's class, as llm.tier: haiku, sonnet, or opus (the bigger ones, and any model not named).
 export const tierOf = (m) => (/haiku/i.test(m ?? "") ? "haiku" : /sonnet/i.test(m ?? "") ? "sonnet" : "opus");
+// Dollars per million input and output tokens, by the longest prefix of the resolved model id. Neither CLI reports
+// prices, so these are Anthropic's list prices (November 2026); a model not listed costs its class's price.
+// ponytail: a hand-kept table; update it when Anthropic's prices change.
+const PRICES = { "claude-fable-5-2": [8, 40], "claude-fable-5": [10, 50], "claude-opus-5-5": [4, 20], "claude-opus-5": [5, 25], "claude-opus-4": [5, 25],
+  "claude-sonnet-5": [2, 10], "claude-haiku-5": [0.1, 0.5] };
+const CLASS_PRICE = { haiku: [1, 5], sonnet: [3, 15], opus: [5, 25] };
+export const priceOf = (resolved) => {
+  const id = String(resolved ?? ""), k = Object.keys(PRICES).filter((p) => id.startsWith(p)).sort((a, b) => b.length - a.length)[0];
+  return k ? PRICES[k] : CLASS_PRICE[tierOf(id)];
+};
 
 // Lockfiles, snapshots, minified and generated code: sent last, so they are what a size cap cuts first.
 export const lowValue = (path) => /(^|\/)([^/]*\.lock|package-lock\.json|pnpm-lock\.yaml|go\.sum)$|\.snap$|\.min\.(js|css)$|(^|\/)(dist|vendor|generated|__generated__)\//.test(path);

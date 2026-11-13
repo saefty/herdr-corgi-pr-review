@@ -135,6 +135,10 @@ const byId = reviewRequest({ url: "u", files: rq, model: "claude-haiku-4-5[1m]",
 MODELS0.haiku.chars = was;
 assert.deepEqual(byId.req.cut, ["h1"], "a haiku id gets haiku's budget");
 assert.ok(byId.out.endsWith("-claude-haiku-4-5_1m_.json") && byId.req.model === "claude-haiku-4-5[1m]", byId.out);
+// Prices by the longest id prefix; an unknown model costs its class's price.
+const { priceOf } = await import("./pr.js");
+assert.deepEqual([priceOf("claude-opus-5-5"), priceOf("claude-opus-5"), priceOf("claude-fable-5-2"), priceOf("claude-fable-5-1"), priceOf("claude-sonnet-5-5"), priceOf("claude-haiku-5-5"), priceOf("claude-haiku-4-5-20251001"), priceOf("sonnet")],
+  [[4, 20], [5, 25], [8, 40], [10, 50], [2, 10], [0.1, 0.5], [1, 5], [3, 15]]);
 
 // Range selection by line keys: survives new row arrays, works either way round and across hunks of a file;
 // expanded context in between is part of it, a hidden gap is left out of the quoted code.
